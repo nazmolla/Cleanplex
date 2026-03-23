@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-plex-darker text-gray-100 font-sans;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-plex-darker;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-plex-border rounded;
+}

@@ -1,0 +1,31 @@
+[Unit]
+Description=Cleanplex — Plex content filter service
+Documentation=https://github.com/nazmolla/Cleanplex
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m cleanplex
+WorkingDirectory=/opt/cleanplex
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cleanplex
+
+# Optional: run as a dedicated user
+# User=cleanplex
+# Group=cleanplex
+
+# Data directory (override default ~/.cleanplex)
+# Environment=CLEANPLEX_DATA=/var/lib/cleanplex
+
+# Web UI port (default 7979)
+# Environment=CLEANPLEX_PORT=7979
+
+# Bind to localhost only (put nginx in front for remote access)
+# Environment=CLEANPLEX_HOST=0.0.0.0
+
+[Install]
+WantedBy=multi-user.target

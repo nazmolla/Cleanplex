@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.db
+*.db-wal
+*.db-shm
+
+# Frontend build output (committed separately after build)
+frontend/node_modules/
+frontend/dist/
+
+# Thumbnails and runtime data
+~/.cleanplex/
+
+# IDE
+.vscode/
+.idea/
+*.swp
