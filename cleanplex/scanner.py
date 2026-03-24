@@ -30,6 +30,7 @@ _current_guid: str | None = None
 _queued_normal: set[str] = set()
 _queued_force: set[str] = set()
 _queue_wakeup_event: asyncio.Event = asyncio.Event()
+_skip_current_scan: bool = False
 
 
 def get_queue_size() -> int:
@@ -168,8 +169,16 @@ def _cluster_frames(
     return segments
 
 
+def skip_current_scan() -> None:
+    """Request that the currently-running scan title be aborted and left as pending."""
+    global _skip_current_scan
+    _skip_current_scan = True
+    logger.info("Skip requested for current scan: %s", _current_guid)
+
+
 async def scan_video(plex_guid: str, config) -> None:
-    global _current_guid
+    global _current_guid, _skip_current_scan
+    _skip_current_scan = False  # Reset for each new scan title
 
     job = await db.get_scan_job_by_guid(plex_guid)
     if not job:
@@ -264,11 +273,27 @@ async def scan_video(plex_guid: str, config) -> None:
             cluster_best_score = 0.0
 
         for idx, offset_ms in enumerate(range(0, duration_ms, step_ms)):
+            # User requested skip of this title — leave it as pending (not re-scanned).
+            if _skip_current_scan:
+                _skip_current_scan = False
+                logger.info("Scan of '%s' skipped by user request", title)
+                await db.update_scan_job_status(plex_guid, "pending", progress=0.0)
+                return
+
             if _paused:
                 # Re-queue for later
                 await db.update_scan_job_status(plex_guid, "pending", progress=idx / total_steps)
                 await enqueue(plex_guid)
                 logger.info("Scan paused mid-way through %s, re-queued", title)
+                return
+
+            # Periodically check the scan window; abort if it has ended.
+            if idx % 30 == 0 and not is_force_scan and not config.is_scan_window():
+                await db.update_scan_job_status(plex_guid, "pending", progress=idx / total_steps)
+                await enqueue(plex_guid)
+                logger.info("Scan window ended during scan of '%s', re-queued", title)
+                if not _paused:
+                    pause_scanner()
                 return
 
             jpeg = await extract_frame(file_path, offset_ms)

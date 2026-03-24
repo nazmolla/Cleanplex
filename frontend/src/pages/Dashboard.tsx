@@ -46,6 +46,7 @@ export default function Dashboard() {
   const [scanner, setScanner] = useState<ScannerStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [skipLoadingKey, setSkipLoadingKey] = useState<string | null>(null)
+  const [skipScanLoading, setSkipScanLoading] = useState(false)
 
   const refresh = async () => {
     try {
@@ -82,6 +83,18 @@ export default function Dashboard() {
     }
   }
 
+  const skipCurrentScan = async () => {
+    try {
+      setSkipScanLoading(true)
+      await api.post('/api/scan/skip-current')
+      await refresh()
+    } catch (err: any) {
+      alert(`Skip scan failed: ${err.message || 'Unknown error'}`)
+    } finally {
+      setSkipScanLoading(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold text-gray-100">Dashboard</h1>
@@ -108,7 +121,17 @@ export default function Dashboard() {
                   <span className="animate-pulse">●</span> Scanning
                 </span>
                 <span className="text-gray-300 truncate mx-3 flex-1">{scanner.current_title}</span>
-                <span className="text-gray-400 flex-shrink-0">{Math.round(scanner.current_progress * 100)}%</span>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className="text-gray-400">{Math.round(scanner.current_progress * 100)}%</span>
+                  <button
+                    className="btn-outline text-xs px-2 py-0.5 disabled:opacity-50"
+                    onClick={skipCurrentScan}
+                    disabled={skipScanLoading}
+                    title="Skip this title and move to the next"
+                  >
+                    {skipScanLoading ? 'Skipping...' : 'Skip'}
+                  </button>
+                </div>
               </div>
               <div className="h-1.5 bg-plex-border rounded-full overflow-hidden">
                 <div

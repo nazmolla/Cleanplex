@@ -35,7 +35,7 @@ async def session_watcher_loop(get_config_fn, get_client_fn) -> None:
                 user_filter = await db.get_user_filter(session.user)
                 # Default: filter enabled if no explicit record
                 if user_filter is None or user_filter["enabled"]:
-                    await filter_engine.process(session, client, config.skip_buffer_ms)
+                    await filter_engine.process(session, client, config.skip_buffer_ms, config.poll_interval * 1000)
 
                     # Log skip event if a skip just happened (detect by checking _recently_skipped)
                     sk = filter_engine._recently_skipped.get(session.session_key, 0)

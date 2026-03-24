@@ -15,7 +15,7 @@ _recently_skipped: dict[str, int] = {}
 _seek_backoff_until: dict[str, float] = {}
 
 
-async def process(session: ActiveSession, client: PlexClient, skip_buffer_ms: int) -> None:
+async def process(session: ActiveSession, client: PlexClient, skip_buffer_ms: int, lookahead_ms: int = 5000) -> None:
     """Check the session's position against stored segments and seek if needed."""
     if not session.is_controllable:
         logger.info("Session %s (%s) is not controllable – skipping", session.session_key, session.full_title)
@@ -51,7 +51,9 @@ async def process(session: ActiveSession, client: PlexClient, skip_buffer_ms: in
 
     logger.info("Checking %d segment(s) for '%s' at pos=%dms (client=%s)", len(segments), session.full_title, pos, session.client_identifier)
     for seg in segments:
-        if seg["start_ms"] <= pos <= seg["end_ms"]:
+        # Trigger when approaching the segment (within lookahead_ms before start) or already inside.
+        # This compensates for polling latency so the seek fires before/at the segment start.
+        if seg["start_ms"] - lookahead_ms <= pos <= seg["end_ms"]:
             target = seg["end_ms"] + skip_buffer_ms
             logger.info(
                 "Skipping [%s] for user '%s': %dms → %dms (segment: %d–%d, confidence=%.2f)",

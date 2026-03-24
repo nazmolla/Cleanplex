@@ -130,3 +130,12 @@ async def pause_scanner():
 async def resume_scanner():
     scan_mod.resume_scanner()
     return {"ok": True, "paused": False}
+
+
+@router.post("/skip-current")
+async def skip_current_scan():
+    """Skip (abort) the title currently being scanned; it stays pending for the next window."""
+    if not scan_mod.get_current_scan():
+        raise HTTPException(status_code=404, detail="No scan in progress")
+    scan_mod.skip_current_scan()
+    return {"ok": True}
