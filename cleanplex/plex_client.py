@@ -151,20 +151,24 @@ class PlexClient:
     # ── Seek ──────────────────────────────────────────────────────────────────
 
     async def seek(self, client_identifier: str, offset_ms: int) -> bool:
-        """Send a seekTo command to a Plex client."""
+        """Send a seekTo command to a Plex client via the server proxy."""
         url = (
             f"{self.url}/player/playback/seekTo"
             f"?offset={offset_ms}"
-            f"&clientIdentifier={client_identifier}"
+            f"&type=video"
             f"&commandID={int(time.time())}"
-            f"&X-Plex-Token={self.token}"
         )
+        headers = {
+            "X-Plex-Token": self.token,
+            "X-Plex-Target-Client-Identifier": client_identifier,
+            "X-Plex-Client-Identifier": "cleanplex-server",
+        }
         try:
-            resp = await self._http.get(url)
+            resp = await self._http.get(url, headers=headers)
+            logger.info("Seek response HTTP %d for client %s to %dms (body: %s)",
+                        resp.status_code, client_identifier, offset_ms, resp.text[:200])
             if resp.status_code < 300:
-                logger.info("Seeked client %s to %dms", client_identifier, offset_ms)
                 return True
-            logger.warning("Seek returned HTTP %d", resp.status_code)
             return False
         except Exception as exc:
             logger.warning("Seek failed: %s", exc)
