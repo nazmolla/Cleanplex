@@ -199,6 +199,19 @@ async def get_segments_for_guid(plex_guid: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def get_segments_by_rating_key(rating_key: str) -> list[dict]:
+    """Look up segments by scan_jobs.rating_key — fallback when session GUID differs from stored GUID."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            """SELECT s.* FROM segments s
+               JOIN scan_jobs j ON j.plex_guid = s.plex_guid
+               WHERE j.rating_key = ?
+               ORDER BY s.start_ms""",
+            (rating_key,),
+        )
+        return [dict(r) for r in rows]
+
+
 async def delete_segments_for_guid(plex_guid: str) -> int:
     """Delete all stored segments for a title and return deleted row count."""
     async with get_connection() as conn:

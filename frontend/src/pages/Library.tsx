@@ -59,6 +59,7 @@ export default function Library() {
   const [ratingFilter, setRatingFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<StatusTab>('all')
   const [scannerStatus, setScannerStatus] = useState<ScannerStatus | null>(null)
+  const [selectedGuids, setSelectedGuids] = useState<string[]>([])
 
   useEffect(() => {
     api.get<{ libraries: Library[] }>('/api/libraries').then(d => setLibraries(d.libraries))
@@ -97,6 +98,7 @@ export default function Library() {
     setFilter('')
     setRatingFilter('all')
     setStatusFilter('all')
+    setSelectedGuids([])
     setLoadingTitles(true)
     try {
       const titles = await loadTitles(lib.id)
@@ -145,6 +147,23 @@ export default function Library() {
     }
   }
 
+  const toggleSelected = (guid: string) => {
+    setSelectedGuids(prev => prev.includes(guid) ? prev.filter(g => g !== guid) : [...prev, guid])
+  }
+
+  const scanSelected = async (now: boolean) => {
+    if (!selected || selectedGuids.length === 0) return
+    try {
+      for (const guid of selectedGuids) {
+        await api.post('/api/scan/title', { plex_guid: guid, now, library_id: selected.id })
+      }
+      setSelectedGuids([])
+      setTitles(await loadTitles(selected.id))
+    } catch (err: any) {
+      alert(`Failed to scan selected titles: ${err.message || 'Unknown error'}`)
+    }
+  }
+
   const availableRatings = Array.from(new Set(titles.map(t => t.content_rating).filter(Boolean))).sort()
 
   const counts: Record<string, number> = { all: titles.length }
@@ -156,6 +175,14 @@ export default function Library() {
     if (ratingFilter !== 'all' && t.content_rating !== ratingFilter) return false
     return true
   })
+
+  const filteredGuids = filtered.map(t => t.plex_guid)
+  const allFilteredSelected = filteredGuids.length > 0 && filteredGuids.every(g => selectedGuids.includes(g))
+
+  useEffect(() => {
+    const valid = new Set(titles.map(t => t.plex_guid))
+    setSelectedGuids(prev => prev.filter(g => valid.has(g)))
+  }, [titles])
 
   return (
     <div className="flex gap-6 h-full">
@@ -278,6 +305,40 @@ export default function Library() {
               )}
             </div>
 
+            {/* Multi-select actions */}
+            <div className="mb-3 flex items-center gap-2 flex-wrap">
+              <label className="inline-flex items-center gap-2 text-xs text-gray-300 bg-plex-card border border-plex-border px-2.5 py-1.5 rounded-lg">
+                <input
+                  type="checkbox"
+                  checked={allFilteredSelected}
+                  onChange={() => setSelectedGuids(allFilteredSelected ? [] : filteredGuids)}
+                  className="w-4 h-4 accent-plex-orange"
+                />
+                Select all filtered
+              </label>
+              <button
+                onClick={() => setSelectedGuids([])}
+                disabled={selectedGuids.length === 0}
+                className="px-2.5 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40"
+              >
+                Clear
+              </button>
+              <button
+                onClick={() => scanSelected(false)}
+                disabled={selectedGuids.length === 0}
+                className="px-2.5 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-plex-orange/50 transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
+              >
+                <Moon size={13} /> Scan Selected Tonight ({selectedGuids.length})
+              </button>
+              <button
+                onClick={() => scanSelected(true)}
+                disabled={selectedGuids.length === 0}
+                className="px-2.5 py-1.5 text-xs bg-plex-orange/20 border border-plex-orange/30 rounded-lg text-plex-orange hover:bg-plex-orange/30 transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
+              >
+                <Zap size={13} /> Scan Selected Now ({selectedGuids.length})
+              </button>
+            </div>
+
             {/* Title list */}
             {loadingTitles ? (
               <div className="text-gray-500 text-sm">Loading...</div>
@@ -287,6 +348,12 @@ export default function Library() {
               <div className="grid gap-2">
                 {filtered.map(title => (
                   <div key={title.plex_guid} className="bg-plex-card border border-plex-border rounded-xl p-3 flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={selectedGuids.includes(title.plex_guid)}
+                      onChange={() => toggleSelected(title.plex_guid)}
+                      className="w-4 h-4 accent-plex-orange flex-shrink-0"
+                    />
                     {title.thumb_url ? (
                       <img
                         src={title.thumb_url}

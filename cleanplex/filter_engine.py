@@ -15,6 +15,7 @@ _recently_skipped: dict[str, int] = {}
 async def process(session: ActiveSession, client: PlexClient, skip_buffer_ms: int) -> None:
     """Check the session's position against stored segments and seek if needed."""
     if not session.is_controllable:
+        logger.debug("Session %s (%s) is not controllable – skipping", session.session_key, session.full_title)
         return
 
     pos = session.position_ms
@@ -25,6 +26,22 @@ async def process(session: ActiveSession, client: PlexClient, skip_buffer_ms: in
         return
 
     segments = await db.get_segments_for_guid(session.plex_guid)
+
+    # Plex session GUIDs can differ from library-scan GUIDs (ordering of guids[] varies).
+    # Fall back to rating_key lookup so we still find the right segments.
+    if not segments and session.rating_key:
+        segments = await db.get_segments_by_rating_key(session.rating_key)
+        if segments:
+            logger.debug(
+                "GUID mismatch for '%s': session_guid=%s, found %d segment(s) via rating_key=%s",
+                session.full_title, session.plex_guid, len(segments), session.rating_key,
+            )
+
+    if not segments:
+        logger.debug("No segments found for '%s' (guid=%s, rating_key=%s)", session.full_title, session.plex_guid, session.rating_key)
+        return
+
+    logger.debug("Checking %d segment(s) for '%s' at pos=%dms", len(segments), session.full_title, pos)
     for seg in segments:
         if seg["start_ms"] <= pos <= seg["end_ms"]:
             target = seg["end_ms"] + skip_buffer_ms
