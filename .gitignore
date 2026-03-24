@@ -49,3 +49,10 @@ pause_scanner.py
 stop_scan.py
 test_encoding.py
 test_segments_api.py
+analyze_monamour_labels.py
+analyze_monamour_profiles.py
+apply_balanced_detection_profile.py
+check_scanner_status_api.py
+diagnose_monamour.py
+monitor_until_monamour.py
+run_monamour_test.py

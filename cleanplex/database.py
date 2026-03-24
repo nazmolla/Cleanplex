@@ -199,6 +199,14 @@ async def get_segments_for_guid(plex_guid: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def delete_segments_for_guid(plex_guid: str) -> int:
+    """Delete all stored segments for a title and return deleted row count."""
+    async with get_connection() as conn:
+        cursor = await conn.execute("DELETE FROM segments WHERE plex_guid=?", (plex_guid,))
+        await conn.commit()
+        return cursor.rowcount
+
+
 async def get_all_segments(limit: int = 200, offset: int = 0) -> list[dict]:
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(

@@ -193,6 +193,10 @@ async def scan_video(plex_guid: str, config) -> None:
         return
 
     _current_guid = plex_guid
+    # Fresh scan run: clear prior segments so retries/re-scans do not duplicate entries.
+    deleted = await db.delete_segments_for_guid(plex_guid)
+    if deleted:
+        logger.info("Cleared %d previous segment(s) for %s", deleted, title)
     await db.update_scan_job_status(plex_guid, "scanning", progress=0.0)
     logger.info("Scanning: %s", title)
 
@@ -204,8 +208,15 @@ async def scan_video(plex_guid: str, config) -> None:
         # Smaller interval improves recall for short scenes; configurable in settings.
         step_ms = max(1000, int(getattr(config, "scan_step_ms", 5000)))
         total_steps = max(1, duration_ms // step_ms)
-        flagged: list[int] = []
-        best_frames: dict[int, tuple[bytes, float]] = {}  # offset_ms -> (jpeg, score)
+        gap_ms = max(1000, int(getattr(config, "segment_gap_ms", 12000)))
+        min_hits = max(1, int(getattr(config, "segment_min_hits", 1)))
+        segments_inserted = 0
+
+        cluster_start_ms: int | None = None
+        cluster_prev_ms: int = 0
+        cluster_hit_count = 0
+        cluster_best_jpeg: bytes = b""
+        cluster_best_score = 0.0
 
         threshold = config.confidence_threshold
         enabled_labels = set(getattr(config, "scan_labels", []) or [])
@@ -217,6 +228,40 @@ async def scan_video(plex_guid: str, config) -> None:
                 "ANUS_EXPOSED",
                 "BUTTOCKS_EXPOSED",
             }
+
+        THUMBNAILS_DIR.mkdir(parents=True, exist_ok=True)
+
+        async def _flush_cluster() -> None:
+            nonlocal cluster_start_ms, cluster_prev_ms, cluster_hit_count
+            nonlocal cluster_best_jpeg, cluster_best_score, segments_inserted
+
+            if cluster_start_ms is None:
+                return
+
+            if cluster_hit_count >= min_hits:
+                end_ms = cluster_prev_ms + gap_ms
+                thumb_path = ""
+                if cluster_best_jpeg:
+                    thumb_filename = f"{plex_guid.replace('/', '_')}_{cluster_start_ms}.jpg"
+                    thumb_full = THUMBNAILS_DIR / thumb_filename
+                    thumb_full.write_bytes(cluster_best_jpeg)
+                    thumb_path = str(thumb_full)
+
+                await db.insert_segment(
+                    plex_guid=plex_guid,
+                    title=title,
+                    start_ms=cluster_start_ms,
+                    end_ms=end_ms,
+                    confidence=cluster_best_score,
+                    thumbnail_path=thumb_path,
+                )
+                segments_inserted += 1
+
+            cluster_start_ms = None
+            cluster_prev_ms = 0
+            cluster_hit_count = 0
+            cluster_best_jpeg = b""
+            cluster_best_score = 0.0
 
         for idx, offset_ms in enumerate(range(0, duration_ms, step_ms)):
             if _paused:
@@ -230,48 +275,36 @@ async def scan_video(plex_guid: str, config) -> None:
             if jpeg:
                 is_nude, score = await asyncio.to_thread(_classify_frame, jpeg, threshold, enabled_labels)
                 if is_nude:
-                    flagged.append(offset_ms)
-                    best_frames[offset_ms] = (jpeg, score)
+                    if cluster_start_ms is None:
+                        cluster_start_ms = offset_ms
+                        cluster_prev_ms = offset_ms
+                        cluster_hit_count = 1
+                        cluster_best_jpeg = jpeg
+                        cluster_best_score = score
+                    elif offset_ms - cluster_prev_ms > gap_ms:
+                        # Previous segment is complete; persist it immediately.
+                        await _flush_cluster()
+                        cluster_start_ms = offset_ms
+                        cluster_prev_ms = offset_ms
+                        cluster_hit_count = 1
+                        cluster_best_jpeg = jpeg
+                        cluster_best_score = score
+                    else:
+                        cluster_prev_ms = offset_ms
+                        cluster_hit_count += 1
+                        if score > cluster_best_score:
+                            cluster_best_jpeg = jpeg
+                            cluster_best_score = score
 
             progress = (idx + 1) / total_steps
             if idx % 30 == 0:  # Update DB every 5 minutes of video
                 await db.update_scan_job_status(plex_guid, "scanning", progress=progress)
 
-        # Build segments from flagged frames
-        segments = _cluster_frames(
-            flagged,
-            gap_ms=max(1000, int(getattr(config, "segment_gap_ms", 12000))),
-            min_hits=max(1, int(getattr(config, "segment_min_hits", 1))),
-        )
-        THUMBNAILS_DIR.mkdir(parents=True, exist_ok=True)
-
-        for start_ms, end_ms in segments:
-            # Find the best (highest confidence) frame for the thumbnail
-            candidates = [(ms, best_frames[ms]) for ms in flagged if start_ms <= ms <= end_ms]
-            if candidates:
-                best_ms, (best_jpeg, best_score) = max(candidates, key=lambda x: x[1][1])
-            else:
-                best_score = 0.0
-                best_jpeg = b""
-
-            thumb_path = ""
-            if best_jpeg:
-                thumb_filename = f"{plex_guid.replace('/', '_')}_{start_ms}.jpg"
-                thumb_full = THUMBNAILS_DIR / thumb_filename
-                thumb_full.write_bytes(best_jpeg)
-                thumb_path = str(thumb_full)
-
-            await db.insert_segment(
-                plex_guid=plex_guid,
-                title=title,
-                start_ms=start_ms,
-                end_ms=end_ms,
-                confidence=best_score,
-                thumbnail_path=thumb_path,
-            )
+        # Flush any trailing cluster at the end of scan.
+        await _flush_cluster()
 
         await db.update_scan_job_status(plex_guid, "done", progress=1.0)
-        logger.info("Scan complete: %s — found %d segment(s)", title, len(segments))
+        logger.info("Scan complete: %s — found %d segment(s)", title, segments_inserted)
 
     except Exception as exc:
         logger.error("Scan failed for %s: %s", title, exc)
