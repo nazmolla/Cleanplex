@@ -151,21 +151,19 @@ class PlexClient:
     # ── Seek ──────────────────────────────────────────────────────────────────
 
     async def seek(self, client_identifier: str, offset_ms: int) -> bool:
-        """Send a seekTo command to a Plex client via the server proxy."""
-        url = (
-            f"{self.url}/system/players/{client_identifier}/playback/seekTo"
-            f"?offset={offset_ms}"
-            f"&type=video"
-            f"&commandID={int(time.time())}"
-            f"&X-Plex-Token={self.token}"
-        )
+        """Send a seekTo command proxied through Plex server to the target client."""
         try:
-            resp = await self._http.get(url)
-            logger.info("Seek response HTTP %d for client %s to %dms (body: %s)",
-                        resp.status_code, client_identifier, offset_ms, resp.text[:200])
-            if resp.status_code < 300:
-                return True
-            return False
+            srv = await asyncio.to_thread(self._get_server)
+            key = (
+                f"/player/playback/seekTo"
+                f"?offset={offset_ms}"
+                f"&type=video"
+                f"&commandID={int(time.time())}"
+            )
+            headers = {"X-Plex-Target-Client-Identifier": client_identifier}
+            await asyncio.to_thread(srv.query, key, headers=headers)
+            logger.info("Seeked client %s to %dms via server query proxy", client_identifier, offset_ms)
+            return True
         except Exception as exc:
             logger.warning("Seek failed: %s", exc)
             return False
