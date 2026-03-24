@@ -132,8 +132,8 @@ def _classify_frame(
     jpeg_bytes: bytes,
     threshold: float,
     enabled_labels: set[str],
-) -> tuple[bool, float]:
-    """Return (is_nude, confidence) for a JPEG frame."""
+) -> tuple[bool, float, list[str]]:
+    """Return (is_nude, confidence, detected_labels) for a JPEG frame."""
     try:
         import tempfile, os
         detector = _get_detector()
@@ -149,19 +149,23 @@ def _classify_frame(
             os.unlink(tmp_path)
 
         if not results:
-            return False, 0.0
+            return False, 0.0, []
 
         max_score = 0.0
+        detected = []
         for det in results:
-            if det.get("class") in enabled_labels:
+            label = det.get("class")
+            if label in enabled_labels:
                 score = det.get("score", 0.0)
                 if score > max_score:
                     max_score = score
+                if label not in detected:
+                    detected.append(label)
 
-        return max_score >= threshold, max_score
+        return max_score >= threshold, max_score, detected
     except Exception as exc:
         logger.debug("Classification error: %s", exc)
-        return False, 0.0
+        return False, 0.0, []
 
 
 def _cluster_frames(
@@ -257,6 +261,7 @@ async def scan_video(plex_guid: str, config) -> None:
         cluster_hit_count = 0
         cluster_best_jpeg: bytes = b""
         cluster_best_score = 0.0
+        cluster_detected_labels: list[str] = []
 
         threshold = config.confidence_threshold
         enabled_labels = set(getattr(config, "scan_labels", []) or [])
@@ -273,7 +278,7 @@ async def scan_video(plex_guid: str, config) -> None:
 
         async def _flush_cluster() -> None:
             nonlocal cluster_start_ms, cluster_prev_ms, cluster_hit_count
-            nonlocal cluster_best_jpeg, cluster_best_score, segments_inserted
+            nonlocal cluster_best_jpeg, cluster_best_score, cluster_detected_labels, segments_inserted
 
             if cluster_start_ms is None:
                 return
@@ -287,6 +292,7 @@ async def scan_video(plex_guid: str, config) -> None:
                     thumb_full.write_bytes(cluster_best_jpeg)
                     thumb_path = str(thumb_full)
 
+                labels_str = ",".join(cluster_detected_labels)
                 await db.insert_segment(
                     plex_guid=plex_guid,
                     title=title,
@@ -294,6 +300,7 @@ async def scan_video(plex_guid: str, config) -> None:
                     end_ms=end_ms,
                     confidence=cluster_best_score,
                     thumbnail_path=thumb_path,
+                    labels=labels_str,
                 )
                 segments_inserted += 1
 
@@ -302,6 +309,7 @@ async def scan_video(plex_guid: str, config) -> None:
             cluster_hit_count = 0
             cluster_best_jpeg = b""
             cluster_best_score = 0.0
+            cluster_detected_labels = []
 
         for idx, offset_ms in enumerate(range(0, duration_ms, step_ms)):
             # User requested skip of this title — leave it as pending (not re-scanned).
@@ -329,7 +337,7 @@ async def scan_video(plex_guid: str, config) -> None:
 
             jpeg = await extract_frame(file_path, offset_ms)
             if jpeg:
-                is_nude, score = await asyncio.to_thread(_classify_frame, jpeg, threshold, enabled_labels)
+                is_nude, score, detected_labels = await asyncio.to_thread(_classify_frame, jpeg, threshold, enabled_labels)
                 if is_nude:
                     if cluster_start_ms is None:
                         cluster_start_ms = offset_ms
@@ -337,6 +345,7 @@ async def scan_video(plex_guid: str, config) -> None:
                         cluster_hit_count = 1
                         cluster_best_jpeg = jpeg
                         cluster_best_score = score
+                        cluster_detected_labels = detected_labels.copy()
                     elif offset_ms - cluster_prev_ms > gap_ms:
                         # Previous segment is complete; persist it immediately.
                         await _flush_cluster()
@@ -345,12 +354,19 @@ async def scan_video(plex_guid: str, config) -> None:
                         cluster_hit_count = 1
                         cluster_best_jpeg = jpeg
                         cluster_best_score = score
+                        cluster_detected_labels = detected_labels.copy()
                     else:
                         cluster_prev_ms = offset_ms
                         cluster_hit_count += 1
                         if score > cluster_best_score:
                             cluster_best_jpeg = jpeg
                             cluster_best_score = score
+                            cluster_detected_labels = detected_labels.copy()
+                        else:
+                            # Merge labels from lower-confidence detections
+                            for label in detected_labels:
+                                if label not in cluster_detected_labels:
+                                    cluster_detected_labels.append(label)
 
             progress = (idx + 1) / total_steps
             if idx % 30 == 0:  # Update DB every 5 minutes of video

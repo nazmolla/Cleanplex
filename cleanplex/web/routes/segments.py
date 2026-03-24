@@ -60,6 +60,7 @@ async def sync_library(library_id: str):
                         library_title=item.library_title,
                         content_rating=item.content_rating,
                         media_type=item.media_type,
+                        year=item.year,
                     )
                     added += 1
         
@@ -95,6 +96,7 @@ async def get_titles_in_library(library_id: str):
             "segment_count": seg_counts.get(job["plex_guid"], 0),
             "content_rating": job.get("content_rating", ""),
             "media_type": job.get("media_type", "movie"),
+            "year": job.get("year"),
         })
     return {"titles": result}
 
@@ -115,6 +117,7 @@ async def get_segments_for_title(plex_guid: str):
             "has_thumbnail": bool(seg.get("thumbnail_path")),
             "thumbnail_url": f"/api/thumbnails/{seg['id']}" if seg.get("thumbnail_path") else "",
             "created_at": seg["created_at"],
+            "labels": seg.get("labels", ""),
         })
     return {"segments": result}
 

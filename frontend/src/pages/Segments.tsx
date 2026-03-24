@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
-import { Film, Tv, ChevronRight, Trash2, AlertTriangle, SkipForward, Play } from 'lucide-react'
+import { Film, Tv, ChevronRight, ChevronDown, Trash2, AlertTriangle, SkipForward, Play } from 'lucide-react'
 
 interface Library {
   id: string
@@ -26,6 +26,15 @@ interface Segment {
   has_thumbnail: boolean
   thumbnail_url: string
   created_at: string
+  labels?: string
+}
+
+// For TV shows, parse episode info from title
+interface EpisodeGroup {
+  episodeKey: string // e.g., "S01E01" or full episode title
+  episodeTitle: string
+  segments: Segment[]
+  isExpanded: boolean
 }
 
 function msToTimecode(ms: number): string {
@@ -34,6 +43,36 @@ function msToTimecode(ms: number): string {
   const m = Math.floor((s % 3600) / 60)
   const sec = s % 60
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
+}
+
+function renderLabels(labels?: string): React.ReactNode {
+  if (!labels || !labels.trim()) return null
+  const labelArray = labels.split(',').filter(l => l.trim())
+  if (labelArray.length === 0) return null
+  
+  return (
+    <div className="flex flex-wrap gap-1 mt-2">
+      {labelArray.map(label => {
+        const cleanLabel = label.trim()
+        const shortLabel = cleanLabel
+          .replace('_EXPOSED', '')
+          .replace('FEMALE_', 'F ')
+          .replace('MALE_', 'M ')
+          .replace('GENITALIA', 'Gen.')
+          .replace('BREAST', 'Breast')
+          .replace('_', ' ')
+        return (
+          <span
+            key={cleanLabel}
+            className="text-xs px-2 py-1 rounded bg-red-500/20 text-red-300 border border-red-500/30"
+            title={cleanLabel}
+          >
+            {shortLabel}
+          </span>
+        )
+      })}
+    </div>
+  )
 }
 
 export default function Segments() {
@@ -47,7 +86,46 @@ export default function Segments() {
   const [deleting, setDeleting] = useState<Record<number, boolean>>({})
   const [jumping, setJumping] = useState<Record<number, boolean>>({})
   const [previewSeg, setPreviewSeg] = useState<Segment | null>(null)
+  const [expandedEpisodes, setExpandedEpisodes] = useState<Set<string>>(new Set())
   const previewVideoRef = useRef<HTMLVideoElement | null>(null)
+
+  // Parse episode info from segment title (e.g., "Show – S01E05 – Title")
+  const parseEpisodeKey = (title: string): string => {
+    const match = title.match(/S\d+E\d+/)
+    return match ? match[0] : title
+  }
+
+  // Group segments by episode for TV shows
+  const groupSegmentsByEpisode = (): EpisodeGroup[] => {
+    const groups: Record<string, { episodeKey: string; segments: Segment[] }> = {}
+    
+    segments.forEach(seg => {
+      const episodeKey = parseEpisodeKey(seg.title)
+      if (!groups[episodeKey]) {
+        groups[episodeKey] = { episodeKey, segments: [] }
+      }
+      groups[episodeKey].segments.push(seg)
+    })
+
+    return Object.values(groups)
+      .sort((a, b) => a.episodeKey.localeCompare(b.episodeKey))
+      .map(g => ({
+        episodeKey: g.episodeKey,
+        episodeTitle: g.segments[0]?.title || g.episodeKey,
+        segments: g.segments,
+        isExpanded: expandedEpisodes.has(g.episodeKey)
+      }))
+  }
+
+  const toggleEpisodeExpanded = (episodeKey: string) => {
+    const newSet = new Set(expandedEpisodes)
+    if (newSet.has(episodeKey)) {
+      newSet.delete(episodeKey)
+    } else {
+      newSet.add(episodeKey)
+    }
+    setExpandedEpisodes(newSet)
+  }
 
   useEffect(() => {
     api.get<{ libraries: Library[] }>('/api/libraries').then(d => setLibraries(d.libraries))
@@ -69,6 +147,7 @@ export default function Segments() {
 
   const selectTitle = async (title: Title) => {
     setSelectedTitle(title)
+    setExpandedEpisodes(new Set())
     setLoadingSegs(true)
     try {
       const d = await api.get<{ segments: Segment[] }>(`/api/titles/${encodeURIComponent(title.plex_guid)}/segments`)
@@ -194,7 +273,101 @@ export default function Segments() {
               <div className="bg-plex-card border border-plex-border rounded-xl p-8 text-center text-gray-500 text-sm">
                 No segments found for this title
               </div>
+            ) : selectedLib?.type === 'show' ? (
+              // TV show view — grouped by episode
+              <div className="space-y-2">
+                {groupSegmentsByEpisode().map(episode => (
+                  <div key={episode.episodeKey}>
+                    {/* Episode header */}
+                    <button
+                      onClick={() => toggleEpisodeExpanded(episode.episodeKey)}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-plex-card border border-plex-border text-left hover:border-plex-orange/50 transition-colors"
+                    >
+                      {episode.isExpanded ? (
+                        <ChevronDown size={16} className="text-plex-orange flex-shrink-0" />
+                      ) : (
+                        <ChevronRight size={16} className="text-gray-600 flex-shrink-0" />
+                      )}
+                      <span className="font-mono text-sm font-semibold text-plex-orange">{episode.episodeKey}</span>
+                      <span className="text-sm text-gray-400 truncate">— {episode.episodeTitle.split(' – ').slice(1).join(' – ')}</span>
+                      <span className="ml-auto text-xs text-gray-500 flex-shrink-0">{episode.segments.length} segment{episode.segments.length !== 1 ? 's' : ''}</span>
+                    </button>
+
+                    {/* Episode segments */}
+                    {episode.isExpanded && (
+                      <div className="mt-2 ml-4 space-y-2 pb-2">
+                        {episode.segments.map(seg => (
+                          <div key={seg.id} className="bg-plex-card border border-plex-border rounded-xl overflow-hidden flex gap-0">
+                            {/* Thumbnail */}
+                            <div className="w-40 flex-shrink-0 bg-black relative">
+                              {seg.has_thumbnail ? (
+                                <img
+                                  src={seg.thumbnail_url}
+                                  alt="Flagged frame"
+                                  className="w-full h-full object-cover"
+                                  style={{ minHeight: '90px' }}
+                                />
+                              ) : (
+                                <div className="w-full h-24 flex items-center justify-center text-gray-700">
+                                  <AlertTriangle size={20} />
+                                </div>
+                              )}
+                              <div className="absolute bottom-1 left-1 bg-black/70 text-xs text-gray-300 px-1.5 py-0.5 rounded">
+                                {Math.round(seg.confidence * 100)}%
+                              </div>
+                            </div>
+
+                            {/* Info */}
+                            <div className="flex-1 p-4 flex items-center justify-between gap-4">
+                              <div>
+                                <div className="flex items-center gap-3 mb-1">
+                                  <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.start_ms)}</span>
+                                  <span className="text-gray-600">→</span>
+                                  <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.end_ms)}</span>
+                                  <span className="text-xs text-gray-600">
+                                    ({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)
+                                  </span>
+                                </div>
+                                <p className="text-xs text-gray-500">
+                                  Detected {new Date(seg.created_at).toLocaleDateString()}
+                                </p>
+                                {renderLabels(seg.labels)}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => openPreview(seg)}
+                                  title="Preview this segment in-app"
+                                  className="p-2 text-gray-600 hover:text-green-400 hover:bg-green-400/10 rounded-lg transition-colors flex-shrink-0"
+                                >
+                                  <Play size={16} />
+                                </button>
+                                <button
+                                  onClick={() => jumpToSegment(seg.id)}
+                                  disabled={jumping[seg.id]}
+                                  title="Jump active Plex playback for this title to this segment"
+                                  className="p-2 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors disabled:opacity-40 flex-shrink-0"
+                                >
+                                  <SkipForward size={16} />
+                                </button>
+                                <button
+                                  onClick={() => deleteSegment(seg.id)}
+                                  disabled={deleting[seg.id]}
+                                  title="Remove this segment (false positive)"
+                                  className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-40 flex-shrink-0"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
             ) : (
+              // Movie view — flat list
               <div className="grid gap-3">
                 {segments.map(seg => (
                   <div key={seg.id} className="bg-plex-card border border-plex-border rounded-xl overflow-hidden flex gap-0">
@@ -231,6 +404,7 @@ export default function Segments() {
                         <p className="text-xs text-gray-500">
                           Detected {new Date(seg.created_at).toLocaleDateString()}
                         </p>
+                        {renderLabels(seg.labels)}
                       </div>
                       <div className="flex items-center gap-2">
                         <button

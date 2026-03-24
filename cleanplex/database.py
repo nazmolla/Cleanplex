@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS segments (
     start_ms      INTEGER NOT NULL,
     end_ms        INTEGER NOT NULL,
     confidence    REAL    DEFAULT 0,
+    labels        TEXT    DEFAULT '',
     thumbnail_path TEXT,
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -65,6 +66,7 @@ CREATE TABLE IF NOT EXISTS scan_jobs (
     library_title TEXT,
     media_type  TEXT DEFAULT 'movie',
     content_rating TEXT DEFAULT '',
+    year        INTEGER,
     status      TEXT DEFAULT 'pending',
     progress    REAL DEFAULT 0,
     force_scan  INTEGER DEFAULT 0,
@@ -119,6 +121,18 @@ async def init_db() -> None:
         # Migrate: add force_scan column if missing
         try:
             await conn.execute("ALTER TABLE scan_jobs ADD COLUMN force_scan INTEGER DEFAULT 0")
+            await conn.commit()
+        except Exception:
+            pass  # column already exists
+        # Migrate: add year column if missing
+        try:
+            await conn.execute("ALTER TABLE scan_jobs ADD COLUMN year INTEGER")
+            await conn.commit()
+        except Exception:
+            pass  # column already exists
+        # Migrate: add labels column if missing
+        try:
+            await conn.execute("ALTER TABLE segments ADD COLUMN labels TEXT DEFAULT ''")
             await conn.commit()
         except Exception:
             pass  # column already exists
@@ -237,12 +251,13 @@ async def insert_segment(
     end_ms: int,
     confidence: float = 0.0,
     thumbnail_path: str | None = None,
+    labels: str = "",
 ) -> int:
     async with get_connection() as conn:
         cursor = await conn.execute(
-            "INSERT INTO segments(plex_guid, title, start_ms, end_ms, confidence, thumbnail_path) "
-            "VALUES(?,?,?,?,?,?)",
-            (plex_guid, title, start_ms, end_ms, confidence, thumbnail_path),
+            "INSERT INTO segments(plex_guid, title, start_ms, end_ms, confidence, thumbnail_path, labels) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (plex_guid, title, start_ms, end_ms, confidence, thumbnail_path, labels),
         )
         await conn.commit()
         return cursor.lastrowid
@@ -281,12 +296,13 @@ async def upsert_scan_job(
     library_title: str,
     content_rating: str = "",
     media_type: str = "movie",
+    year: int | None = None,
 ) -> None:
     async with get_connection() as conn:
         await conn.execute(
-            "INSERT OR IGNORE INTO scan_jobs(plex_guid, title, file_path, rating_key, library_id, library_title, content_rating, media_type) "
-            "VALUES(?,?,?,?,?,?,?,?)",
-            (plex_guid, title, file_path, rating_key, library_id, library_title, content_rating, media_type),
+            "INSERT OR IGNORE INTO scan_jobs(plex_guid, title, file_path, rating_key, library_id, library_title, content_rating, media_type, year) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (plex_guid, title, file_path, rating_key, library_id, library_title, content_rating, media_type, year),
         )
         await conn.commit()
 

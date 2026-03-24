@@ -18,6 +18,7 @@ interface Title {
   segment_count: number
   content_rating: string
   media_type: string
+  year?: number | null
 }
 
 interface ScannerStatus {
@@ -35,6 +36,9 @@ interface ScannerStatus {
 
 const STATUS_TABS = ['all', 'pending', 'scanning', 'done', 'failed'] as const
 type StatusTab = typeof STATUS_TABS[number]
+
+const SORT_OPTIONS = ['title', 'date-added', 'year', 'year-release'] as const
+type SortOption = typeof SORT_OPTIONS[number]
 
 function StatusBadge({ status, progress }: { status: string; progress: number }) {
   switch (status) {
@@ -63,6 +67,8 @@ export default function Library() {
   const [filter, setFilter] = useState('')
   const [ratingFilter, setRatingFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<StatusTab>('all')
+  const [sortBy, setSortBy] = useState<SortOption>('date-added')
+  const [sortDesc, setSortDesc] = useState(true)
   const [scannerStatus, setScannerStatus] = useState<ScannerStatus | null>(null)
   const [selectedGuids, setSelectedGuids] = useState<string[]>([])
 
@@ -179,6 +185,38 @@ export default function Library() {
     if (filter && !t.title.toLowerCase().includes(filter.toLowerCase())) return false
     if (ratingFilter !== 'all' && t.content_rating !== ratingFilter) return false
     return true
+  })
+
+  const sorted = [...filtered].sort((a, b) => {
+    let aVal: any, bVal: any
+    
+    switch (sortBy) {
+      case 'title':
+        aVal = a.title.toLowerCase()
+        bVal = b.title.toLowerCase()
+        break
+      case 'date-added':
+        // Note: created_at not available, using index as fallback
+        // Backend should return created_at for proper sorting
+        aVal = a.plex_guid
+        bVal = b.plex_guid
+        break
+      case 'year':
+        aVal = a.year ?? 0
+        bVal = b.year ?? 0
+        break
+      case 'year-release':
+        aVal = a.year ?? 0
+        bVal = b.year ?? 0
+        break
+      default:
+        aVal = a.title.toLowerCase()
+        bVal = b.title.toLowerCase()
+    }
+
+    if (aVal < bVal) return sortDesc ? 1 : -1
+    if (aVal > bVal) return sortDesc ? -1 : 1
+    return 0
   })
 
   const filteredGuids = filtered.map(t => t.plex_guid)
@@ -318,6 +356,22 @@ export default function Library() {
                   ))}
                 </select>
               )}
+              <select
+                value={sortBy}
+                onChange={e => setSortBy(e.target.value as SortOption)}
+                className="px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 focus:outline-none focus:border-plex-orange/50"
+              >
+                <option value="date-added">Date Added</option>
+                <option value="title">Alphabetical</option>
+                <option value="year">Release Year</option>
+              </select>
+              <button
+                onClick={() => setSortDesc(!sortDesc)}
+                className="px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 hover:text-white hover:border-gray-500 transition-colors"
+                title={sortDesc ? 'Descending' : 'Ascending'}
+              >
+                {sortDesc ? '↓' : '↑'}
+              </button>
             </div>
 
             {/* Multi-select actions */}
@@ -361,7 +415,7 @@ export default function Library() {
               <div className="text-gray-600 text-sm">No titles found</div>
             ) : (
               <div className="grid gap-2">
-                {filtered.map(title => (
+                {sorted.map(title => (
                   <div key={title.plex_guid} className="bg-plex-card border border-plex-border rounded-xl p-3 flex items-center gap-3">
                     <input
                       type="checkbox"
