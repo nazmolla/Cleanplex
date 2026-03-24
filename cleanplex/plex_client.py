@@ -230,6 +230,7 @@ class PlexClient:
                 guid = item.guid or ""
 
             title = item.title
+            # For episodes, include full show/season/episode context
             if hasattr(item, "grandparentTitle") and item.grandparentTitle:
                 title = f"{item.grandparentTitle} – {item.parentTitle} – {item.title}"
 

@@ -57,6 +57,7 @@ async def scan_title(body: ScanTitleRequest):
                         library_id=item.library_id,
                         library_title=item.library_title,
                         content_rating=item.content_rating,
+                        media_type=item.media_type,
                     )
                     job = await db.get_scan_job_by_guid(plex_guid)
                     logger.info(f"Scan job created for {plex_guid}")
@@ -74,8 +75,9 @@ async def scan_title(body: ScanTitleRequest):
     await db.reset_scan_job(plex_guid)
     if body.now:
         logger.info(f"Force-scanning {plex_guid} immediately")
-        scan_mod.force_scan_now()
-    await scan_mod.enqueue(plex_guid)
+        await scan_mod.force_scan_job(plex_guid)
+    else:
+        await scan_mod.enqueue(plex_guid)
     logger.info(f"Title {plex_guid} queued. Queue size: {scan_mod.get_queue_size()}")
     return {"ok": True, "queued": plex_guid}
 
@@ -99,6 +101,7 @@ async def scan_library(library_id: str, body: ScanLibraryRequest):
                         library_id=item.library_id,
                         library_title=item.library_title,
                         content_rating=item.content_rating,
+                        media_type=item.media_type,
                     )
             jobs = await db.get_scan_jobs_by_library(library_id)
         except RuntimeError:
@@ -108,11 +111,11 @@ async def scan_library(library_id: str, body: ScanLibraryRequest):
     for job in jobs:
         if job["status"] in ("pending", "failed"):
             await db.reset_scan_job(job["plex_guid"])
-            await scan_mod.enqueue(job["plex_guid"])
+            if body.now:
+                await scan_mod.force_scan_job(job["plex_guid"])
+            else:
+                await scan_mod.enqueue(job["plex_guid"])
             queued += 1
-
-    if body.now:
-        scan_mod.force_scan_now()
 
     return {"ok": True, "queued": queued}
 

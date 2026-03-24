@@ -63,9 +63,11 @@ CREATE TABLE IF NOT EXISTS scan_jobs (
     rating_key  TEXT,
     library_id  TEXT,
     library_title TEXT,
+    media_type  TEXT DEFAULT 'movie',
     content_rating TEXT DEFAULT '',
     status      TEXT DEFAULT 'pending',
     progress    REAL DEFAULT 0,
+    force_scan  INTEGER DEFAULT 0,
     started_at  TIMESTAMP,
     finished_at TIMESTAMP,
     error_msg   TEXT,
@@ -84,11 +86,15 @@ DEFAULT_SETTINGS = {
     "poll_interval": "5",
     "confidence_threshold": "0.6",
     "skip_buffer_ms": "3000",
+    "scan_step_ms": "5000",
+    "segment_gap_ms": "12000",
+    "segment_min_hits": "1",
     "scan_window_start": "23:00",
     "scan_window_end": "06:00",
     "log_level": "INFO",
     "excluded_library_ids": "[]",
     "scan_ratings": "[]",  # empty = scan all ratings
+    "scan_labels": "[\"FEMALE_BREAST_EXPOSED\",\"FEMALE_GENITALIA_EXPOSED\",\"MALE_GENITALIA_EXPOSED\",\"ANUS_EXPOSED\",\"BUTTOCKS_EXPOSED\"]",
 }
 
 
@@ -100,6 +106,18 @@ async def init_db() -> None:
         # Migrate: add content_rating column if missing
         try:
             await conn.execute("ALTER TABLE scan_jobs ADD COLUMN content_rating TEXT DEFAULT ''")
+            await conn.commit()
+        except Exception:
+            pass  # column already exists
+        # Migrate: add media_type column if missing
+        try:
+            await conn.execute("ALTER TABLE scan_jobs ADD COLUMN media_type TEXT DEFAULT 'movie'")
+            await conn.commit()
+        except Exception:
+            pass  # column already exists
+        # Migrate: add force_scan column if missing
+        try:
+            await conn.execute("ALTER TABLE scan_jobs ADD COLUMN force_scan INTEGER DEFAULT 0")
             await conn.commit()
         except Exception:
             pass  # column already exists
@@ -240,12 +258,13 @@ async def upsert_scan_job(
     library_id: str,
     library_title: str,
     content_rating: str = "",
+    media_type: str = "movie",
 ) -> None:
     async with get_connection() as conn:
         await conn.execute(
-            "INSERT OR IGNORE INTO scan_jobs(plex_guid, title, file_path, rating_key, library_id, library_title, content_rating) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (plex_guid, title, file_path, rating_key, library_id, library_title, content_rating),
+            "INSERT OR IGNORE INTO scan_jobs(plex_guid, title, file_path, rating_key, library_id, library_title, content_rating, media_type) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (plex_guid, title, file_path, rating_key, library_id, library_title, content_rating, media_type),
         )
         await conn.commit()
 
@@ -297,6 +316,16 @@ async def reset_scan_job(plex_guid: str) -> None:
         await conn.execute(
             "UPDATE scan_jobs SET status='pending', progress=0, started_at=NULL, finished_at=NULL, error_msg=NULL WHERE plex_guid=?",
             (plex_guid,),
+        )
+        await conn.commit()
+
+
+async def set_force_scan(plex_guid: str, force: bool) -> None:
+    """Set or unset the force_scan flag for a specific job."""
+    async with get_connection() as conn:
+        await conn.execute(
+            "UPDATE scan_jobs SET force_scan=? WHERE plex_guid=?",
+            (1 if force else 0, plex_guid),
         )
         await conn.commit()
 

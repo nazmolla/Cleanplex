@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
-import { Film, Tv, ChevronRight, Trash2, AlertTriangle } from 'lucide-react'
+import { Film, Tv, ChevronRight, Trash2, AlertTriangle, SkipForward, Play } from 'lucide-react'
 
 interface Library {
   id: string
@@ -45,6 +45,9 @@ export default function Segments() {
   const [loadingTitles, setLoadingTitles] = useState(false)
   const [loadingSegs, setLoadingSegs] = useState(false)
   const [deleting, setDeleting] = useState<Record<number, boolean>>({})
+  const [jumping, setJumping] = useState<Record<number, boolean>>({})
+  const [previewSeg, setPreviewSeg] = useState<Segment | null>(null)
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null)
 
   useEffect(() => {
     api.get<{ libraries: Library[] }>('/api/libraries').then(d => setLibraries(d.libraries))
@@ -90,6 +93,28 @@ export default function Segments() {
     } finally {
       setDeleting(d => ({ ...d, [id]: false }))
     }
+  }
+
+  const jumpToSegment = async (id: number) => {
+    setJumping(j => ({ ...j, [id]: true }))
+    try {
+      const d = await api.post<{ ok: boolean; client: string; user: string; seek_to_ms: number }>(`/api/segments/${id}/jump`)
+      if (d.ok) {
+        alert(`Jumped playback to segment on ${d.client} (${d.user}) at ${msToTimecode(d.seek_to_ms)}.`)
+      }
+    } catch (err: any) {
+      alert(err?.message || 'Could not jump to segment. Start this title in Plex first.')
+    } finally {
+      setJumping(j => ({ ...j, [id]: false }))
+    }
+  }
+
+  const openPreview = (seg: Segment) => {
+    setPreviewSeg(seg)
+  }
+
+  const closePreview = () => {
+    setPreviewSeg(null)
   }
 
   return (
@@ -207,20 +232,81 @@ export default function Segments() {
                           Detected {new Date(seg.created_at).toLocaleDateString()}
                         </p>
                       </div>
-                      <button
-                        onClick={() => deleteSegment(seg.id)}
-                        disabled={deleting[seg.id]}
-                        title="Remove this segment (false positive)"
-                        className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-40 flex-shrink-0"
-                      >
-                        <Trash2 size={16} />
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => openPreview(seg)}
+                          title="Preview this segment in-app"
+                          className="p-2 text-gray-600 hover:text-green-400 hover:bg-green-400/10 rounded-lg transition-colors flex-shrink-0"
+                        >
+                          <Play size={16} />
+                        </button>
+                        <button
+                          onClick={() => jumpToSegment(seg.id)}
+                          disabled={jumping[seg.id]}
+                          title="Jump active Plex playback for this title to this segment"
+                          className="p-2 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors disabled:opacity-40 flex-shrink-0"
+                        >
+                          <SkipForward size={16} />
+                        </button>
+                        <button
+                          onClick={() => deleteSegment(seg.id)}
+                          disabled={deleting[seg.id]}
+                          title="Remove this segment (false positive)"
+                          className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-40 flex-shrink-0"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
               </div>
             )}
           </>
+        )}
+
+        {previewSeg && (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="w-full max-w-4xl bg-plex-card border border-plex-border rounded-xl overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-plex-border">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-100">Segment Preview</h3>
+                  <p className="text-xs text-gray-500">
+                    {msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)}
+                  </p>
+                </div>
+                <button
+                  onClick={closePreview}
+                  className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="p-4">
+                <video
+                  ref={previewVideoRef}
+                  controls
+                  autoPlay
+                  className="w-full rounded-lg bg-black max-h-[70vh]"
+                  src={`/api/segments/${previewSeg.id}/stream`}
+                  onLoadedMetadata={e => {
+                    const el = e.currentTarget
+                    el.currentTime = previewSeg.start_ms / 1000
+                  }}
+                  onTimeUpdate={e => {
+                    const el = e.currentTarget
+                    if (el.currentTime >= previewSeg.end_ms / 1000) {
+                      el.pause()
+                    }
+                  }}
+                />
+                <p className="text-xs text-gray-500 mt-2">
+                  Playback uses your browser codecs. If this file does not play, use the jump button to seek in Plex instead.
+                </p>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>

@@ -17,6 +17,7 @@ interface Title {
   thumb_url: string
   segment_count: number
   content_rating: string
+  media_type: string
 }
 
 interface ScannerStatus {
@@ -100,14 +101,14 @@ export default function Library() {
     try {
       const titles = await loadTitles(lib.id)
       setTitles(titles)
-      if (titles.length === 0) {
-        try {
-          await api.post(`/api/libraries/${lib.id}/sync`)
-          setTitles(await loadTitles(lib.id))
-        } catch (err: any) {
-          console.warn('Library sync failed:', err.message)
-        }
-      }
+      // Always sync in background to ensure we're up-to-date
+      api.post(`/api/libraries/${lib.id}/sync`)
+        .then(async () => {
+          // Reload titles after sync completes
+          const updated = await loadTitles(lib.id)
+          setTitles(updated)
+        })
+        .catch(err => console.warn('Library sync failed:', err.message))
     } finally {
       setLoadingTitles(false)
     }
@@ -300,6 +301,9 @@ export default function Library() {
                       <p className="text-sm font-medium text-gray-100 truncate">{title.title}</p>
                       <div className="flex items-center gap-2 mt-1">
                         <StatusBadge status={title.status} progress={title.progress} />
+                        {title.media_type === 'episode' && (
+                          <span className="text-xs bg-blue-500/15 text-blue-400 px-1.5 py-0.5 rounded font-medium">TV</span>
+                        )}
                         {title.content_rating && (
                           <span className="text-xs text-gray-600 bg-white/5 px-1.5 py-0.5 rounded">{title.content_rating}</span>
                         )}

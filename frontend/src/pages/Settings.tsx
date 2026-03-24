@@ -8,11 +8,15 @@ interface Settings {
   poll_interval: string
   confidence_threshold: string
   skip_buffer_ms: string
+  scan_step_ms: string
+  segment_gap_ms: string
+  segment_min_hits: string
   scan_window_start: string
   scan_window_end: string
   log_level: string
   excluded_library_ids: string
   scan_ratings: string
+  scan_labels: string
 }
 
 interface Library {
@@ -27,11 +31,15 @@ const DEFAULT: Settings = {
   poll_interval: '5',
   confidence_threshold: '0.6',
   skip_buffer_ms: '3000',
+  scan_step_ms: '5000',
+  segment_gap_ms: '12000',
+  segment_min_hits: '1',
   scan_window_start: '23:00',
   scan_window_end: '06:00',
   log_level: 'INFO',
   excluded_library_ids: '[]',
   scan_ratings: '[]',
+  scan_labels: '["FEMALE_BREAST_EXPOSED","FEMALE_GENITALIA_EXPOSED","MALE_GENITALIA_EXPOSED","ANUS_EXPOSED","BUTTOCKS_EXPOSED"]',
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -53,14 +61,17 @@ export default function SettingsPage() {
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
   const [showToken, setShowToken] = useState(false)
   const [libraries, setLibraries] = useState<Library[]>([])
+  const [detectorLabels, setDetectorLabels] = useState<string[]>([])
 
   useEffect(() => {
     Promise.all([
       api.get<Settings>('/api/settings'),
       api.get<{ libraries: Library[] }>('/api/libraries').catch(() => ({ libraries: [] })),
-    ]).then(([settings, libs]) => {
+      api.get<{ labels: string[] }>('/api/settings/detector-labels').catch(() => ({ labels: [] })),
+    ]).then(([settings, libs, labels]) => {
       setForm({ ...DEFAULT, ...settings })
       setLibraries(libs.libraries)
+      setDetectorLabels(labels.labels)
       setLoading(false)
     })
   }, [])
@@ -174,6 +185,15 @@ export default function SettingsPage() {
           <Field label="Detection Confidence Threshold" hint="Frames scoring above this value (0–1) are flagged as nudity. Lower = more sensitive.">
             <input type="number" min="0.1" max="1" step="0.05" value={form.confidence_threshold} onChange={set('confidence_threshold')} className={inputCls} />
           </Field>
+          <Field label="Scan Frame Interval (ms)" hint="How often frames are sampled during scanning. Lower catches more scenes but takes longer.">
+            <input type="number" min="1000" max="20000" step="500" value={form.scan_step_ms} onChange={set('scan_step_ms')} className={inputCls} />
+          </Field>
+          <Field label="Segment Merge Gap (ms)" hint="Flagged frames closer than this are merged into one segment.">
+            <input type="number" min="1000" max="30000" step="500" value={form.segment_gap_ms} onChange={set('segment_gap_ms')} className={inputCls} />
+          </Field>
+          <Field label="Minimum Hits Per Segment" hint="Require at least this many flagged frames in a cluster to keep a segment. Increase to reduce false positives.">
+            <input type="number" min="1" max="6" step="1" value={form.segment_min_hits} onChange={set('segment_min_hits')} className={inputCls} />
+          </Field>
           <Field label="Skip Buffer (ms)" hint="Extra milliseconds to seek past the end of a detected segment">
             <input type="number" min="0" step="500" value={form.skip_buffer_ms} onChange={set('skip_buffer_ms')} className={inputCls} />
           </Field>
@@ -210,6 +230,28 @@ export default function SettingsPage() {
               <label key={rating} className="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 accent-plex-orange" />
                 <span className={`text-sm ${checked ? 'text-gray-100' : 'text-gray-500'}`}>{rating}</span>
+              </label>
+            )
+          })}
+        </div>
+      </section>
+
+      {/* Detector labels */}
+      <section>
+        <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Detector Labels</h2>
+        <p className="text-xs text-gray-500 mb-3">Choose which NudeNet labels should count toward detection. Exposed-only labels are usually less noisy.</p>
+        <div className="grid grid-cols-2 gap-2">
+          {detectorLabels.map(label => {
+            const selected = (() => { try { return JSON.parse(form.scan_labels) } catch { return [] } })()
+            const checked = selected.includes(label)
+            const toggle = () => {
+              const next = checked ? selected.filter((r: string) => r !== label) : [...selected, label]
+              setForm(f => ({ ...f, scan_labels: JSON.stringify(next) }))
+            }
+            return (
+              <label key={label} className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 accent-plex-orange" />
+                <span className={`text-sm ${checked ? 'text-gray-100' : 'text-gray-500'}`}>{label}</span>
               </label>
             )
           })}
