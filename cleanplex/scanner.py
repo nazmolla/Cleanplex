@@ -34,6 +34,7 @@ _queued_force: set[str] = set()
 _queue_wakeup_event: asyncio.Event = asyncio.Event()
 _skip_requested_guids: set[str] = set()
 _worker_pool_size: int = 1
+_restart_requested: bool = False
 
 
 def get_queue_size() -> int:
@@ -42,6 +43,13 @@ def get_queue_size() -> int:
 
 def get_worker_pool_size() -> int:
     return _worker_pool_size
+
+
+async def request_scanner_restart() -> None:
+    """Signal scanner to restart worker pool with updated config."""
+    global _restart_requested
+    _restart_requested = True
+    logger.info("Scanner restart requested")
 
 
 def get_current_scan() -> str | None:
@@ -436,15 +444,53 @@ async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
 
 async def scanner_loop(get_config_fn) -> None:
     """Main scanner supervisor — runs multiple scanner workers concurrently."""
-    global _worker_pool_size
+    global _worker_pool_size, _restart_requested
     await enqueue_pending()
 
-    config = await get_config_fn()
-    worker_count = max(1, int(getattr(config, "scan_workers", 2)))
-    _worker_pool_size = worker_count
-    logger.info("Starting scanner pool with %d worker(s)", worker_count)
+    while True:
+        config = await get_config_fn()
+        worker_count = max(1, int(getattr(config, "scan_workers", 2)))
+        _worker_pool_size = worker_count
+        _restart_requested = False
+        logger.info("Starting scanner pool with %d worker(s)", worker_count)
 
-    await asyncio.gather(*[
-        _scanner_worker_loop(i + 1, get_config_fn)
-        for i in range(worker_count)
-    ])
+        # Create worker tasks
+        worker_tasks = [
+            asyncio.create_task(_scanner_worker_loop(i + 1, get_config_fn))
+            for i in range(worker_count)
+        ]
+
+        try:
+            # Run workers until restart or unexpected completion
+            while not _restart_requested:
+                done, pending = await asyncio.wait(
+                    worker_tasks,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if done:
+                    # A worker unexpectedly completed; restart the pool
+                    logger.warning("Worker task completed unexpectedly, restarting pool")
+                    break
+
+            # Restart requested or worker failed; cancel all tasks
+            logger.info("Shutting down worker pool for restart")
+            for task in worker_tasks:
+                if not task.done():
+                    task.cancel()
+            # Wait for all tasks to complete/cancel
+            try:
+                await asyncio.gather(*worker_tasks)
+            except asyncio.CancelledError:
+                pass
+            # Loop continues, which will pick up config changes and restart
+
+        except Exception as exc:
+            logger.error("Scanner pool error: %s", exc)
+            for task in worker_tasks:
+                if not task.done():
+                    task.cancel()
+            try:
+                await asyncio.gather(*worker_tasks)
+            except asyncio.CancelledError:
+                pass
+            await asyncio.sleep(5)  # Backoff before retry

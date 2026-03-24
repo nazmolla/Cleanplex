@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from ...logger import get_logger
 from ... import database as db
 import cleanplex.plex_client as plex_mod
+from ... import scanner as scan_mod
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -56,7 +57,17 @@ async def get_settings():
 @router.put("")
 async def update_settings(payload: SettingsPayload):
     data = {k: v for k, v in payload.model_dump().items() if v is not None}
+    
+    # Check if scan_workers is being changed
+    scan_workers_changed = False
+    if "scan_workers" in data:
+        current_workers = await db.get_setting("scan_workers", "2")
+        if data["scan_workers"] != current_workers:
+            scan_workers_changed = True
+            logger.info("Scan workers changing from %s to %s", current_workers, data["scan_workers"])
+    
     await db.update_settings(data)
+    
     # Reinitialise client if connection details changed
     if "plex_url" in data or "plex_token" in data:
         settings = await db.get_all_settings()
@@ -64,6 +75,11 @@ async def update_settings(payload: SettingsPayload):
         token = settings.get("plex_token", "")
         if url and token:
             plex_mod.init_client(url, token)
+    
+    # Restart scanner pool if worker count changed
+    if scan_workers_changed:
+        await scan_mod.request_scanner_restart()
+    
     return {"ok": True}
 
 
