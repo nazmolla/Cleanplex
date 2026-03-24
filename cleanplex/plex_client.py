@@ -30,7 +30,9 @@ class ActiveSession:
     client_identifier: str
     client_title: str
     is_controllable: bool
-    thumb: str            # relative Plex thumb URL
+    thumb: str = ""       # relative Plex thumb URL
+    client_address: str = ""
+    client_port: int = 32500
     library_section_id: str = ""
 
 
@@ -110,6 +112,12 @@ class PlexClient:
                 client_id = player.machineIdentifier if player else ""
                 client_title = player.title if player else "Unknown"
                 controllable = bool(player and player.state is not None) if player else False
+                client_address = getattr(player, "address", "") if player else ""
+                client_port_raw = getattr(player, "port", 32500) if player else 32500
+                try:
+                    client_port = int(client_port_raw or 32500)
+                except Exception:
+                    client_port = 32500
 
                 # Resolve file path
                 file_path = ""
@@ -139,6 +147,8 @@ class PlexClient:
                         client_identifier=client_id,
                         client_title=client_title,
                         is_controllable=controllable,
+                        client_address=client_address,
+                        client_port=client_port,
                         thumb=s.thumb or "",
                         library_section_id=section_id,
                     )
@@ -150,8 +160,8 @@ class PlexClient:
 
     # ── Seek ──────────────────────────────────────────────────────────────────
 
-    async def seek(self, client_identifier: str, offset_ms: int) -> bool:
-        """Send a seekTo command proxied through Plex server to the target client."""
+    async def seek(self, client_identifier: str, offset_ms: int, client_address: str = "", client_port: int = 32500) -> bool:
+        """Seek via server proxy first, then try direct client control as fallback."""
         try:
             srv = await asyncio.to_thread(self._get_server)
             key = (
@@ -165,8 +175,53 @@ class PlexClient:
             logger.info("Seeked client %s to %dms via server query proxy", client_identifier, offset_ms)
             return True
         except Exception as exc:
-            logger.warning("Seek failed: %s", exc)
+            logger.warning("Proxy seek failed for %s: %s", client_identifier, exc)
+
+        if not client_address:
+            logger.warning("No client_address available for direct seek fallback (client=%s)", client_identifier)
             return False
+
+        ports = [client_port, 32500, 3005]
+        seen: set[int] = set()
+        for port in ports:
+            if port in seen:
+                continue
+            seen.add(port)
+            url = (
+                f"http://{client_address}:{port}/player/playback/seekTo"
+                f"?offset={offset_ms}"
+                f"&type=video"
+                f"&commandID={int(time.time())}"
+                f"&X-Plex-Token={self.token}"
+            )
+            try:
+                resp = await self._http.get(url)
+                if resp.status_code < 300:
+                    logger.info(
+                        "Seeked client %s directly at %s:%d to %dms",
+                        client_identifier,
+                        client_address,
+                        port,
+                        offset_ms,
+                    )
+                    return True
+                logger.warning(
+                    "Direct seek HTTP %d for client %s at %s:%d",
+                    resp.status_code,
+                    client_identifier,
+                    client_address,
+                    port,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Direct seek failed for client %s at %s:%d: %s",
+                    client_identifier,
+                    client_address,
+                    port,
+                    exc,
+                )
+
+        return False
 
     # ── Library ───────────────────────────────────────────────────────────────
 

@@ -55,7 +55,12 @@ async def process(session: ActiveSession, client: PlexClient, skip_buffer_ms: in
                 seg["end_ms"],
                 seg["confidence"],
             )
-            success = await client.seek(session.client_identifier, target)
+            success = await client.seek(
+                session.client_identifier,
+                target,
+                session.client_address,
+                session.client_port,
+            )
             if success:
                 _recently_skipped[session.session_key] = target + 5000
             return

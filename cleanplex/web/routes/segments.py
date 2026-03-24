@@ -156,7 +156,12 @@ async def jump_to_segment(segment_id: int):
             detail="No active controllable Plex playback found for this title. Start the title in Plex first.",
         )
 
-    ok = await client.seek(target.client_identifier, int(seg["start_ms"]))
+    ok = await client.seek(
+        target.client_identifier,
+        int(seg["start_ms"]),
+        target.client_address,
+        target.client_port,
+    )
     if not ok:
         raise HTTPException(status_code=502, detail="Failed to seek Plex client")
 
