@@ -10,6 +10,18 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api/scan", tags=["scanner"])
 
 
+class ScanTitleRequest(BaseModel):
+    """Request body for scanning a title."""
+    plex_guid: str
+    now: bool = False
+    library_id: str | None = None
+
+
+class ScanLibraryRequest(BaseModel):
+    """Request body for scanning a library."""
+    now: bool = False
+
+
 @router.get("/queue")
 async def get_scan_queue():
     jobs = await db.get_scan_jobs()
@@ -21,22 +33,55 @@ async def get_scan_queue():
     }
 
 
-@router.post("/title/{plex_guid}")
-async def scan_title(plex_guid: str, now: bool = False):
+@router.post("/title")
+async def scan_title(body: ScanTitleRequest):
     """Queue a single title for scanning. If now=true, move to front regardless of time window."""
+    plex_guid = body.plex_guid
     job = await db.get_scan_job_by_guid(plex_guid)
     if not job:
-        raise HTTPException(status_code=404, detail="Title not found in scan jobs")
+        # Try to find and create the job from Plex
+        if body.library_id:
+            try:
+                client = plex_mod.get_client()
+                logger.info(f"Fetching library items for library_id={body.library_id}")
+                items = await client.get_library_items(body.library_id)
+                logger.info(f"Got {len(items)} items from library")
+                item = next((i for i in items if i.plex_guid == plex_guid), None)
+                if item:
+                    logger.info(f"Found title {item.title}, creating scan job")
+                    await db.upsert_scan_job(
+                        plex_guid=item.plex_guid,
+                        title=item.title,
+                        file_path=item.file_path,
+                        rating_key=item.rating_key,
+                        library_id=item.library_id,
+                        library_title=item.library_title,
+                        content_rating=item.content_rating,
+                    )
+                    job = await db.get_scan_job_by_guid(plex_guid)
+                    logger.info(f"Scan job created for {plex_guid}")
+                else:
+                    logger.warning(f"Title {plex_guid} not found in library items")
+            except RuntimeError as exc:
+                logger.error(f"Plex client error: {exc}")
+            except Exception as exc:
+                logger.error(f"Error creating scan job: {exc}")
+        if not job:
+            logger.warning(f"No scan job found for {plex_guid}")
+            raise HTTPException(status_code=404, detail="Title not found")
 
+    logger.info(f"Queueing title {plex_guid} for scan (now={body.now})")
     await db.reset_scan_job(plex_guid)
-    if now:
-        scan_mod.resume_scanner()
+    if body.now:
+        logger.info(f"Force-scanning {plex_guid} immediately")
+        scan_mod.force_scan_now()
     await scan_mod.enqueue(plex_guid)
+    logger.info(f"Title {plex_guid} queued. Queue size: {scan_mod.get_queue_size()}")
     return {"ok": True, "queued": plex_guid}
 
 
 @router.post("/library/{library_id}")
-async def scan_library(library_id: str, now: bool = False):
+async def scan_library(library_id: str, body: ScanLibraryRequest):
     """Queue all titles in a library for scanning."""
     jobs = await db.get_scan_jobs_by_library(library_id)
     if not jobs:
@@ -53,6 +98,7 @@ async def scan_library(library_id: str, now: bool = False):
                         rating_key=item.rating_key,
                         library_id=item.library_id,
                         library_title=item.library_title,
+                        content_rating=item.content_rating,
                     )
             jobs = await db.get_scan_jobs_by_library(library_id)
         except RuntimeError:
@@ -65,8 +111,8 @@ async def scan_library(library_id: str, now: bool = False):
             await scan_mod.enqueue(job["plex_guid"])
             queued += 1
 
-    if now:
-        scan_mod.resume_scanner()
+    if body.now:
+        scan_mod.force_scan_now()
 
     return {"ok": True, "queued": queued}
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import deque
 from datetime import datetime
 
@@ -55,8 +56,11 @@ async def session_watcher_loop(get_config_fn, get_client_fn) -> None:
 
 async def library_watcher_loop(get_config_fn, get_client_fn) -> None:
     """Periodically check for new Plex library items and enqueue unscanned ones."""
+    first_run = True
     while True:
-        await asyncio.sleep(60)
+        if not first_run:
+            await asyncio.sleep(60)
+        first_run = False
 
         config = await get_config_fn()
         if not config.is_configured():
@@ -65,11 +69,17 @@ async def library_watcher_loop(get_config_fn, get_client_fn) -> None:
         try:
             client = get_client_fn()
             sections = await client.get_library_sections()
+            excluded = set(json.loads(await db.get_setting("excluded_library_ids", "[]")))
+            scan_ratings = set(json.loads(await db.get_setting("scan_ratings", "[]")))
 
             for section in sections:
+                if section.section_id in excluded:
+                    continue
                 items = await client.get_library_items(section.section_id)
                 for item in items:
                     if not item.file_path:
+                        continue
+                    if scan_ratings and item.content_rating not in scan_ratings:
                         continue
                     existing = await db.get_scan_job_by_guid(item.plex_guid)
                     if existing is None:
@@ -80,6 +90,7 @@ async def library_watcher_loop(get_config_fn, get_client_fn) -> None:
                             rating_key=item.rating_key,
                             library_id=item.library_id,
                             library_title=item.library_title,
+                            content_rating=item.content_rating,
                         )
                         await enqueue(item.plex_guid)
                         logger.info("New item queued for scan: %s", item.title)

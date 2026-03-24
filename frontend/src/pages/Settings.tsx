@@ -11,6 +11,14 @@ interface Settings {
   scan_window_start: string
   scan_window_end: string
   log_level: string
+  excluded_library_ids: string
+  scan_ratings: string
+}
+
+interface Library {
+  id: string
+  title: string
+  type: string
 }
 
 const DEFAULT: Settings = {
@@ -22,6 +30,8 @@ const DEFAULT: Settings = {
   scan_window_start: '23:00',
   scan_window_end: '06:00',
   log_level: 'INFO',
+  excluded_library_ids: '[]',
+  scan_ratings: '[]',
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -42,13 +52,29 @@ export default function SettingsPage() {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
   const [showToken, setShowToken] = useState(false)
+  const [libraries, setLibraries] = useState<Library[]>([])
 
   useEffect(() => {
-    api.get<Settings>('/api/settings').then(d => {
-      setForm({ ...DEFAULT, ...d })
+    Promise.all([
+      api.get<Settings>('/api/settings'),
+      api.get<{ libraries: Library[] }>('/api/libraries').catch(() => ({ libraries: [] })),
+    ]).then(([settings, libs]) => {
+      setForm({ ...DEFAULT, ...settings })
+      setLibraries(libs.libraries)
       setLoading(false)
     })
   }, [])
+
+  const excludedIds: string[] = (() => {
+    try { return JSON.parse(form.excluded_library_ids) } catch { return [] }
+  })()
+
+  const toggleExcluded = (id: string) => {
+    const next = excludedIds.includes(id)
+      ? excludedIds.filter(x => x !== id)
+      : [...excludedIds, id]
+    setForm(f => ({ ...f, excluded_library_ids: JSON.stringify(next) }))
+  }
 
   const set = (k: keyof Settings) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm(f => ({ ...f, [k]: e.target.value }))
@@ -167,6 +193,52 @@ export default function SettingsPage() {
           </Field>
         </div>
       </section>
+
+      {/* Scan ratings */}
+      <section>
+        <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Scan Ratings</h2>
+        <p className="text-xs text-gray-500 mb-3">Only scan titles with these content ratings. Leave all unchecked to scan everything.</p>
+        <div className="grid grid-cols-2 gap-2">
+          {['G', 'PG', 'PG-13', 'R', 'NC-17', 'TV-G', 'TV-PG', 'TV-14', 'TV-MA', 'NR'].map(rating => {
+            const selected = (() => { try { return JSON.parse(form.scan_ratings) } catch { return [] } })()
+            const checked = selected.includes(rating)
+            const toggle = () => {
+              const next = checked ? selected.filter((r: string) => r !== rating) : [...selected, rating]
+              setForm(f => ({ ...f, scan_ratings: JSON.stringify(next) }))
+            }
+            return (
+              <label key={rating} className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 accent-plex-orange" />
+                <span className={`text-sm ${checked ? 'text-gray-100' : 'text-gray-500'}`}>{rating}</span>
+              </label>
+            )
+          })}
+        </div>
+      </section>
+
+      {/* Library exclusions */}
+      {libraries.length > 0 && (
+        <section>
+          <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Library Exclusions</h2>
+          <p className="text-xs text-gray-500 mb-3">Excluded libraries will not be scanned or synced.</p>
+          <div className="space-y-2">
+            {libraries.map(lib => (
+              <label key={lib.id} className="flex items-center gap-3 cursor-pointer group">
+                <input
+                  type="checkbox"
+                  checked={excludedIds.includes(lib.id)}
+                  onChange={() => toggleExcluded(lib.id)}
+                  className="w-4 h-4 accent-plex-orange"
+                />
+                <span className={`text-sm ${excludedIds.includes(lib.id) ? 'text-gray-500 line-through' : 'text-gray-200'}`}>
+                  {lib.title}
+                </span>
+                <span className="text-xs text-gray-600">{lib.type}</span>
+              </label>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Save */}
       <div className="flex items-center gap-3">

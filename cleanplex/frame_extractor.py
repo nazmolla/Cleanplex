@@ -14,16 +14,42 @@ logger = get_logger(__name__)
 
 _FFMPEG_BIN: str = "ffmpeg"
 
+# Known locations where media servers bundle ffmpeg/ffprobe
+_FFMPEG_SEARCH_PATHS = [
+    r"D:\ffmpeg\ffmpeg-8.1-essentials_build\bin\ffmpeg.exe",
+    r"C:\Program Files\Jellyfin\Server\ffmpeg.exe",
+    r"C:\Bazarr\bin\Windows\amd64\ffmpeg\ffmpeg.exe",
+]
+_FFPROBE_SEARCH_PATHS = [
+    r"D:\ffmpeg\ffmpeg-8.1-essentials_build\bin\ffprobe.exe",
+    r"C:\Program Files\Jellyfin\Server\ffprobe.exe",
+    r"C:\Bazarr\bin\Windows\amd64\ffmpeg\ffprobe.exe",
+]
+
+
+def _find_bin(name: str, search_paths: list[str]) -> str:
+    found = shutil.which(name)
+    if found:
+        return found
+    for p in search_paths:
+        if Path(p).exists():
+            return p
+    return name  # fall back to bare name, will fail gracefully
+
+
+_FFMPEG_BIN = _find_bin("ffmpeg", _FFMPEG_SEARCH_PATHS)
+_FFPROBE_BIN = _find_bin("ffprobe", _FFPROBE_SEARCH_PATHS)
+
 
 def check_ffmpeg() -> bool:
-    return shutil.which(_FFMPEG_BIN) is not None
+    return Path(_FFMPEG_BIN).exists() or shutil.which("ffmpeg") is not None
 
 
 async def extract_frame(file_path: str, offset_ms: int) -> bytes | None:
     """Return JPEG bytes of one frame at *offset_ms*, or None on failure."""
     offset_s = offset_ms / 1000.0
     cmd = [
-        _FFMPEG_BIN,
+        _FFMPEG_BIN,  # resolved at startup
         "-loglevel", "error",
         "-ss", str(offset_s),
         "-i", file_path,
@@ -55,8 +81,9 @@ async def extract_frame(file_path: str, offset_ms: int) -> bytes | None:
 
 async def get_duration_ms(file_path: str) -> int | None:
     """Return video duration in milliseconds using ffprobe."""
-    ffprobe = shutil.which("ffprobe")
-    if not ffprobe:
+    ffprobe = _FFPROBE_BIN
+    if not Path(ffprobe).exists() and not shutil.which(ffprobe):
+        logger.error("ffprobe not found. Checked: %s", ffprobe)
         return None
     cmd = [
         ffprobe,

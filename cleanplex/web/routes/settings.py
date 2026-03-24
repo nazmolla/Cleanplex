@@ -18,6 +18,8 @@ class SettingsPayload(BaseModel):
     scan_window_start: str | None = None
     scan_window_end: str | None = None
     log_level: str | None = None
+    excluded_library_ids: str | None = None
+    scan_ratings: str | None = None
 
 
 @router.get("")

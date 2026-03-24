@@ -26,6 +26,7 @@ THUMBNAILS_DIR: Path = Path.home() / ".cleanplex" / "thumbnails"
 _scan_queue: asyncio.Queue[str] = asyncio.Queue()
 _paused: bool = False
 _current_guid: str | None = None
+_force_scan: bool = False
 
 
 def get_queue_size() -> int:
@@ -46,6 +47,13 @@ def resume_scanner() -> None:
     global _paused
     _paused = False
     logger.info("Scanner resumed")
+
+
+def force_scan_now() -> None:
+    global _paused, _force_scan
+    _paused = False
+    _force_scan = True
+    logger.warning("FORCE SCAN ACTIVATED - bypassing time window restrictions")
 
 
 def is_paused() -> bool:
@@ -225,13 +233,14 @@ async def scan_video(plex_guid: str, config) -> None:
 
 async def scanner_loop(get_config_fn) -> None:
     """Main scanner loop — runs forever, respects pause and scan window."""
+    global _force_scan
     # On startup, push pending jobs onto the queue
     await enqueue_pending()
 
     while True:
         config = await get_config_fn()
 
-        if not config.is_scan_window():
+        if not config.is_scan_window() and not _force_scan:
             if not _paused:
                 pause_scanner()
             await asyncio.sleep(60)
@@ -239,16 +248,24 @@ async def scanner_loop(get_config_fn) -> None:
         else:
             if _paused:
                 resume_scanner()
+            if _force_scan:
+                logger.warning(f"Force scan active - processing queue immediately ignoring time window")
 
         try:
             plex_guid = await asyncio.wait_for(_scan_queue.get(), timeout=30)
         except asyncio.TimeoutError:
+            # If we were force-scanning and queue is empty, reset force_scan
+            if _force_scan:
+                _force_scan = False
+                logger.warning("Force scan mode ended - queue emptied")
             continue
 
         job = await db.get_scan_job_by_guid(plex_guid)
         if not job or job["status"] not in ("pending", "scanning"):
+            logger.debug(f"Skipping {plex_guid}: not found or wrong status")
             continue
 
+        logger.info(f"Starting scan of {plex_guid} (force_scan={_force_scan})")
         await scan_video(plex_guid, config)
         _scan_queue.task_done()
         await asyncio.sleep(1)  # Brief pause between scans

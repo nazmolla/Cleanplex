@@ -52,6 +52,7 @@ class MediaItem:
     library_id: str
     library_title: str
     media_type: str       # "movie" or "episode"
+    content_rating: str = ""  # e.g. "PG-13", "R", "TV-MA"
 
 
 @dataclass
@@ -244,6 +245,7 @@ class PlexClient:
                 library_id=library_id,
                 library_title=library_title,
                 media_type=item.type,
+                content_rating=getattr(item, "contentRating", "") or "",
             )
         except Exception:
             return None

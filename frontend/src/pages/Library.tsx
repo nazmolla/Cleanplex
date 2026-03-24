@@ -16,6 +16,7 @@ interface Title {
   progress: number
   thumb_url: string
   segment_count: number
+  content_rating: string
 }
 
 function StatusBadge({ status, progress }: { status: string; progress: number }) {
@@ -42,18 +43,56 @@ export default function Library() {
   const [loadingTitles, setLoadingTitles] = useState(false)
   const [scanning, setScanning] = useState<Record<string, boolean>>({})
   const [filter, setFilter] = useState('')
+  const [ratingFilter, setRatingFilter] = useState<string>('all')
+  const [polling, setPolling] = useState(false)
 
   useEffect(() => {
     api.get<{ libraries: Library[] }>('/api/libraries').then(d => setLibraries(d.libraries))
   }, [])
 
+  // Poll for title updates when scanning
+  useEffect(() => {
+    if (!selected || !titles.some(t => t.status === 'scanning')) {
+      setPolling(false)
+      return
+    }
+
+    setPolling(true)
+    const interval = setInterval(async () => {
+      try {
+        const d = await api.get<{ titles: Title[] }>(`/api/libraries/${selected.id}/titles`)
+        setTitles(d.titles)
+      } catch (err) {
+        console.error('Failed to poll titles:', err)
+      }
+    }, 5000) // Poll every 5 seconds
+
+    return () => {
+      clearInterval(interval)
+      setPolling(false)
+    }
+  }, [selected, titles])
+
   const selectLibrary = async (lib: Library) => {
     setSelected(lib)
     setFilter('')
+    setRatingFilter('all')
     setLoadingTitles(true)
     try {
+      // Load from DB cache first for snappy response
       const d = await api.get<{ titles: Title[] }>(`/api/libraries/${lib.id}/titles`)
       setTitles(d.titles)
+
+      // Only sync from Plex if DB has no titles yet (first-time population)
+      if (d.titles.length === 0) {
+        try {
+          await api.post(`/api/libraries/${lib.id}/sync`)
+          const d2 = await api.get<{ titles: Title[] }>(`/api/libraries/${lib.id}/titles`)
+          setTitles(d2.titles)
+        } catch (err: any) {
+          console.warn('Library sync failed:', err.message)
+        }
+      }
     } finally {
       setLoadingTitles(false)
     }
@@ -62,26 +101,44 @@ export default function Library() {
   const scanTitle = async (guid: string, now: boolean) => {
     setScanning(s => ({ ...s, [guid]: true }))
     try {
-      await api.post(`/api/scan/title/${encodeURIComponent(guid)}?now=${now}`)
+      const body = {
+        plex_guid: guid,
+        now,
+        library_id: selected?.id || null,
+      }
+      await api.post('/api/scan/title', body)
       // Refresh titles
       if (selected) {
         const d = await api.get<{ titles: Title[] }>(`/api/libraries/${selected.id}/titles`)
         setTitles(d.titles)
       }
+    } catch (err: any) {
+      alert(`Failed to scan: ${err.message || 'Unknown error'}`)
     } finally {
       setScanning(s => ({ ...s, [guid]: false }))
     }
   }
 
   const scanLibrary = async (libId: string, now: boolean) => {
-    await api.post(`/api/scan/library/${libId}?now=${now}`)
-    if (selected) {
-      const d = await api.get<{ titles: Title[] }>(`/api/libraries/${selected.id}/titles`)
-      setTitles(d.titles)
+    try {
+      const body = { now }
+      await api.post(`/api/scan/library/${libId}`, body)
+      if (selected) {
+        const d = await api.get<{ titles: Title[] }>(`/api/libraries/${selected.id}/titles`)
+        setTitles(d.titles)
+      }
+    } catch (err: any) {
+      alert(`Failed to scan library: ${err.message || 'Unknown error'}`)
     }
   }
 
-  const filtered = titles.filter(t => t.title.toLowerCase().includes(filter.toLowerCase()))
+  const availableRatings = Array.from(new Set(titles.map(t => t.content_rating).filter(Boolean))).sort()
+
+  const filtered = titles.filter(t => {
+    if (filter && !t.title.toLowerCase().includes(filter.toLowerCase())) return false
+    if (ratingFilter !== 'all' && t.content_rating !== ratingFilter) return false
+    return true
+  })
 
   return (
     <div className="flex gap-6 h-full">
@@ -133,13 +190,27 @@ export default function Library() {
               </div>
             </div>
 
-            <input
-              type="text"
-              placeholder="Filter titles..."
-              value={filter}
-              onChange={e => setFilter(e.target.value)}
-              className="w-full mb-4 px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
-            />
+            <div className="flex gap-2 mb-4">
+              <input
+                type="text"
+                placeholder="Filter titles..."
+                value={filter}
+                onChange={e => setFilter(e.target.value)}
+                className="flex-1 px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
+              />
+              {availableRatings.length > 0 && (
+                <select
+                  value={ratingFilter}
+                  onChange={e => setRatingFilter(e.target.value)}
+                  className="px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 focus:outline-none focus:border-plex-orange/50"
+                >
+                  <option value="all">All ratings</option>
+                  {availableRatings.map(r => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+              )}
+            </div>
 
             {loadingTitles ? (
               <div className="text-gray-500 text-sm">Loading...</div>
