@@ -44,8 +44,18 @@ async def get_skip_events():
 
 @router.get("/scanner-status")
 async def scanner_status():
+    current_guid = get_current_scan()
+    current_title = None
+    current_progress = 0.0
+    if current_guid:
+        job = await db.get_scan_job_by_guid(current_guid)
+        if job:
+            current_title = job["title"]
+            current_progress = job["progress"]
     return {
         "queue_size": get_queue_size(),
-        "current_scan": get_current_scan(),
+        "current_scan": current_guid,
+        "current_title": current_title,
+        "current_progress": current_progress,
         "paused": is_paused(),
     }

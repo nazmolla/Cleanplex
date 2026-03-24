@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { api } from '../api/client'
-import { Film, Tv, ChevronRight, RotateCcw, Zap, Moon } from 'lucide-react'
+import { Film, Tv, ChevronRight, RotateCcw, Zap, Moon, RefreshCw } from 'lucide-react'
 
 interface Library {
   id: string
@@ -18,6 +18,17 @@ interface Title {
   segment_count: number
   content_rating: string
 }
+
+interface ScannerStatus {
+  queue_size: number
+  current_scan: string | null
+  current_title: string | null
+  current_progress: number
+  paused: boolean
+}
+
+const STATUS_TABS = ['all', 'pending', 'scanning', 'done', 'failed'] as const
+type StatusTab = typeof STATUS_TABS[number]
 
 function StatusBadge({ status, progress }: { status: string; progress: number }) {
   switch (status) {
@@ -41,54 +52,58 @@ export default function Library() {
   const [selected, setSelected] = useState<Library | null>(null)
   const [titles, setTitles] = useState<Title[]>([])
   const [loadingTitles, setLoadingTitles] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [scanning, setScanning] = useState<Record<string, boolean>>({})
   const [filter, setFilter] = useState('')
   const [ratingFilter, setRatingFilter] = useState<string>('all')
-  const [polling, setPolling] = useState(false)
+  const [statusFilter, setStatusFilter] = useState<StatusTab>('all')
+  const [scannerStatus, setScannerStatus] = useState<ScannerStatus | null>(null)
 
   useEffect(() => {
     api.get<{ libraries: Library[] }>('/api/libraries').then(d => setLibraries(d.libraries))
   }, [])
 
-  // Poll for title updates when scanning
+  // Poll scanner status every 3s
   useEffect(() => {
-    if (!selected || !titles.some(t => t.status === 'scanning')) {
-      setPolling(false)
-      return
-    }
+    const poll = () =>
+      api.get<ScannerStatus>('/api/sessions/scanner-status')
+        .then(setScannerStatus)
+        .catch(() => {})
+    poll()
+    const id = setInterval(poll, 3000)
+    return () => clearInterval(id)
+  }, [])
 
-    setPolling(true)
-    const interval = setInterval(async () => {
+  // Auto-refresh titles when something is scanning
+  useEffect(() => {
+    if (!selected || !scannerStatus?.current_scan) return
+    const id = setInterval(async () => {
       try {
         const d = await api.get<{ titles: Title[] }>(`/api/libraries/${selected.id}/titles`)
         setTitles(d.titles)
-      } catch (err) {
-        console.error('Failed to poll titles:', err)
-      }
-    }, 5000) // Poll every 5 seconds
+      } catch {}
+    }, 5000)
+    return () => clearInterval(id)
+  }, [selected, scannerStatus?.current_scan])
 
-    return () => {
-      clearInterval(interval)
-      setPolling(false)
-    }
-  }, [selected, titles])
+  const loadTitles = useCallback(async (libId: string) => {
+    const d = await api.get<{ titles: Title[] }>(`/api/libraries/${libId}/titles`)
+    return d.titles
+  }, [])
 
   const selectLibrary = async (lib: Library) => {
     setSelected(lib)
     setFilter('')
     setRatingFilter('all')
+    setStatusFilter('all')
     setLoadingTitles(true)
     try {
-      // Load from DB cache first for snappy response
-      const d = await api.get<{ titles: Title[] }>(`/api/libraries/${lib.id}/titles`)
-      setTitles(d.titles)
-
-      // Only sync from Plex if DB has no titles yet (first-time population)
-      if (d.titles.length === 0) {
+      const titles = await loadTitles(lib.id)
+      setTitles(titles)
+      if (titles.length === 0) {
         try {
           await api.post(`/api/libraries/${lib.id}/sync`)
-          const d2 = await api.get<{ titles: Title[] }>(`/api/libraries/${lib.id}/titles`)
-          setTitles(d2.titles)
+          setTitles(await loadTitles(lib.id))
         } catch (err: any) {
           console.warn('Library sync failed:', err.message)
         }
@@ -98,20 +113,21 @@ export default function Library() {
     }
   }
 
+  const refreshTitles = async () => {
+    if (!selected) return
+    setRefreshing(true)
+    try {
+      setTitles(await loadTitles(selected.id))
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   const scanTitle = async (guid: string, now: boolean) => {
     setScanning(s => ({ ...s, [guid]: true }))
     try {
-      const body = {
-        plex_guid: guid,
-        now,
-        library_id: selected?.id || null,
-      }
-      await api.post('/api/scan/title', body)
-      // Refresh titles
-      if (selected) {
-        const d = await api.get<{ titles: Title[] }>(`/api/libraries/${selected.id}/titles`)
-        setTitles(d.titles)
-      }
+      await api.post('/api/scan/title', { plex_guid: guid, now, library_id: selected?.id || null })
+      setTitles(await loadTitles(selected!.id))
     } catch (err: any) {
       alert(`Failed to scan: ${err.message || 'Unknown error'}`)
     } finally {
@@ -121,12 +137,8 @@ export default function Library() {
 
   const scanLibrary = async (libId: string, now: boolean) => {
     try {
-      const body = { now }
-      await api.post(`/api/scan/library/${libId}`, body)
-      if (selected) {
-        const d = await api.get<{ titles: Title[] }>(`/api/libraries/${selected.id}/titles`)
-        setTitles(d.titles)
-      }
+      await api.post(`/api/scan/library/${libId}`, { now })
+      setTitles(await loadTitles(libId))
     } catch (err: any) {
       alert(`Failed to scan library: ${err.message || 'Unknown error'}`)
     }
@@ -134,7 +146,11 @@ export default function Library() {
 
   const availableRatings = Array.from(new Set(titles.map(t => t.content_rating).filter(Boolean))).sort()
 
+  const counts: Record<string, number> = { all: titles.length }
+  for (const t of titles) counts[t.status] = (counts[t.status] ?? 0) + 1
+
   const filtered = titles.filter(t => {
+    if (statusFilter !== 'all' && t.status !== statusFilter) return false
     if (filter && !t.title.toLowerCase().includes(filter.toLowerCase())) return false
     if (ratingFilter !== 'all' && t.content_rating !== ratingFilter) return false
     return true
@@ -172,9 +188,18 @@ export default function Library() {
           </div>
         ) : (
           <>
-            <div className="flex items-center justify-between mb-4 gap-3">
+            {/* Header row */}
+            <div className="flex items-center justify-between mb-3 gap-3">
               <h2 className="text-xl font-semibold text-gray-100 truncate">{selected.title}</h2>
               <div className="flex gap-2 flex-shrink-0">
+                <button
+                  onClick={refreshTitles}
+                  disabled={refreshing}
+                  title="Refresh"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} /> Refresh
+                </button>
                 <button
                   onClick={() => scanLibrary(selected.id, false)}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-plex-orange/50 transition-colors"
@@ -190,6 +215,46 @@ export default function Library() {
               </div>
             </div>
 
+            {/* Scanner progress banner */}
+            {scannerStatus?.current_title && (
+              <div className="mb-3 bg-plex-card border border-plex-orange/30 rounded-xl px-4 py-3">
+                <div className="flex items-center justify-between text-xs mb-2">
+                  <span className="text-plex-orange font-medium flex items-center gap-1.5">
+                    <span className="animate-pulse">●</span> Scanning
+                  </span>
+                  <span className="text-gray-300 truncate mx-3 flex-1">{scannerStatus.current_title}</span>
+                  <span className="text-gray-400 flex-shrink-0">{Math.round(scannerStatus.current_progress * 100)}%</span>
+                </div>
+                <div className="h-1.5 bg-plex-border rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-plex-orange rounded-full transition-all duration-1000"
+                    style={{ width: `${scannerStatus.current_progress * 100}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Status filter tabs */}
+            <div className="flex gap-1 mb-3 flex-wrap">
+              {STATUS_TABS.map(s => (
+                <button
+                  key={s}
+                  onClick={() => setStatusFilter(s)}
+                  className={`px-3 py-1 text-xs rounded-full transition-colors capitalize ${
+                    statusFilter === s
+                      ? 'bg-plex-orange text-black font-semibold'
+                      : 'bg-plex-card border border-plex-border text-gray-400 hover:text-gray-200'
+                  }`}
+                >
+                  {s === 'all' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}
+                  {counts[s] != null && (
+                    <span className="ml-1 opacity-70">({counts[s] ?? 0})</span>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            {/* Text + rating filters */}
             <div className="flex gap-2 mb-4">
               <input
                 type="text"
@@ -212,6 +277,7 @@ export default function Library() {
               )}
             </div>
 
+            {/* Title list */}
             {loadingTitles ? (
               <div className="text-gray-500 text-sm">Loading...</div>
             ) : filtered.length === 0 ? (
@@ -234,6 +300,9 @@ export default function Library() {
                       <p className="text-sm font-medium text-gray-100 truncate">{title.title}</p>
                       <div className="flex items-center gap-2 mt-1">
                         <StatusBadge status={title.status} progress={title.progress} />
+                        {title.content_rating && (
+                          <span className="text-xs text-gray-600 bg-white/5 px-1.5 py-0.5 rounded">{title.content_rating}</span>
+                        )}
                         {title.segment_count > 0 && (
                           <span className="text-xs text-gray-500">{title.segment_count} segment{title.segment_count !== 1 ? 's' : ''}</span>
                         )}

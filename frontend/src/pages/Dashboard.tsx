@@ -25,7 +25,9 @@ interface SkipEvent {
 
 interface ScannerStatus {
   queue_size: number
-  current: string | null
+  current_scan: string | null
+  current_title: string | null
+  current_progress: number
   paused: boolean
 }
 
@@ -73,19 +75,35 @@ export default function Dashboard() {
 
       {/* Scanner status bar */}
       {scanner && (
-        <div className="bg-plex-card border border-plex-border rounded-xl p-4 flex items-center gap-4 text-sm">
-          <div className={`w-2 h-2 rounded-full ${scanner.paused ? 'bg-yellow-500' : 'bg-green-500 animate-pulse'}`} />
-          <span className="text-gray-400">
-            Scanner:{' '}
-            <span className={scanner.paused ? 'text-yellow-400' : 'text-green-400'}>
-              {scanner.paused ? 'Paused (outside scan window)' : 'Active'}
+        <div className="bg-plex-card border border-plex-border rounded-xl p-4 space-y-3">
+          <div className="flex items-center gap-4 text-sm">
+            <div className={`w-2 h-2 rounded-full flex-shrink-0 ${scanner.paused ? 'bg-yellow-500' : 'bg-green-500 animate-pulse'}`} />
+            <span className="text-gray-400">
+              Scanner:{' '}
+              <span className={scanner.paused ? 'text-yellow-400' : 'text-green-400'}>
+                {scanner.paused ? 'Paused (outside scan window)' : 'Active'}
+              </span>
             </span>
-          </span>
-          {scanner.current && (
-            <span className="text-gray-500">• Scanning: <span className="text-gray-300">{scanner.current}</span></span>
-          )}
-          {scanner.queue_size > 0 && (
-            <span className="text-gray-500">• Queue: <span className="text-gray-300">{scanner.queue_size}</span></span>
+            {scanner.queue_size > 0 && (
+              <span className="text-gray-500 ml-auto">Queue: <span className="text-gray-300">{scanner.queue_size}</span></span>
+            )}
+          </div>
+          {scanner.current_title && (
+            <div>
+              <div className="flex items-center justify-between text-xs mb-1.5">
+                <span className="text-plex-orange flex items-center gap-1.5">
+                  <span className="animate-pulse">●</span> Scanning
+                </span>
+                <span className="text-gray-300 truncate mx-3 flex-1">{scanner.current_title}</span>
+                <span className="text-gray-400 flex-shrink-0">{Math.round(scanner.current_progress * 100)}%</span>
+              </div>
+              <div className="h-1.5 bg-plex-border rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-plex-orange rounded-full transition-all duration-1000"
+                  style={{ width: `${scanner.current_progress * 100}%` }}
+                />
+              </div>
+            </div>
           )}
         </div>
       )}
