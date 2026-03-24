@@ -21,3 +21,31 @@ frontend/dist/
 .vscode/
 .idea/
 *.swp
+
+# Local runtime/log artifacts
+cleanplex.log
+
+# Generated web assets served by backend
+cleanplex/web/static/
+
+# Local one-off debug/maintenance helpers
+check_force_scan.py
+check_guid_mismatch.py
+check_housemaid.py
+check_labels_endpoint.py
+check_queue.py
+check_scanning.py
+check_segment_fields.py
+check_settings.py
+clear_queue.py
+debug_issues.py
+enqueue_housemaid.py
+find_housemaid.py
+find_scanning_job.py
+force_housemaid_api.py
+migrate_force_scan.py
+pause_db.py
+pause_scanner.py
+stop_scan.py
+test_encoding.py
+test_segments_api.py
