@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from .logger import get_logger
 from . import database as db
 from .plex_client import ActiveSession, PlexClient
@@ -10,6 +12,7 @@ logger = get_logger(__name__)
 
 # Track recently skipped sessions to avoid re-triggering: {session_key: end_ms}
 _recently_skipped: dict[str, int] = {}
+_seek_backoff_until: dict[str, float] = {}
 
 
 async def process(session: ActiveSession, client: PlexClient, skip_buffer_ms: int) -> None:
@@ -23,6 +26,11 @@ async def process(session: ActiveSession, client: PlexClient, skip_buffer_ms: in
     # Don't re-trigger if we already skipped past this point recently
     skip_until = _recently_skipped.get(session.session_key, 0)
     if pos < skip_until:
+        return
+
+    # Back off briefly if a previous seek command failed for this session/client.
+    blocked_until = _seek_backoff_until.get(session.session_key, 0.0)
+    if time.time() < blocked_until:
         return
 
     segments = await db.get_segments_for_guid(session.plex_guid)
@@ -63,8 +71,13 @@ async def process(session: ActiveSession, client: PlexClient, skip_buffer_ms: in
             )
             if success:
                 _recently_skipped[session.session_key] = target + 5000
+                _seek_backoff_until.pop(session.session_key, None)
+            else:
+                _seek_backoff_until[session.session_key] = time.time() + 20
             return
 
     # Clean up stale entries for sessions no longer in range
     if session.session_key in _recently_skipped and pos > _recently_skipped[session.session_key]:
         del _recently_skipped[session.session_key]
+    if session.session_key in _seek_backoff_until and time.time() > _seek_backoff_until[session.session_key]:
+        del _seek_backoff_until[session.session_key]
