@@ -187,39 +187,67 @@ class PlexClient:
             if port in seen:
                 continue
             seen.add(port)
-            url = (
+            base = (
                 f"http://{client_address}:{port}/player/playback/seekTo"
                 f"?offset={offset_ms}"
                 f"&type=video"
                 f"&commandID={int(time.time())}"
-                f"&X-Plex-Token={self.token}"
             )
-            try:
-                resp = await self._http.get(url)
-                if resp.status_code < 300:
-                    logger.info(
-                        "Seeked client %s directly at %s:%d to %dms",
+            variants = [
+                (f"{base}&X-Plex-Token={self.token}", {}),
+                (base, {"X-Plex-Token": self.token}),
+                (
+                    f"{base}&X-Plex-Token={self.token}",
+                    {
+                        "X-Plex-Client-Identifier": "cleanplex-server",
+                        "X-Plex-Product": "Cleanplex",
+                        "X-Plex-Device-Name": "Cleanplex",
+                        "X-Plex-Platform": "Windows",
+                    },
+                ),
+                (
+                    base,
+                    {
+                        "X-Plex-Token": self.token,
+                        "X-Plex-Client-Identifier": "cleanplex-server",
+                        "X-Plex-Product": "Cleanplex",
+                        "X-Plex-Device-Name": "Cleanplex",
+                        "X-Plex-Platform": "Windows",
+                    },
+                ),
+            ]
+
+            for idx, (url, headers) in enumerate(variants, start=1):
+                try:
+                    resp = await self._http.get(url, headers=headers)
+                    if resp.status_code < 300:
+                        logger.info(
+                            "Seeked client %s directly at %s:%d to %dms (variant=%d)",
+                            client_identifier,
+                            client_address,
+                            port,
+                            offset_ms,
+                            idx,
+                        )
+                        return True
+                    logger.warning(
+                        "Direct seek HTTP %d for client %s at %s:%d (variant=%d, body=%s)",
+                        resp.status_code,
                         client_identifier,
                         client_address,
                         port,
-                        offset_ms,
+                        idx,
+                        resp.text[:200],
                     )
-                    return True
-                logger.warning(
-                    "Direct seek HTTP %d for client %s at %s:%d",
-                    resp.status_code,
-                    client_identifier,
-                    client_address,
-                    port,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Direct seek failed for client %s at %s:%d: %s",
-                    client_identifier,
-                    client_address,
-                    port,
-                    exc,
-                )
+                except Exception as exc:
+                    logger.warning(
+                        "Direct seek failed for client %s at %s:%d (variant=%d): %s",
+                        client_identifier,
+                        client_address,
+                        port,
+                        idx,
+                        exc,
+                    )
 
         return False
 
