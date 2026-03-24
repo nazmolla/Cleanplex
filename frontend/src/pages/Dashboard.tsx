@@ -45,6 +45,7 @@ export default function Dashboard() {
   const [events, setEvents] = useState<SkipEvent[]>([])
   const [scanner, setScanner] = useState<ScannerStatus | null>(null)
   const [loading, setLoading] = useState(true)
+  const [skipLoadingKey, setSkipLoadingKey] = useState<string | null>(null)
 
   const refresh = async () => {
     try {
@@ -68,6 +69,18 @@ export default function Dashboard() {
     const id = setInterval(refresh, 5000)
     return () => clearInterval(id)
   }, [])
+
+  const skipNow = async (sessionKey: string) => {
+    try {
+      setSkipLoadingKey(sessionKey)
+      await api.post(`/api/sessions/${sessionKey}/skip`)
+      await refresh()
+    } catch (err: any) {
+      alert(`Skip failed: ${err.message || 'Unknown error'}`)
+    } finally {
+      setSkipLoadingKey(null)
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -158,6 +171,16 @@ export default function Dashboard() {
                         style={{ width: `${s.duration_ms ? (s.position_ms / s.duration_ms) * 100 : 0}%` }}
                       />
                     </div>
+                  </div>
+                  <div className="mt-3 flex justify-end">
+                    <button
+                      className="btn-outline text-xs px-3 py-1.5 disabled:opacity-50"
+                      disabled={!s.is_controllable || skipLoadingKey === s.session_key}
+                      onClick={() => skipNow(s.session_key)}
+                      title={s.is_controllable ? 'Skip current title segment' : 'Session is not controllable'}
+                    >
+                      {skipLoadingKey === s.session_key ? 'Skipping...' : 'Skip'}
+                    </button>
                   </div>
                 </div>
               </div>

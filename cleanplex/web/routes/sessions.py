@@ -59,3 +59,58 @@ async def scanner_status():
         "current_progress": current_progress,
         "paused": is_paused(),
     }
+
+
+@router.post("/{session_key}/skip")
+async def skip_session_title(session_key: str):
+    """Skip active playback to the end of the current (or next) detected segment."""
+    try:
+        client = plex_mod.get_client()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Plex not configured")
+
+    sessions = await client.get_active_sessions()
+    session = next((s for s in sessions if s.session_key == session_key), None)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Active session not found")
+
+    if not session.is_controllable:
+        raise HTTPException(status_code=409, detail="Session is not remotely controllable")
+
+    segments = await db.get_segments_for_guid(session.plex_guid)
+    if not segments and session.rating_key:
+        segments = await db.get_segments_by_rating_key(session.rating_key)
+
+    if not segments:
+        raise HTTPException(status_code=404, detail="No detected segments found for this title")
+
+    pos = int(session.position_ms)
+
+    # Prefer the segment currently playing; otherwise choose the next segment ahead.
+    current = next((seg for seg in segments if int(seg["start_ms"]) <= pos <= int(seg["end_ms"])), None)
+    target_seg = current or next((seg for seg in segments if int(seg["start_ms"]) > pos), None)
+    if target_seg is None:
+        raise HTTPException(status_code=409, detail="No remaining segments ahead of current position")
+
+    skip_buffer_ms = int(await db.get_setting("skip_buffer_ms", "3000"))
+    seek_to_ms = int(target_seg["end_ms"]) + skip_buffer_ms
+
+    ok = await client.seek(
+        session.client_identifier,
+        seek_to_ms,
+        session.client_address,
+        session.client_port,
+    )
+    if not ok:
+        raise HTTPException(status_code=502, detail="Failed to seek Plex client")
+
+    return {
+        "ok": True,
+        "session_key": session.session_key,
+        "title": session.full_title,
+        "seek_to_ms": seek_to_ms,
+        "segment_start_ms": int(target_seg["start_ms"]),
+        "segment_end_ms": int(target_seg["end_ms"]),
+        "client": session.client_title,
+        "user": session.user,
+    }
