@@ -288,7 +288,7 @@ async def scan_video(plex_guid: str, config) -> None:
                 return
 
             # Periodically check the scan window; abort if it has ended.
-            if idx % 30 == 0 and not is_force_scan and not config.is_scan_window():
+            if idx % 5 == 0 and not is_force_scan and not config.is_scan_window():
                 await db.update_scan_job_status(plex_guid, "pending", progress=idx / total_steps)
                 await enqueue(plex_guid)
                 logger.info("Scan window ended during scan of '%s', re-queued", title)
