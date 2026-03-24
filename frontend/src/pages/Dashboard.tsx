@@ -31,6 +31,7 @@ interface ScannerStatus {
   current_scans: string[]
   active_scans: { guid: string; title: string; progress: number; status: string }[]
   workers_configured: number
+  workers_target?: number
   workers_active: number
   workers_idle: number
   paused: boolean
@@ -120,6 +121,11 @@ export default function Dashboard() {
             <span className="text-gray-500">
               Workers: <span className="text-gray-300">{scanner.workers_active}/{scanner.workers_configured}</span>
             </span>
+            {scanner.workers_target && scanner.workers_target !== scanner.workers_configured && (
+              <span className="text-gray-500">
+                Target: <span className="text-gray-300">{scanner.workers_target}</span>
+              </span>
+            )}
             {scanner.queue_size > 0 && (
               <span className="text-gray-500 ml-auto">Queue: <span className="text-gray-300">{scanner.queue_size}</span></span>
             )}

@@ -33,10 +33,15 @@ _queued_normal: set[str] = set()
 _queued_force: set[str] = set()
 _queue_wakeup_event: asyncio.Event = asyncio.Event()
 _skip_requested_guids: set[str] = set()
+_worker_pool_size: int = 1
 
 
 def get_queue_size() -> int:
     return _scan_queue.qsize() + _force_scan_queue.qsize()
+
+
+def get_worker_pool_size() -> int:
+    return _worker_pool_size
 
 
 def get_current_scan() -> str | None:
@@ -431,10 +436,12 @@ async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
 
 async def scanner_loop(get_config_fn) -> None:
     """Main scanner supervisor — runs multiple scanner workers concurrently."""
+    global _worker_pool_size
     await enqueue_pending()
 
     config = await get_config_fn()
     worker_count = max(1, int(getattr(config, "scan_workers", 2)))
+    _worker_pool_size = worker_count
     logger.info("Starting scanner pool with %d worker(s)", worker_count)
 
     await asyncio.gather(*[

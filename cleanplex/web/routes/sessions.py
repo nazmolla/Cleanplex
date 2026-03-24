@@ -4,7 +4,7 @@ from ...logger import get_logger
 import cleanplex.plex_client as plex_mod
 from ...watcher import skip_events
 from ... import database as db
-from ...scanner import get_queue_size, get_current_scan, get_current_scans, is_paused
+from ...scanner import get_queue_size, get_current_scan, get_current_scans, get_worker_pool_size, is_paused
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -68,6 +68,7 @@ async def scanner_status():
             current_progress = job["progress"]
 
     configured_workers = max(1, int(await db.get_setting("scan_workers", "2")))
+    effective_workers = max(1, int(get_worker_pool_size()))
     active_workers = len(active_scans)
 
     return {
@@ -77,9 +78,10 @@ async def scanner_status():
         "current_progress": current_progress,
         "current_scans": current_guids,
         "active_scans": active_scans,
-        "workers_configured": configured_workers,
+        "workers_configured": effective_workers,
+        "workers_target": configured_workers,
         "workers_active": active_workers,
-        "workers_idle": max(0, configured_workers - active_workers),
+        "workers_idle": max(0, effective_workers - active_workers),
         "paused": is_paused(),
     }
 
