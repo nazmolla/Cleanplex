@@ -194,11 +194,21 @@ class PlexClient:
                 f"&commandID={int(time.time())}"
             )
             variants = [
-                (f"{base}&X-Plex-Token={self.token}", {}),
-                (base, {"X-Plex-Token": self.token}),
+                (
+                    f"{base}&X-Plex-Token={self.token}",
+                    {"X-Plex-Target-Client-Identifier": client_identifier},
+                ),
+                (
+                    base,
+                    {
+                        "X-Plex-Token": self.token,
+                        "X-Plex-Target-Client-Identifier": client_identifier,
+                    },
+                ),
                 (
                     f"{base}&X-Plex-Token={self.token}",
                     {
+                        "X-Plex-Target-Client-Identifier": client_identifier,
                         "X-Plex-Client-Identifier": "cleanplex-server",
                         "X-Plex-Product": "Cleanplex",
                         "X-Plex-Device-Name": "Cleanplex",
@@ -209,6 +219,7 @@ class PlexClient:
                     base,
                     {
                         "X-Plex-Token": self.token,
+                        "X-Plex-Target-Client-Identifier": client_identifier,
                         "X-Plex-Client-Identifier": "cleanplex-server",
                         "X-Plex-Product": "Cleanplex",
                         "X-Plex-Device-Name": "Cleanplex",
@@ -237,7 +248,7 @@ class PlexClient:
                         client_address,
                         port,
                         idx,
-                        resp.text[:200],
+                        resp.text[:500],
                     )
                 except Exception as exc:
                     logger.warning(
