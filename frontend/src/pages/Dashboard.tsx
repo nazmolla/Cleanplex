@@ -28,6 +28,11 @@ interface ScannerStatus {
   current_scan: string | null
   current_title: string | null
   current_progress: number
+  current_scans: string[]
+  active_scans: { guid: string; title: string; progress: number; status: string }[]
+  workers_configured: number
+  workers_active: number
+  workers_idle: number
   paused: boolean
 }
 
@@ -46,7 +51,7 @@ export default function Dashboard() {
   const [scanner, setScanner] = useState<ScannerStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [skipLoadingKey, setSkipLoadingKey] = useState<string | null>(null)
-  const [skipScanLoading, setSkipScanLoading] = useState(false)
+  const [skipScanLoadingGuid, setSkipScanLoadingGuid] = useState<string | null>(null)
 
   const refresh = async () => {
     try {
@@ -83,15 +88,17 @@ export default function Dashboard() {
     }
   }
 
-  const skipCurrentScan = async () => {
+  const skipCurrentScan = async (guid?: string) => {
     try {
-      setSkipScanLoading(true)
-      await api.post('/api/scan/skip-current')
+      const target = guid || scanner?.current_scan || null
+      if (!target) return
+      setSkipScanLoadingGuid(target)
+      await api.post('/api/scan/skip-current', { plex_guid: target })
       await refresh()
     } catch (err: any) {
       alert(`Skip scan failed: ${err.message || 'Unknown error'}`)
     } finally {
-      setSkipScanLoading(false)
+      setSkipScanLoadingGuid(null)
     }
   }
 
@@ -110,35 +117,42 @@ export default function Dashboard() {
                 {scanner.paused ? 'Paused (outside scan window)' : 'Active'}
               </span>
             </span>
+            <span className="text-gray-500">
+              Workers: <span className="text-gray-300">{scanner.workers_active}/{scanner.workers_configured}</span>
+            </span>
             {scanner.queue_size > 0 && (
               <span className="text-gray-500 ml-auto">Queue: <span className="text-gray-300">{scanner.queue_size}</span></span>
             )}
           </div>
-          {scanner.current_title && (
-            <div>
-              <div className="flex items-center justify-between text-xs mb-1.5">
-                <span className="text-plex-orange flex items-center gap-1.5">
-                  <span className="animate-pulse">●</span> Scanning
-                </span>
-                <span className="text-gray-300 truncate mx-3 flex-1">{scanner.current_title}</span>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <span className="text-gray-400">{Math.round(scanner.current_progress * 100)}%</span>
-                  <button
-                    className="btn-outline text-xs px-2 py-0.5 disabled:opacity-50"
-                    onClick={skipCurrentScan}
-                    disabled={skipScanLoading}
-                    title="Skip this title and move to the next"
-                  >
-                    {skipScanLoading ? 'Skipping...' : 'Skip'}
-                  </button>
+          {scanner.active_scans.length > 0 && (
+            <div className="space-y-2">
+              {scanner.active_scans.map(scan => (
+                <div key={scan.guid}>
+                  <div className="flex items-center justify-between text-xs mb-1.5">
+                    <span className="text-plex-orange flex items-center gap-1.5">
+                      <span className="animate-pulse">●</span> Scanning
+                    </span>
+                    <span className="text-gray-300 truncate mx-3 flex-1">{scan.title}</span>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className="text-gray-400">{Math.round(scan.progress * 100)}%</span>
+                      <button
+                        className="btn-outline text-xs px-2 py-0.5 disabled:opacity-50"
+                        onClick={() => skipCurrentScan(scan.guid)}
+                        disabled={skipScanLoadingGuid === scan.guid}
+                        title="Skip this title and move to the next"
+                      >
+                        {skipScanLoadingGuid === scan.guid ? 'Skipping...' : 'Skip'}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="h-1.5 bg-plex-border rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-plex-orange rounded-full transition-all duration-1000"
+                      style={{ width: `${scan.progress * 100}%` }}
+                    />
+                  </div>
                 </div>
-              </div>
-              <div className="h-1.5 bg-plex-border rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-plex-orange rounded-full transition-all duration-1000"
-                  style={{ width: `${scanner.current_progress * 100}%` }}
-                />
-              </div>
+              ))}
             </div>
           )}
         </div>

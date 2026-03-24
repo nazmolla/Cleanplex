@@ -17,6 +17,7 @@ class Config:
     confidence_threshold: float = 0.6
     skip_buffer_ms: int = 3000
     scan_step_ms: int = 5000
+    scan_workers: int = 2
     segment_gap_ms: int = 12000
     segment_min_hits: int = 1
     scan_labels: list[str] = field(default_factory=lambda: [
@@ -60,6 +61,7 @@ class Config:
             confidence_threshold=float(s.get("confidence_threshold", "0.6")),
             skip_buffer_ms=int(s.get("skip_buffer_ms", "3000")),
             scan_step_ms=int(s.get("scan_step_ms", "5000")),
+            scan_workers=max(1, int(s.get("scan_workers", "2"))),
             segment_gap_ms=int(s.get("segment_gap_ms", "12000")),
             segment_min_hits=int(s.get("segment_min_hits", "1")),
             scan_labels=_labels(s.get("scan_labels", "[]")),

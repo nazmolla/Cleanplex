@@ -22,6 +22,10 @@ class ScanLibraryRequest(BaseModel):
     now: bool = False
 
 
+class SkipCurrentScanRequest(BaseModel):
+    plex_guid: str | None = None
+
+
 @router.get("/queue")
 async def get_scan_queue():
     jobs = await db.get_scan_jobs()
@@ -29,6 +33,7 @@ async def get_scan_queue():
         "jobs": jobs,
         "queue_size": scan_mod.get_queue_size(),
         "current": scan_mod.get_current_scan(),
+        "currents": scan_mod.get_current_scans(),
         "paused": scan_mod.is_paused(),
     }
 
@@ -133,9 +138,14 @@ async def resume_scanner():
 
 
 @router.post("/skip-current")
-async def skip_current_scan():
+async def skip_current_scan(body: SkipCurrentScanRequest | None = None):
     """Skip (abort) the title currently being scanned; it stays pending for the next window."""
-    if not scan_mod.get_current_scan():
+    target_guid = body.plex_guid if body and body.plex_guid else scan_mod.get_current_scan()
+    if not target_guid:
         raise HTTPException(status_code=404, detail="No scan in progress")
-    scan_mod.skip_current_scan()
-    return {"ok": True}
+    if body and body.plex_guid:
+        if not scan_mod.request_skip_scan(body.plex_guid):
+            raise HTTPException(status_code=404, detail="Requested scan is not currently active")
+    else:
+        scan_mod.skip_current_scan()
+    return {"ok": True, "skipped": target_guid}

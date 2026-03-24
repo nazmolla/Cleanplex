@@ -25,6 +25,11 @@ interface ScannerStatus {
   current_scan: string | null
   current_title: string | null
   current_progress: number
+  current_scans: string[]
+  active_scans: { guid: string; title: string; progress: number; status: string }[]
+  workers_configured: number
+  workers_active: number
+  workers_idle: number
   paused: boolean
 }
 
@@ -78,7 +83,7 @@ export default function Library() {
 
   // Auto-refresh titles when something is scanning
   useEffect(() => {
-    if (!selected || !scannerStatus?.current_scan) return
+    if (!selected || !scannerStatus || scannerStatus.active_scans.length === 0) return
     const id = setInterval(async () => {
       try {
         const d = await api.get<{ titles: Title[] }>(`/api/libraries/${selected.id}/titles`)
@@ -86,7 +91,7 @@ export default function Library() {
       } catch {}
     }, 5000)
     return () => clearInterval(id)
-  }, [selected, scannerStatus?.current_scan])
+  }, [selected, scannerStatus])
 
   const loadTitles = useCallback(async (libId: string) => {
     const d = await api.get<{ titles: Title[] }>(`/api/libraries/${libId}/titles`)
@@ -244,20 +249,30 @@ export default function Library() {
             </div>
 
             {/* Scanner progress banner */}
-            {scannerStatus?.current_title && (
+            {scannerStatus && scannerStatus.active_scans.length > 0 && (
               <div className="mb-3 bg-plex-card border border-plex-orange/30 rounded-xl px-4 py-3">
-                <div className="flex items-center justify-between text-xs mb-2">
-                  <span className="text-plex-orange font-medium flex items-center gap-1.5">
-                    <span className="animate-pulse">●</span> Scanning
-                  </span>
-                  <span className="text-gray-300 truncate mx-3 flex-1">{scannerStatus.current_title}</span>
-                  <span className="text-gray-400 flex-shrink-0">{Math.round(scannerStatus.current_progress * 100)}%</span>
+                <div className="flex items-center justify-between text-xs mb-2 text-gray-400">
+                  <span>Scanning now</span>
+                  <span>{scannerStatus.workers_active}/{scannerStatus.workers_configured} workers active</span>
                 </div>
-                <div className="h-1.5 bg-plex-border rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-plex-orange rounded-full transition-all duration-1000"
-                    style={{ width: `${scannerStatus.current_progress * 100}%` }}
-                  />
+                <div className="space-y-2">
+                  {scannerStatus.active_scans.map(scan => (
+                    <div key={scan.guid}>
+                      <div className="flex items-center justify-between text-xs mb-1.5">
+                        <span className="text-plex-orange font-medium flex items-center gap-1.5">
+                          <span className="animate-pulse">●</span> Scanning
+                        </span>
+                        <span className="text-gray-300 truncate mx-3 flex-1">{scan.title}</span>
+                        <span className="text-gray-400 flex-shrink-0">{Math.round(scan.progress * 100)}%</span>
+                      </div>
+                      <div className="h-1.5 bg-plex-border rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-plex-orange rounded-full transition-all duration-1000"
+                          style={{ width: `${scan.progress * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}

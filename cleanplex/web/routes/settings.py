@@ -37,6 +37,7 @@ class SettingsPayload(BaseModel):
     confidence_threshold: str | None = None
     skip_buffer_ms: str | None = None
     scan_step_ms: str | None = None
+    scan_workers: str | None = None
     segment_gap_ms: str | None = None
     segment_min_hits: str | None = None
     scan_window_start: str | None = None

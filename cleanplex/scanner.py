@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -20,17 +21,18 @@ logger = get_logger(__name__)
 
 # Lazy-import NudeNet to avoid slow startup when not scanning
 _nude_detector = None
+_thread_local = threading.local()
 
 THUMBNAILS_DIR: Path = Path.home() / ".cleanplex" / "thumbnails"
 
 _scan_queue: asyncio.Queue[str] = asyncio.Queue()
 _force_scan_queue: asyncio.Queue[str] = asyncio.Queue()
 _paused: bool = False
-_current_guid: str | None = None
+_current_guids: set[str] = set()
 _queued_normal: set[str] = set()
 _queued_force: set[str] = set()
 _queue_wakeup_event: asyncio.Event = asyncio.Event()
-_skip_current_scan: bool = False
+_skip_requested_guids: set[str] = set()
 
 
 def get_queue_size() -> int:
@@ -38,7 +40,13 @@ def get_queue_size() -> int:
 
 
 def get_current_scan() -> str | None:
-    return _current_guid
+    if not _current_guids:
+        return None
+    return sorted(_current_guids)[0]
+
+
+def get_current_scans() -> list[str]:
+    return sorted(_current_guids)
 
 
 def pause_scanner() -> None:
@@ -56,7 +64,7 @@ def resume_scanner() -> None:
 async def force_scan_job(plex_guid: str) -> None:
     """Set force_scan flag for a specific job and queue it."""
     await db.set_force_scan(plex_guid, True)
-    if _current_guid == plex_guid:
+    if plex_guid in _current_guids:
         logger.info("Force scan requested for %s, already scanning", plex_guid)
         return
     if plex_guid in _queued_force:
@@ -73,7 +81,7 @@ def is_paused() -> bool:
 
 
 async def enqueue(plex_guid: str) -> None:
-    if _current_guid == plex_guid:
+    if plex_guid in _current_guids:
         logger.debug("Skipping enqueue for %s: already scanning", plex_guid)
         return
     if plex_guid in _queued_force or plex_guid in _queued_normal:
@@ -94,16 +102,17 @@ async def enqueue_pending() -> None:
 
 
 def _get_detector():
-    global _nude_detector
-    if _nude_detector is None:
+    detector = getattr(_thread_local, "nude_detector", None)
+    if detector is None:
         try:
             from nudenet import NudeDetector
-            _nude_detector = NudeDetector()
-            logger.info("NudeNet detector loaded")
+            detector = NudeDetector()
+            _thread_local.nude_detector = detector
+            logger.info("NudeNet detector loaded in thread %s", threading.get_ident())
         except ImportError:
             logger.error("nudenet package not installed. Run: pip install nudenet")
             raise
-    return _nude_detector
+    return detector
 
 
 def _classify_frame(
@@ -171,14 +180,23 @@ def _cluster_frames(
 
 def skip_current_scan() -> None:
     """Request that the currently-running scan title be aborted and left as pending."""
-    global _skip_current_scan
-    _skip_current_scan = True
-    logger.info("Skip requested for current scan: %s", _current_guid)
+    current = get_current_scan()
+    if current is None:
+        return
+    request_skip_scan(current)
+
+
+def request_skip_scan(plex_guid: str) -> bool:
+    """Request that a specific active scan title be aborted and left as pending."""
+    if plex_guid not in _current_guids:
+        return False
+    _skip_requested_guids.add(plex_guid)
+    logger.info("Skip requested for active scan: %s", plex_guid)
+    return True
 
 
 async def scan_video(plex_guid: str, config) -> None:
-    global _current_guid, _skip_current_scan
-    _skip_current_scan = False  # Reset for each new scan title
+    _skip_requested_guids.discard(plex_guid)
 
     job = await db.get_scan_job_by_guid(plex_guid)
     if not job:
@@ -201,7 +219,7 @@ async def scan_video(plex_guid: str, config) -> None:
         await db.update_scan_job_status(plex_guid, "failed", error_msg="File not found")
         return
 
-    _current_guid = plex_guid
+    _current_guids.add(plex_guid)
     # Fresh scan run: clear prior segments so retries/re-scans do not duplicate entries.
     deleted = await db.delete_segments_for_guid(plex_guid)
     if deleted:
@@ -274,8 +292,8 @@ async def scan_video(plex_guid: str, config) -> None:
 
         for idx, offset_ms in enumerate(range(0, duration_ms, step_ms)):
             # User requested skip of this title — leave it as pending (not re-scanned).
-            if _skip_current_scan:
-                _skip_current_scan = False
+            if plex_guid in _skip_requested_guids:
+                _skip_requested_guids.discard(plex_guid)
                 logger.info("Scan of '%s' skipped by user request", title)
                 await db.update_scan_job_status(plex_guid, "pending", progress=0.0)
                 return
@@ -335,14 +353,11 @@ async def scan_video(plex_guid: str, config) -> None:
         logger.error("Scan failed for %s: %s", title, exc)
         await db.update_scan_job_status(plex_guid, "failed", error_msg=str(exc))
     finally:
-        _current_guid = None
+        _current_guids.discard(plex_guid)
 
 
-async def scanner_loop(get_config_fn) -> None:
-    """Main scanner loop — runs forever, respects pause and scan window."""
-    # On startup, push pending jobs onto the queue
-    await enqueue_pending()
-
+async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
+    """Single scanner worker — scans queued jobs and respects pause/scan window."""
     while True:
         config = await get_config_fn()
 
@@ -397,7 +412,13 @@ async def scanner_loop(get_config_fn) -> None:
         if _paused:
             resume_scanner()
 
-        logger.info(f"Starting scan of {plex_guid} (force_scan={is_force_scan}, in_window={in_window})")
+        logger.info(
+            "Worker %d starting scan of %s (force_scan=%s, in_window=%s)",
+            worker_id,
+            plex_guid,
+            is_force_scan,
+            in_window,
+        )
         await scan_video(plex_guid, config)
         
         # Clear force_scan flag after job completes
@@ -406,3 +427,17 @@ async def scanner_loop(get_config_fn) -> None:
             logger.info(f"Cleared force_scan for {plex_guid}")
 
         await asyncio.sleep(1)  # Brief pause between scans
+
+
+async def scanner_loop(get_config_fn) -> None:
+    """Main scanner supervisor — runs multiple scanner workers concurrently."""
+    await enqueue_pending()
+
+    config = await get_config_fn()
+    worker_count = max(1, int(getattr(config, "scan_workers", 2)))
+    logger.info("Starting scanner pool with %d worker(s)", worker_count)
+
+    await asyncio.gather(*[
+        _scanner_worker_loop(i + 1, get_config_fn)
+        for i in range(worker_count)
+    ])

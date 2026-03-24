@@ -9,6 +9,7 @@ interface Settings {
   confidence_threshold: string
   skip_buffer_ms: string
   scan_step_ms: string
+  scan_workers: string
   segment_gap_ms: string
   segment_min_hits: string
   scan_window_start: string
@@ -32,6 +33,7 @@ const DEFAULT: Settings = {
   confidence_threshold: '0.6',
   skip_buffer_ms: '3000',
   scan_step_ms: '5000',
+  scan_workers: '2',
   segment_gap_ms: '12000',
   segment_min_hits: '1',
   scan_window_start: '23:00',
@@ -187,6 +189,9 @@ export default function SettingsPage() {
           </Field>
           <Field label="Scan Frame Interval (ms)" hint="How often frames are sampled during scanning. Lower catches more scenes but takes longer.">
             <input type="number" min="1000" max="20000" step="500" value={form.scan_step_ms} onChange={set('scan_step_ms')} className={inputCls} />
+          </Field>
+          <Field label="Scanner Workers" hint="How many titles can be scanned in parallel. Higher values use more CPU, disk, and memory.">
+            <input type="number" min="1" max="12" step="1" value={form.scan_workers} onChange={set('scan_workers')} className={inputCls} />
           </Field>
           <Field label="Segment Merge Gap (ms)" hint="Flagged frames closer than this are merged into one segment.">
             <input type="number" min="1000" max="30000" step="500" value={form.segment_gap_ms} onChange={set('segment_gap_ms')} className={inputCls} />

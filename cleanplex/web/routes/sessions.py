@@ -4,7 +4,7 @@ from ...logger import get_logger
 import cleanplex.plex_client as plex_mod
 from ...watcher import skip_events
 from ... import database as db
-from ...scanner import get_queue_size, get_current_scan, is_paused
+from ...scanner import get_queue_size, get_current_scan, get_current_scans, is_paused
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -47,16 +47,39 @@ async def scanner_status():
     current_guid = get_current_scan()
     current_title = None
     current_progress = 0.0
+    active_scans: list[dict] = []
+
+    current_guids = get_current_scans()
+    for guid in current_guids:
+        job = await db.get_scan_job_by_guid(guid)
+        if not job:
+            continue
+        active_scans.append({
+            "guid": guid,
+            "title": job.get("title") or guid,
+            "progress": float(job.get("progress") or 0.0),
+            "status": job.get("status") or "scanning",
+        })
+
     if current_guid:
         job = await db.get_scan_job_by_guid(current_guid)
         if job:
             current_title = job["title"]
             current_progress = job["progress"]
+
+    configured_workers = max(1, int(await db.get_setting("scan_workers", "2")))
+    active_workers = len(active_scans)
+
     return {
         "queue_size": get_queue_size(),
         "current_scan": current_guid,
         "current_title": current_title,
         "current_progress": current_progress,
+        "current_scans": current_guids,
+        "active_scans": active_scans,
+        "workers_configured": configured_workers,
+        "workers_active": active_workers,
+        "workers_idle": max(0, configured_workers - active_workers),
         "paused": is_paused(),
     }
 
