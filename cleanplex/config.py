@@ -46,13 +46,8 @@ class Config:
                     return [str(x) for x in parsed if isinstance(x, str)]
             except Exception:
                 pass
-            return [
-                "FEMALE_BREAST_EXPOSED",
-                "FEMALE_GENITALIA_EXPOSED",
-                "MALE_GENITALIA_EXPOSED",
-                "ANUS_EXPOSED",
-                "BUTTOCKS_EXPOSED",
-            ]
+            # Return empty list if parsing fails - no scanning until labels are configured
+            return []
 
         return cls(
             plex_url=s.get("plex_url", ""),

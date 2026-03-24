@@ -133,7 +133,11 @@ def _classify_frame(
     threshold: float,
     enabled_labels: set[str],
 ) -> tuple[bool, float, list[str]]:
-    """Return (is_nude, confidence, detected_labels) for a JPEG frame."""
+    """Return (is_nude, confidence, detected_labels) for a JPEG frame.
+    
+    Only returns labels that are in enabled_labels.
+    Only returns is_nude=True if any enabled label meets threshold.
+    """
     try:
         import tempfile, os
         detector = _get_detector()
@@ -153,15 +157,20 @@ def _classify_frame(
 
         max_score = 0.0
         detected = []
+        
+        # Only process labels that are enabled
         for det in results:
             label = det.get("class")
+            score = det.get("score", 0.0)
+            
+            # Only include if this label is enabled
             if label in enabled_labels:
-                score = det.get("score", 0.0)
-                if score > max_score:
-                    max_score = score
                 if label not in detected:
                     detected.append(label)
+                if score > max_score:
+                    max_score = score
 
+        # Return is_nude only if we found enabled labels above threshold
         return max_score >= threshold, max_score, detected
     except Exception as exc:
         logger.debug("Classification error: %s", exc)
@@ -264,15 +273,7 @@ async def scan_video(plex_guid: str, config) -> None:
         cluster_detected_labels: list[str] = []
 
         threshold = config.confidence_threshold
-        enabled_labels = set(getattr(config, "scan_labels", []) or [])
-        if not enabled_labels:
-            enabled_labels = {
-                "FEMALE_BREAST_EXPOSED",
-                "FEMALE_GENITALIA_EXPOSED",
-                "MALE_GENITALIA_EXPOSED",
-                "ANUS_EXPOSED",
-                "BUTTOCKS_EXPOSED",
-            }
+        enabled_labels = set(config.scan_labels) if config.scan_labels else set()
 
         THUMBNAILS_DIR.mkdir(parents=True, exist_ok=True)
 

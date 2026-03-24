@@ -103,7 +103,7 @@ async def get_titles_in_library(library_id: str):
 
 @router.get("/titles/{plex_guid:path}/segments")
 async def get_segments_for_title(plex_guid: str):
-    """Return all segments for a specific title."""
+    """Return all segments for a specific title with all detected labels."""
     segments = await db.get_segments_for_guid(plex_guid)
     result = []
     for seg in segments:
