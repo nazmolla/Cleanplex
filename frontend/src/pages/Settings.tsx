@@ -28,6 +28,16 @@ interface Library {
   type: string
 }
 
+interface SyncStatus {
+  sync_enabled: boolean
+  instance_name: string | null
+  github_repo: string | null
+  conflict_resolution: string
+  verified_threshold: number
+  timing_tolerance_ms: number
+  last_sync_time: string | null
+}
+
 const DEFAULT: Settings = {
   plex_url: '',
   plex_token: '',
@@ -70,16 +80,32 @@ export default function SettingsPage() {
   const [showToken, setShowToken] = useState(false)
   const [libraries, setLibraries] = useState<Library[]>([])
   const [detectorLabels, setDetectorLabels] = useState<string[]>([])
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
+  const [syncForm, setSyncForm] = useState({ sync_enabled: false, instance_name: '', github_repo: '', github_token: '' })
+  const [savingSync, setSavingSync] = useState(false)
+  const [savedSync, setSavedSync] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [uploadResult, setUploadResult] = useState<{ ok: boolean; message: string } | null>(null)
 
   useEffect(() => {
     Promise.all([
       api.get<Settings>('/api/settings'),
       api.get<{ libraries: Library[] }>('/api/libraries').catch(() => ({ libraries: [] })),
       api.get<{ labels: string[] }>('/api/settings/detector-labels').catch(() => ({ labels: [] })),
-    ]).then(([settings, libs, labels]) => {
+      api.get<SyncStatus>('/api/sync/status').catch(() => null),
+    ]).then(([settings, libs, labels, sync]) => {
       setForm({ ...DEFAULT, ...settings })
       setLibraries(libs.libraries)
       setDetectorLabels(labels.labels)
+      if (sync) {
+        setSyncStatus(sync)
+        setSyncForm(f => ({
+          ...f,
+          sync_enabled: sync.sync_enabled,
+          instance_name: sync.instance_name ?? '',
+          github_repo: sync.github_repo ?? '',
+        }))
+      }
       setLoading(false)
     })
   }, [])
@@ -120,6 +146,42 @@ export default function SettingsPage() {
       setTestResult(r)
     } finally {
       setTesting(false)
+    }
+  }
+
+  const saveSync = async () => {
+    setSavingSync(true)
+    setSavedSync(false)
+    try {
+      await api.post('/api/sync/settings', {
+        instance_name: syncForm.instance_name || 'default',
+        sync_enabled: syncForm.sync_enabled,
+        github_repo: syncForm.github_repo || null,
+        github_token: syncForm.github_token || null,
+      })
+      setSavedSync(true)
+      const updated = await api.get<SyncStatus>('/api/sync/status').catch(() => null)
+      if (updated) setSyncStatus(updated)
+      setTimeout(() => setSavedSync(false), 3000)
+    } catch {
+      // ignore
+    } finally {
+      setSavingSync(false)
+    }
+  }
+
+  const doUpload = async () => {
+    setUploading(true)
+    setUploadResult(null)
+    try {
+      const r = await api.post<{ status: string; files_processed: number; entries_updated: number; message: string }>('/api/sync/upload-segment-library')
+      setUploadResult({ ok: r.status === 'success' || r.status === 'no_data', message: r.message })
+      const updated = await api.get<SyncStatus>('/api/sync/status').catch(() => null)
+      if (updated) setSyncStatus(updated)
+    } catch (e: any) {
+      setUploadResult({ ok: false, message: e?.message ?? 'Upload failed' })
+    } finally {
+      setUploading(false)
     }
   }
 
@@ -355,6 +417,71 @@ export default function SettingsPage() {
           </div>
         </section>
       )}
+
+      {/* Segment Library Sync */}
+      <section>
+        <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Segment Library Sync</h2>
+        <p className="text-xs text-gray-500 mb-4">Share detected segments across multiple Cleanplex instances. Sync is always manual — never automatic.</p>
+        <div className="space-y-4">
+          <Field label="Instance Name" hint="A unique name for this Cleanplex instance used to identify the source of segments.">
+            <input
+              type="text"
+              value={syncForm.instance_name}
+              onChange={e => setSyncForm(f => ({ ...f, instance_name: e.target.value }))}
+              placeholder="e.g. home-server"
+              className={inputCls}
+            />
+          </Field>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={syncForm.sync_enabled}
+              onChange={e => setSyncForm(f => ({ ...f, sync_enabled: e.target.checked }))}
+              className="w-4 h-4 accent-plex-orange"
+            />
+            <span className="text-sm text-gray-300">Enable sync</span>
+          </label>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={saveSync}
+              disabled={savingSync}
+              className="px-4 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
+            >
+              {savingSync && <Loader2 size={13} className="animate-spin" />}
+              Save Sync Settings
+            </button>
+            {savedSync && (
+              <span className="flex items-center gap-1.5 text-xs text-green-400">
+                <CheckCircle2 size={13} /> Saved
+              </span>
+            )}
+          </div>
+          <div className="pt-2 border-t border-plex-border/50 space-y-3">
+            <p className="text-xs text-gray-500">Manual sync operations — push or pull segment data to/from the shared library.</p>
+            <div className="flex items-center gap-3 flex-wrap">
+              <button
+                type="button"
+                onClick={doUpload}
+                disabled={uploading || !syncForm.sync_enabled}
+                className="px-4 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
+              >
+                {uploading && <Loader2 size={13} className="animate-spin" />}
+                Upload to Library
+              </button>
+              {uploadResult && (
+                <span className={`flex items-center gap-1.5 text-xs ${uploadResult.ok ? 'text-green-400' : 'text-red-400'}`}>
+                  {uploadResult.ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
+                  {uploadResult.message}
+                </span>
+              )}
+            </div>
+            {syncStatus?.last_sync_time && (
+              <p className="text-xs text-gray-600">Last sync: {syncStatus.last_sync_time}</p>
+            )}
+          </div>
+        </div>
+      </section>
 
       {/* Save */}
       <div className="flex items-center gap-3">

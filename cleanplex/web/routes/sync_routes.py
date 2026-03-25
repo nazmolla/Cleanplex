@@ -104,11 +104,7 @@ async def configure_sync(
     if not instance_name or not instance_name.strip():
         raise HTTPException(status_code=400, detail="instance_name is required")
     
-    if sync_enabled and (not github_repo or not github_token):
-        raise HTTPException(
-            status_code=400, 
-            detail="github_repo and github_token required when sync_enabled=true"
-        )
+    # GitHub fields are optional — required only when Phase 2 cloud integration is active
     
     await upsert_sync_metadata(
         instance_name=instance_name,
