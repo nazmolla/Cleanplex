@@ -25,7 +25,9 @@ logger = get_logger(__name__)
 # Lazy-import NudeNet to avoid slow startup when not scanning
 _nude_detector = None
 _thread_local = threading.local()
-_model_download_lock = threading.Lock()
+# asyncio.Lock guards the async model-download path; threading.local() still owns
+# per-thread detector instances (NudeNet is not thread-safe to share).
+_model_download_lock = asyncio.Lock()
 
 THUMBNAILS_DIR: Path = Path.home() / ".cleanplex" / "thumbnails"
 MODELS_DIR: Path = Path.home() / ".cleanplex" / "models"
@@ -45,6 +47,10 @@ _queue_wakeup_event: asyncio.Event = asyncio.Event()
 _skip_requested_guids: set[str] = set()
 _worker_pool_size: int = 1
 _restart_requested: bool = False
+
+# Guards all read-check-modify operations on _current_guids, _queued_normal,
+# and _queued_force to prevent duplicate or lost entries under concurrent workers.
+_state_lock = asyncio.Lock()
 
 
 def get_queue_size() -> int:
@@ -85,31 +91,27 @@ def resume_scanner() -> None:
 
 
 async def force_scan_job(plex_guid: str) -> None:
-    """
-    Prioritize a title for immediate scanning by moving it to the force-scan queue.
-    
-    Ensures the force-scan flag is set in the database and the title is moved to
-    the high-priority force queue (even if it was already in the normal queue).
-    Workers always check the force queue first, so this title will be scanned
-    as soon as a worker is available.
+    """Prioritize a title for immediate scanning by moving it to the force-scan queue.
+
+    DB flag is set outside the lock; queue state mutations are guarded by _state_lock
+    to prevent duplicate entries under concurrent API calls.
     """
     await db.set_force_scan(plex_guid, True)
-    if plex_guid in _current_guids:
-        logger.info("Force scan requested for %s, already scanning", plex_guid)
-        return
-    if plex_guid in _queued_force:
-        logger.info("Force scan requested for %s, already at top priority", plex_guid)
-        return
-    # Remove from normal queue if already there, so it goes to force queue instead.
-    # This ensures "Scan Now" actually prioritizes the title by moving it ahead of
-    # other pending scans in the normal queue.
-    if plex_guid in _queued_normal:
-        _queued_normal.discard(plex_guid)
-        logger.info("Moved %s from normal queue to force queue", plex_guid)
-    await _force_scan_queue.put(plex_guid)
-    _queued_force.add(plex_guid)
-    _queue_wakeup_event.set()
-    logger.warning(f"Force scan activated for {plex_guid} - will scan immediately")
+    async with _state_lock:
+        if plex_guid in _current_guids:
+            logger.info("Force scan requested for %s, already scanning", plex_guid)
+            return
+        if plex_guid in _queued_force:
+            logger.info("Force scan requested for %s, already at top priority", plex_guid)
+            return
+        # Remove from normal queue if already there, so it goes to force queue instead.
+        if plex_guid in _queued_normal:
+            _queued_normal.discard(plex_guid)
+            logger.info("Moved %s from normal queue to force queue", plex_guid)
+        await _force_scan_queue.put(plex_guid)
+        _queued_force.add(plex_guid)
+        _queue_wakeup_event.set()
+    logger.warning("Force scan activated for %s — will scan immediately", plex_guid)
 
 
 def is_paused() -> bool:
@@ -117,15 +119,18 @@ def is_paused() -> bool:
 
 
 async def enqueue(plex_guid: str) -> None:
-    if plex_guid in _current_guids:
-        logger.debug("Skipping enqueue for %s: already scanning", plex_guid)
-        return
-    if plex_guid in _queued_force or plex_guid in _queued_normal:
-        logger.debug("Skipping enqueue for %s: already queued", plex_guid)
-        return
-    await _scan_queue.put(plex_guid)
-    _queued_normal.add(plex_guid)
-    _queue_wakeup_event.set()
+    # Hold _state_lock across the whole check-then-put to prevent two concurrent
+    # callers from both passing the guard and inserting duplicates.
+    async with _state_lock:
+        if plex_guid in _current_guids:
+            logger.debug("Skipping enqueue for %s: already scanning", plex_guid)
+            return
+        if plex_guid in _queued_force or plex_guid in _queued_normal:
+            logger.debug("Skipping enqueue for %s: already queued", plex_guid)
+            return
+        await _scan_queue.put(plex_guid)
+        _queued_normal.add(plex_guid)
+        _queue_wakeup_event.set()
 
 
 async def enqueue_pending() -> None:
@@ -142,13 +147,17 @@ def _get_detector(model_name: str = "320n", model_path: str = ""):
     detector = getattr(_thread_local, "nude_detector", None)
     detector_key = getattr(_thread_local, "nude_detector_key", None)
 
-    # 640m can be downloaded automatically to local app storage when needed.
+    # 640m is pre-warmed by scan_video() via _ensure_640m_model_async() before any
+    # thread is dispatched. _get_detector() only does a local path check here.
     requested_resolution = 640 if model_name_normalized.startswith("640") else 320
     selected_model_path = (model_path or "").strip()
     if requested_resolution == 640 and not selected_model_path:
-        selected_model_path = _ensure_local_640m_model()
-        if not selected_model_path:
-            logger.warning("Could not prepare 640m model; falling back to bundled 320n")
+        # Fallback: attempt sync check in case caller skipped pre-warm.
+        candidate = MODELS_DIR / NUDENET_640_MODEL_FILENAME
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            selected_model_path = str(candidate)
+        else:
+            logger.warning("640m model not found locally; falling back to bundled 320n")
             requested_resolution = 320
 
     if selected_model_path and not os.path.isfile(selected_model_path):
@@ -178,37 +187,51 @@ def _get_detector(model_name: str = "320n", model_path: str = ""):
 
 
 def _ensure_local_640m_model() -> str:
-    """Ensure 640m model exists locally and return its path, or empty string on failure."""
+    """Blocking download of the 640m model. Must be called via asyncio.to_thread so the
+    event loop is not blocked; caller must hold _model_download_lock before dispatching."""
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     target = MODELS_DIR / NUDENET_640_MODEL_FILENAME
     if target.is_file() and target.stat().st_size > 0:
         return str(target)
 
-    with _model_download_lock:
-        # Another thread may have completed the download while waiting on lock.
+    for url in NUDENET_640_DOWNLOAD_URLS:
+        try:
+            logger.info("Downloading NudeNet 640m model from %s", url)
+            with httpx.Client(timeout=120.0, follow_redirects=True) as client:
+                with client.stream("GET", url) as resp:
+                    resp.raise_for_status()
+                    with open(target, "wb") as out:
+                        for chunk in resp.iter_bytes():
+                            if chunk:
+                                out.write(chunk)
+
+            if target.is_file() and target.stat().st_size > 0:
+                logger.info("Downloaded NudeNet 640m model to %s", target)
+                return str(target)
+        except Exception as exc:
+            logger.warning("Failed to download NudeNet 640m model from %s: %s", url, exc)
+
+    if target.exists() and target.stat().st_size == 0:
+        target.unlink(missing_ok=True)
+    return ""
+
+
+async def _ensure_640m_model_async() -> str:
+    """Ensure the 640m model file is present, downloading it if needed.
+
+    Uses asyncio.Lock so only one coroutine runs the download at a time; others
+    wait and then return the cached path without redundant downloads.
+    """
+    target = MODELS_DIR / NUDENET_640_MODEL_FILENAME
+    # Fast path: model already on disk — no lock needed.
+    if target.is_file() and target.stat().st_size > 0:
+        return str(target)
+
+    async with _model_download_lock:
+        # Re-check after acquiring lock: another coroutine may have just finished.
         if target.is_file() and target.stat().st_size > 0:
             return str(target)
-
-        for url in NUDENET_640_DOWNLOAD_URLS:
-            try:
-                logger.info("Downloading NudeNet 640m model from %s", url)
-                with httpx.Client(timeout=120.0, follow_redirects=True) as client:
-                    with client.stream("GET", url) as resp:
-                        resp.raise_for_status()
-                        with open(target, "wb") as out:
-                            for chunk in resp.iter_bytes():
-                                if chunk:
-                                    out.write(chunk)
-
-                if target.is_file() and target.stat().st_size > 0:
-                    logger.info("Downloaded NudeNet 640m model to %s", target)
-                    return str(target)
-            except Exception as exc:
-                logger.warning("Failed to download NudeNet 640m model from %s: %s", url, exc)
-
-        if target.exists() and target.stat().st_size == 0:
-            target.unlink(missing_ok=True)
-        return ""
+        return await asyncio.to_thread(_ensure_local_640m_model)
 
 
 def _classify_frame(
@@ -337,7 +360,8 @@ async def scan_video(plex_guid: str, config) -> None:
         await db.update_scan_job_status(plex_guid, "failed", error_msg="File not found")
         return
 
-    _current_guids.add(plex_guid)
+    async with _state_lock:
+        _current_guids.add(plex_guid)
     # Fresh scan run: clear prior segments so retries/re-scans do not duplicate entries.
     deleted = await db.delete_segments_for_guid(plex_guid)
     if deleted:
@@ -368,6 +392,14 @@ async def scan_video(plex_guid: str, config) -> None:
         enabled_labels = set(config.scan_labels) if config.scan_labels else set()
         nudenet_model = str(getattr(config, "nudenet_model", "320n"))
         nudenet_model_path = str(getattr(config, "nudenet_model_path", ""))
+
+        # Pre-warm 640m model under asyncio.Lock before dispatching threads so
+        # parallel workers do not race to download the same file concurrently.
+        if nudenet_model.startswith("640") and not nudenet_model_path:
+            nudenet_model_path = await _ensure_640m_model_async()
+            if not nudenet_model_path:
+                logger.warning("Could not prepare 640m model for %s; falling back to 320n", title)
+                nudenet_model = "320n"
 
         THUMBNAILS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -496,7 +528,8 @@ async def scan_video(plex_guid: str, config) -> None:
         logger.error("Scan failed for %s: %s", title, exc)
         await db.update_scan_job_status(plex_guid, "failed", error_msg=str(exc))
     finally:
-        _current_guids.discard(plex_guid)
+        async with _state_lock:
+            _current_guids.discard(plex_guid)
 
 
 async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
@@ -508,10 +541,12 @@ async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
             # Prioritize explicit force-scan requests ahead of normal queue items.
             try:
                 plex_guid = _force_scan_queue.get_nowait()
-                _queued_force.discard(plex_guid)
+                async with _state_lock:
+                    _queued_force.discard(plex_guid)
             except asyncio.QueueEmpty:
                 plex_guid = await asyncio.wait_for(_scan_queue.get(), timeout=30)
-                _queued_normal.discard(plex_guid)
+                async with _state_lock:
+                    _queued_normal.discard(plex_guid)
         except asyncio.TimeoutError:
             # Queue is empty, respect scan window
             if not config.is_scan_window():
