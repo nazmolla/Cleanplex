@@ -1,4 +1,11 @@
-"""Segment library sharing: file hashing, sync coordination, and data aggregation."""
+"""
+Segment library sharing: file hashing, sync coordination, and data aggregation.
+
+⚠️  MANUAL OPERATIONS ONLY
+This module supports user-initiated sync operations (upload/download).
+No automatic scheduling or background jobs trigger these functions.
+All sync is completely under user control via API endpoints.
+"""
 
 import hashlib
 import json

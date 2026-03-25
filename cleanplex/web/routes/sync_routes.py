@@ -138,13 +138,16 @@ async def upload_segment_library():
     """
     Upload all local segments to the cloud library.
     
-    Process:
-    1. Gather all segmentsfrom local scans (file path must be available)
-    2. Compute file hash for each
-    3. Pre-merge locally (prevent git conflicts if implementing GitHub storage)
-    4. Store in local library table (future: push to GitHub)
+    ⚠️  MANUAL OPERATION ONLY - Never called automatically
+    User must explicitly trigger from UI or API client
     
-    This is designed to be called periodically or on-demand.
+    Process:
+    1. Gather all local scans with valid file paths
+    2. Compute SHA256 file hash for each
+    3. Package segments with metadata (confidence, labels, source instance)
+    4. Store in local library table (future: push to GitHub as backup)
+    
+    Returns: Count of files processed and entries updated
     """
     if not await is_sync_enabled():
         raise HTTPException(status_code=400, detail="Sync not enabled")
@@ -195,17 +198,21 @@ async def download_segment_library(
     """
     Download and merge segments from cloud library for given file hashes.
     
+    ⚠️  MANUAL OPERATION ONLY - Never called automatically
+    User must explicitly request for specific files via UI or API
+    
     Parameters:
-    - file_hashes: Comma-separated list of SHA256 file hashes
+    - file_hashes: Comma-separated list of SHA256 file hashes (your local files)
     
     Returns:
-    - segments: Merged segments for each file
-    - statistics: Per-file merge statistics (verified count, source count, etc.)
+    - segments: Merged segments per file (local preference priority)
+    - merge_results: Per-file statistics (verified count, source count, confidence level)
     
     Merge Process:
-    1. Fetch all sources for each file hash
+    1. Fetch all cloud sources for requested file hashes
     2. Apply conflict resolution (voting, confidence weighting, timing tolerance)
     3. Return merged segments with confidence level and source tracking
+    4. Does NOT modify local database - only returns merged data for review
     """
     if not await is_sync_enabled():
         raise HTTPException(status_code=400, detail="Sync not enabled")

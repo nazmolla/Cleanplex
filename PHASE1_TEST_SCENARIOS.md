@@ -1,5 +1,9 @@
 """Test scenarios for segment library sharing (Phase 1).
 
+⚠️  MANUAL OPERATIONS ONLY
+All sync operations (upload/download) are triggered manually via API/UI.
+No background jobs, scheduled tasks, or automatic triggers ever initiate sync.
+
 This document covers comprehensive test cases for upload, download, merge,
 and conflict resolution logic. All scenarios are designed to validate robustness.
 """

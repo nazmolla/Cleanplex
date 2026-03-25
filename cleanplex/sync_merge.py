@@ -1,4 +1,10 @@
-"""Segment library conflict resolution: voting, confidence weighting, and merge logic."""
+"""
+Segment library conflict resolution: voting, confidence weighting, and merge logic.
+
+⚠️  MANUAL OPERATIONS ONLY
+This module is used only during user-initiated sync downloads.
+No background processes or automatic scheduling uses this code.
+"""
 
 import json
 from typing import Any
