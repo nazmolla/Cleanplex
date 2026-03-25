@@ -16,6 +16,7 @@ Every change — regardless of size — must follow these rules. No exceptions.
 7. [Pull Request & Commit Standards](#7-pull-request--commit-standards)
 8. [Issue Closing Protocol](#8-issue-closing-protocol)
 9. [AI-Assisted Development](#9-ai-assisted-development)
+10. [Deploy Workflow](#10-deploy-workflow)
 
 ---
 
@@ -437,3 +438,48 @@ When using Claude Code or any AI assistant on this repository:
 - Post the closing comment from §8.1 before or immediately after the close
 - If a fix introduces a new issue (common with performance work), file it before closing the original
 - If code in the issue evidence has moved (line numbers shifted), update the closing comment with the current location
+
+---
+
+## 10. Deploy Workflow
+
+**Every change that touches Python or frontend code must pass through a dev instance before touching production.** No exceptions — not for "trivial" fixes, not for one-liners.
+
+### 10.1 Dev Instance
+
+The dev instance runs on port **7980** with data dir `~/.cleanplex-dev/`. It is seeded from the production DB on first start so Plex credentials and settings are pre-configured.
+
+Scripts:
+
+```bash
+bash scripts/dev-start.sh        # seed DB from prod (if needed) and start on :7980
+bash scripts/dev-verify.sh       # smoke-test all API endpoints
+bash scripts/dev-stop.sh         # stop the dev instance
+```
+
+`dev-start.sh --fresh` wipes `~/.cleanplex-dev/` and reseeds from production.
+
+### 10.2 Mandatory Pre-Deploy Checklist
+
+Before building the frontend or restarting the production server:
+
+1. **Run unit tests**: `pytest tests/ -v` — all must pass
+2. **Start dev instance**: `bash scripts/dev-start.sh`
+3. **Verify startup log** — check `cleanplex-dev.log` for any exceptions or `AttributeError`
+4. **Run smoke tests**: `bash scripts/dev-verify.sh` — all endpoints must return 200
+5. **Exercise changed paths manually** — if a scanner change was made, verify a scan job runs; if UI changed, load the page in a browser at `http://localhost:7980`
+6. **Stop dev instance**: `bash scripts/dev-stop.sh`
+7. **Build frontend**: `cd frontend && npm run build`
+8. **Deploy to production**: restart the production server
+
+Steps 3–5 catch runtime errors (missing attributes, import failures, startup crashes) that unit tests cannot catch because they don't boot the full server.
+
+### 10.3 Production Restart Procedure
+
+Never kill production before the replacement is confirmed healthy:
+
+1. Start replacement on a different port OR confirm the dev instance passes all checks
+2. Kill production: `powershell -Command "Get-Process cleanplex -ErrorAction SilentlyContinue | Stop-Process -Force"`
+3. Start production: `.venv/Scripts/cleanplex.exe > cleanplex_restart.log 2>&1 &`
+4. Verify: poll `http://localhost:7979/api/settings` until it responds
+5. Check log for errors before declaring done
