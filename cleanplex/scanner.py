@@ -75,7 +75,14 @@ def resume_scanner() -> None:
 
 
 async def force_scan_job(plex_guid: str) -> None:
-    """Set force_scan flag for a specific job and queue it."""
+    """
+    Prioritize a title for immediate scanning by moving it to the force-scan queue.
+    
+    Ensures the force-scan flag is set in the database and the title is moved to
+    the high-priority force queue (even if it was already in the normal queue).
+    Workers always check the force queue first, so this title will be scanned
+    as soon as a worker is available.
+    """
     await db.set_force_scan(plex_guid, True)
     if plex_guid in _current_guids:
         logger.info("Force scan requested for %s, already scanning", plex_guid)
@@ -83,6 +90,12 @@ async def force_scan_job(plex_guid: str) -> None:
     if plex_guid in _queued_force:
         logger.info("Force scan requested for %s, already at top priority", plex_guid)
         return
+    # Remove from normal queue if already there, so it goes to force queue instead.
+    # This ensures "Scan Now" actually prioritizes the title by moving it ahead of
+    # other pending scans in the normal queue.
+    if plex_guid in _queued_normal:
+        _queued_normal.discard(plex_guid)
+        logger.info("Moved %s from normal queue to force queue", plex_guid)
     await _force_scan_queue.put(plex_guid)
     _queued_force.add(plex_guid)
     _queue_wakeup_event.set()

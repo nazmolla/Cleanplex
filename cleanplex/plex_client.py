@@ -374,6 +374,36 @@ class PlexClient:
             return ""
         return f"{self.url}{thumb_path}?X-Plex-Token={self.token}"
 
+    async def get_episode_show_art(self, rating_key: str) -> tuple[str, str, str]:
+        """Return (show_guid, show_title, show_thumb_path) for an episode rating key."""
+        try:
+            srv = await asyncio.to_thread(self._get_server)
+            item = await asyncio.to_thread(srv.fetchItem, int(rating_key))
+            show_guid = getattr(item, "grandparentGuid", "") or ""
+            show_title = getattr(item, "grandparentTitle", "") or ""
+            show_thumb = getattr(item, "grandparentThumb", "") or ""
+            return show_guid, show_title, show_thumb
+        except Exception as exc:
+            logger.debug("Failed to resolve show art for rating_key %s: %s", rating_key, exc)
+            return "", "", ""
+
+    async def fetch_image(self, image_path: str) -> tuple[bytes, str]:
+        """Fetch an image from Plex and return (bytes, content_type)."""
+        if not image_path:
+            return b"", ""
+
+        path = image_path if image_path.startswith("/") else f"/{image_path}"
+        url = f"{self.url}{path}"
+        if "X-Plex-Token=" not in url:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}X-Plex-Token={self.token}"
+
+        resp = await self._http.get(url)
+        if resp.status_code >= 400:
+            return b"", ""
+
+        return resp.content, resp.headers.get("content-type", "image/jpeg")
+
     async def close(self) -> None:
         await self._http.aclose()
 

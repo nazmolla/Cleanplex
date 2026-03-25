@@ -12,6 +12,7 @@ interface Title {
   plex_guid: string
   title: string
   status: string
+  finished_at?: string | null
   thumb_url: string
   segment_count: number
 }
@@ -29,6 +30,19 @@ interface Segment {
   labels?: string
 }
 
+interface ScannerStatus {
+  queue_size: number
+  current_scan: string | null
+  current_title: string | null
+  current_progress: number
+  current_scans: string[]
+  active_scans: { guid: string; title: string; progress: number; status: string }[]
+  workers_configured: number
+  workers_active: number
+  workers_idle: number
+  paused: boolean
+}
+
 // For TV shows, parse episode info from title
 interface EpisodeGroup {
   episodeKey: string // e.g., "S01E01" or full episode title
@@ -43,6 +57,13 @@ function msToTimecode(ms: number): string {
   const m = Math.floor((s % 3600) / 60)
   const sec = s % 60
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
+}
+
+function formatFinishedAt(value?: string | null): string {
+  if (!value) return ''
+  const dt = new Date(value)
+  if (Number.isNaN(dt.getTime())) return ''
+  return dt.toLocaleString()
 }
 
 function renderLabels(labels?: string): React.ReactNode {
@@ -89,6 +110,7 @@ export default function Segments() {
   const [previewSeg, setPreviewSeg] = useState<Segment | null>(null)
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false)
   const [expandedEpisodes, setExpandedEpisodes] = useState<Set<string>>(new Set())
+  const [scannerStatus, setScannerStatus] = useState<ScannerStatus | null>(null)
   const previewVideoRef = useRef<HTMLVideoElement | null>(null)
 
   // Parse episode info from segment title (e.g., "Show – S01E05 – Title")
@@ -131,6 +153,17 @@ export default function Segments() {
 
   useEffect(() => {
     api.get<{ libraries: Library[] }>('/api/libraries').then(d => setLibraries(d.libraries))
+  }, [])
+
+  // Poll scanner status every 3s so Segments page mirrors live scan activity.
+  useEffect(() => {
+    const poll = () =>
+      api.get<ScannerStatus>('/api/sessions/scanner-status')
+        .then(setScannerStatus)
+        .catch(() => {})
+    poll()
+    const id = setInterval(poll, 3000)
+    return () => clearInterval(id)
   }, [])
 
   const selectLib = async (lib: Library) => {
@@ -271,6 +304,34 @@ export default function Segments() {
 
       {/* Segments detail panel - independent scroll */}
       <div className="flex-1 min-w-0 overflow-y-auto">
+        {scannerStatus && scannerStatus.active_scans.length > 0 && (
+          <div className="mb-3 bg-plex-card border border-plex-orange/30 rounded-xl px-4 py-3">
+            <div className="flex items-center justify-between text-xs mb-2 text-gray-400">
+              <span>Scanning now</span>
+              <span>{scannerStatus.workers_active}/{scannerStatus.workers_configured} workers active</span>
+            </div>
+            <div className="space-y-2">
+              {scannerStatus.active_scans.map(scan => (
+                <div key={scan.guid}>
+                  <div className="flex items-center justify-between text-xs mb-1.5">
+                    <span className="text-plex-orange font-medium flex items-center gap-1.5">
+                      <span className="animate-pulse">●</span> Scanning
+                    </span>
+                    <span className="text-gray-300 truncate mx-3 flex-1">{scan.title}</span>
+                    <span className="text-gray-400 flex-shrink-0">{Math.round(scan.progress * 100)}%</span>
+                  </div>
+                  <div className="h-1.5 bg-plex-border rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-plex-orange rounded-full transition-all duration-1000"
+                      style={{ width: `${scan.progress * 100}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {!selectedTitle ? (
           <div className="flex items-center justify-center h-64 text-gray-600 text-sm">
             Select a title to review its segments
@@ -290,6 +351,9 @@ export default function Segments() {
                 <div>
                   <h2 className="text-lg font-semibold text-gray-100">{selectedTitle.title}</h2>
                   <p className="text-sm text-gray-500">{segments.length} segment{segments.length !== 1 ? 's' : ''} detected</p>
+                  {selectedTitle.finished_at && (
+                    <p className="text-xs text-gray-500 mt-0.5">Scan finished: {formatFinishedAt(selectedTitle.finished_at)}</p>
+                  )}
                 </div>
               </div>
               {segments.length > 0 && (

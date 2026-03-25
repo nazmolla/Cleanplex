@@ -14,7 +14,11 @@ interface Title {
   title: string
   status: string
   progress: number
+  finished_at?: string | null
   thumb_url: string
+  poster_url?: string
+  show_guid?: string
+  show_title?: string
   segment_count: number
   content_rating: string
   media_type: string
@@ -53,9 +57,11 @@ interface SeasonGroup {
 }
 
 interface ShowGroup {
+  show_key: string
   show: string
   seasons: SeasonGroup[]
   episodes: Title[]
+  poster_url: string
 }
 
 function parseEpisodeTitle(title: string): ParsedEpisodeTitle {
@@ -91,6 +97,13 @@ function StatusBadge({ status, progress }: { status: string; progress: number })
   }
 }
 
+function formatFinishedAt(value?: string | null): string {
+  if (!value) return ''
+  const dt = new Date(value)
+  if (Number.isNaN(dt.getTime())) return ''
+  return dt.toLocaleString()
+}
+
 export default function Library() {
   const [libraries, setLibraries] = useState<Library[]>([])
   const [selected, setSelected] = useState<Library | null>(null)
@@ -103,6 +116,7 @@ export default function Library() {
   const [statusFilter, setStatusFilter] = useState<StatusTab>('all')
   const [sortBy, setSortBy] = useState<SortOption>('date-added')
   const [sortDesc, setSortDesc] = useState(true)
+  const [showIgnored, setShowIgnored] = useState(false)
   const [scannerStatus, setScannerStatus] = useState<ScannerStatus | null>(null)
   const [selectedGuids, setSelectedGuids] = useState<string[]>([])
   const [expandedShows, setExpandedShows] = useState<Set<string>>(new Set())
@@ -145,6 +159,7 @@ export default function Library() {
     setFilter('')
     setRatingFilter('all')
     setStatusFilter('all')
+    setShowIgnored(false)
     setSelectedGuids([])
     setLoadingTitles(true)
     try {
@@ -212,16 +227,29 @@ export default function Library() {
   }
 
   const toggleIgnored = async (guid: string, currentIgnored: boolean, label?: string) => {
+    if (!selected) return
+    const nextIgnored = !currentIgnored
+    setTitles(prev => prev.map(t => (t.plex_guid === guid ? { ...t, ignored: nextIgnored } : t)))
     try {
-      await api.post(`/api/scan/title/${encodeURIComponent(guid)}/ignore`, { ignored: !currentIgnored })
+      await api.post(`/api/scan/title/${encodeURIComponent(guid)}/ignore`, { ignored: nextIgnored })
       setTitles(await loadTitles(selected!.id))
     } catch (err: any) {
+      setTitles(prev => prev.map(t => (t.plex_guid === guid ? { ...t, ignored: currentIgnored } : t)))
       alert(`Failed to update ignore status${label ? ` for ${label}` : ''}: ${err.message || 'Unknown error'}`)
     }
   }
 
   const setIgnoredForGuids = async (guids: string[], ignored: boolean, label?: string) => {
     if (!selected || guids.length === 0) return
+    const guidSet = new Set(guids)
+    const prevIgnoredByGuid = new Map(
+      titles
+        .filter(t => guidSet.has(t.plex_guid))
+        .map(t => [t.plex_guid, t.ignored]),
+    )
+
+    setTitles(prev => prev.map(t => (guidSet.has(t.plex_guid) ? { ...t, ignored } : t)))
+
     try {
       for (const guid of guids) {
         await api.post(`/api/scan/title/${encodeURIComponent(guid)}/ignore`, { ignored })
@@ -229,6 +257,11 @@ export default function Library() {
       setSelectedGuids(prev => prev.filter(g => !guids.includes(g)))
       setTitles(await loadTitles(selected.id))
     } catch (err: any) {
+      setTitles(prev => prev.map(t => {
+        if (!guidSet.has(t.plex_guid)) return t
+        const previousIgnored = prevIgnoredByGuid.get(t.plex_guid)
+        return typeof previousIgnored === 'boolean' ? { ...t, ignored: previousIgnored } : t
+      }))
       alert(`Failed to update ignore status${label ? ` for ${label}` : ''}: ${err.message || 'Unknown error'}`)
     }
   }
@@ -242,6 +275,7 @@ export default function Library() {
     if (statusFilter !== 'all' && t.status !== statusFilter) return false
     if (filter && !t.title.toLowerCase().includes(filter.toLowerCase())) return false
     if (ratingFilter !== 'all' && t.content_rating !== ratingFilter) return false
+    if (!showIgnored && t.ignored) return false
     return true
   })
 
@@ -254,10 +288,10 @@ export default function Library() {
         bVal = b.title.toLowerCase()
         break
       case 'date-added':
-        // Note: created_at not available, using index as fallback
-        // Backend should return created_at for proper sorting
-        aVal = a.plex_guid
-        bVal = b.plex_guid
+        // rating_key is a monotonically increasing integer in Plex;
+        // higher = more recently added.
+        aVal = parseInt(a.rating_key, 10) || 0
+        bVal = parseInt(b.rating_key, 10) || 0
         break
       case 'year':
         aVal = a.year ?? 0
@@ -282,32 +316,39 @@ export default function Library() {
   const showGroups: ShowGroup[] = (() => {
     if (!isTvLibrary) return []
 
-    const showMap = new Map<string, Map<string, Title[]>>()
+    const showMap = new Map<string, { show: string; seasons: Map<string, Title[]> }>()
     for (const t of sorted) {
       if (t.media_type !== 'episode') continue
       const parsed = parseEpisodeTitle(t.title)
-      if (!showMap.has(parsed.show)) {
-        showMap.set(parsed.show, new Map())
+      const showKey = t.show_guid || parsed.show
+      const showName = t.show_title || parsed.show
+      if (!showMap.has(showKey)) {
+        showMap.set(showKey, { show: showName, seasons: new Map() })
       }
-      const seasonMap = showMap.get(parsed.show)!
-      if (!seasonMap.has(parsed.season)) {
-        seasonMap.set(parsed.season, [])
+      const showEntry = showMap.get(showKey)!
+      if (!showEntry.seasons.has(parsed.season)) {
+        showEntry.seasons.set(parsed.season, [])
       }
-      seasonMap.get(parsed.season)!.push(t)
+      showEntry.seasons.get(parsed.season)!.push(t)
     }
 
     return Array.from(showMap.entries())
-      .map(([show, seasonMap]) => {
-        const seasons = Array.from(seasonMap.entries())
+      .map(([showKey, showEntry]) => {
+        const allEpisodes = Array.from(showEntry.seasons.values()).flatMap(episodes => episodes)
+        const explicitPoster = allEpisodes.find(ep => !!ep.poster_url)?.poster_url ?? ''
+
+        const seasons = Array.from(showEntry.seasons.entries())
           .map(([season, episodes]) => ({
             season,
             episodes: [...episodes].sort((a, b) => a.title.localeCompare(b.title)),
           }))
           .sort((a, b) => a.season.localeCompare(b.season))
         return {
-          show,
+          show_key: showKey,
+          show: showEntry.show,
           seasons,
           episodes: seasons.flatMap(s => s.episodes),
+          poster_url: explicitPoster,
         }
       })
       .sort((a, b) => a.show.localeCompare(b.show))
@@ -365,7 +406,7 @@ export default function Library() {
       </div>
 
       {/* Titles panel */}
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 flex flex-col min-h-0">
         {!selected ? (
           <div className="flex items-center justify-center h-64 text-gray-600">
             Select a library to browse titles
@@ -485,10 +526,19 @@ export default function Library() {
               >
                 {sortDesc ? '↓' : '↑'}
               </button>
+              <label className="inline-flex items-center gap-2 px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 select-none">
+                <input
+                  type="checkbox"
+                  checked={showIgnored}
+                  onChange={e => setShowIgnored(e.target.checked)}
+                  className="w-4 h-4 accent-plex-orange"
+                />
+                Show Ignored
+              </label>
             </div>
 
             {/* Multi-select actions */}
-            <div className="mb-3 flex items-center gap-2 flex-wrap">
+            <div className="mb-3 flex items-center gap-2 flex-wrap shrink-0 bg-plex-darker/95 backdrop-blur border border-plex-border shadow-lg rounded-xl px-2.5 py-2">
               <label className="inline-flex items-center gap-2 text-xs text-gray-300 bg-plex-card border border-plex-border px-2.5 py-1.5 rounded-lg">
                 <input
                   type="checkbox"
@@ -536,6 +586,7 @@ export default function Library() {
             </div>
 
             {/* Title list */}
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1 pb-6">
             {loadingTitles ? (
               <div className="text-gray-500 text-sm">Loading...</div>
             ) : filtered.length === 0 ? (
@@ -545,12 +596,22 @@ export default function Library() {
                 {showGroups.map(group => {
                   const allIgnored = group.episodes.length > 0 && group.episodes.every(ep => ep.ignored)
                   const someIgnored = group.episodes.some(ep => ep.ignored)
-                  const showOpen = expandedShows.has(group.show)
+                  const showOpen = expandedShows.has(group.show_key)
                   return (
-                    <div key={group.show} className="bg-plex-card border border-plex-border rounded-xl p-3">
+                    <div key={group.show_key} className="bg-plex-card border border-plex-border rounded-xl p-3">
                       <div className="flex items-center gap-2">
+                        {group.poster_url ? (
+                          <img
+                            src={group.poster_url}
+                            alt={`${group.show} poster`}
+                            className="w-10 h-14 object-cover rounded bg-plex-border flex-shrink-0"
+                            onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+                          />
+                        ) : (
+                          <div className="w-10 h-14 bg-plex-border rounded flex-shrink-0" />
+                        )}
                         <button
-                          onClick={() => toggleShowExpanded(group.show)}
+                          onClick={() => toggleShowExpanded(group.show_key)}
                           className="p-1 text-gray-400 hover:text-white"
                           title={showOpen ? 'Collapse show' : 'Expand show'}
                         >
@@ -563,9 +624,9 @@ export default function Library() {
                           </p>
                         </div>
                         {allIgnored ? (
-                          <span className="text-xs bg-yellow-500/15 text-yellow-400 px-2 py-0.5 rounded-full">Ignored</span>
+                          <span className="text-xs bg-yellow-500/20 text-yellow-300 px-2 py-0.5 rounded-full font-semibold">IGNORED SHOW</span>
                         ) : someIgnored ? (
-                          <span className="text-xs bg-yellow-500/10 text-yellow-500 px-2 py-0.5 rounded-full">Partially Ignored</span>
+                          <span className="text-xs bg-yellow-500/10 text-yellow-500 px-2 py-0.5 rounded-full font-medium">PARTIALLY IGNORED</span>
                         ) : null}
                         <button
                           onClick={() => setIgnoredForGuids(group.episodes.map(ep => ep.plex_guid), true, group.show)}
@@ -586,12 +647,12 @@ export default function Library() {
                       {showOpen && (
                         <div className="mt-3 space-y-2">
                           {group.seasons.map(season => {
-                            const seasonKey = `${group.show}__${season.season}`
+                            const seasonKey = `${group.show_key}__${season.season}`
                             const seasonOpen = expandedSeasons.has(seasonKey)
                             return (
                               <div key={seasonKey} className="border border-plex-border rounded-lg p-2">
                                 <button
-                                  onClick={() => toggleSeasonExpanded(group.show, season.season)}
+                                  onClick={() => toggleSeasonExpanded(group.show_key, season.season)}
                                   className="w-full flex items-center gap-2 text-left"
                                 >
                                   <ChevronRight size={13} className={seasonOpen ? 'rotate-90 transition-transform text-gray-400' : 'transition-transform text-gray-400'} />
@@ -623,12 +684,15 @@ export default function Library() {
                                           <div className="flex-1 min-w-0">
                                             <p className="text-sm text-gray-100 truncate">
                                               {parsed.episode}
-                                              {title.ignored && <span className="ml-2 text-yellow-400 text-xs font-medium">IGNORED</span>}
+                                              {title.ignored && <span className="ml-2 text-yellow-300 text-xs font-semibold">IGNORED</span>}
                                             </p>
                                             <div className="flex items-center gap-2 mt-1">
                                               <StatusBadge status={title.status} progress={title.progress} />
                                               {title.segment_count > 0 && (
                                                 <span className="text-xs text-gray-500">{title.segment_count} segment{title.segment_count !== 1 ? 's' : ''}</span>
+                                              )}
+                                              {title.finished_at && (
+                                                <span className="text-xs text-gray-500">Finished {formatFinishedAt(title.finished_at)}</span>
                                               )}
                                             </div>
                                           </div>
@@ -718,6 +782,9 @@ export default function Library() {
                         {title.segment_count > 0 && (
                           <span className="text-xs text-gray-500">{title.segment_count} segment{title.segment_count !== 1 ? 's' : ''}</span>
                         )}
+                        {title.finished_at && (
+                          <span className="text-xs text-gray-500">Finished {formatFinishedAt(title.finished_at)}</span>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -754,13 +821,14 @@ export default function Library() {
                             : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
                         }`}
                       >
-                        {title.ignored ? '✗' : '○'}
+                        {title.ignored ? 'IGNORED' : 'Ignore'}
                       </button>
                     </div>
                   </div>
                 ))}
               </div>
             )}
+            </div>
           </>
         )}
       </div>

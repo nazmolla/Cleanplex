@@ -224,17 +224,32 @@ export default function SettingsPage() {
         <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Scan Ratings</h2>
         <p className="text-xs text-gray-500 mb-3">Only scan titles with these content ratings. Leave all unchecked to scan everything.</p>
         <div className="grid grid-cols-2 gap-2">
-          {['G', 'PG', 'PG-13', 'R', 'NC-17', 'TV-G', 'TV-PG', 'TV-14', 'TV-MA', 'NR'].map(rating => {
-            const selected = (() => { try { return JSON.parse(form.scan_ratings) } catch { return [] } })()
-            const checked = selected.includes(rating)
+          {/* VALUE is the exact content_rating string stored in Plex / the DB.
+              Empty string ("") represents titles Plex left unrated. */}
+          {[
+            { label: 'G',            value: 'G' },
+            { label: 'PG',           value: 'PG' },
+            { label: 'PG-13',        value: 'PG-13' },
+            { label: 'R',            value: 'R' },
+            { label: 'NC-17',        value: 'NC-17' },
+            { label: 'TV-G',         value: 'TV-G' },
+            { label: 'TV-PG',        value: 'TV-PG' },
+            { label: 'TV-14',        value: 'TV-14' },
+            { label: 'TV-MA',        value: 'TV-MA' },
+            { label: 'NR',           value: 'NR' },
+            { label: 'X',            value: 'X' },
+            { label: 'Unrated (no rating set in Plex)', value: '' },
+          ].map(({ label, value }) => {
+            const selected: string[] = (() => { try { return JSON.parse(form.scan_ratings) } catch { return [] } })()
+            const checked = selected.includes(value)
             const toggle = () => {
-              const next = checked ? selected.filter((r: string) => r !== rating) : [...selected, rating]
+              const next = checked ? selected.filter((r: string) => r !== value) : [...selected, value]
               setForm(f => ({ ...f, scan_ratings: JSON.stringify(next) }))
             }
             return (
-              <label key={rating} className="flex items-center gap-2 cursor-pointer">
+              <label key={value === '' ? '__unrated__' : value} className="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 accent-plex-orange" />
-                <span className={`text-sm ${checked ? 'text-gray-100' : 'text-gray-500'}`}>{rating}</span>
+                <span className={`text-sm ${checked ? 'text-gray-100' : 'text-gray-500'}`}>{label}</span>
               </label>
             )
           })}

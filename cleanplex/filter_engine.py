@@ -49,12 +49,18 @@ async def process(session: ActiveSession, client: PlexClient, skip_buffer_ms: in
         logger.info("No segments found for '%s' (guid=%s, rating_key=%s)", session.full_title, session.plex_guid, session.rating_key)
         return
 
+    # Expand segment boundaries by 5 seconds before and after
+    for seg in segments:
+        seg["start_ms"] = max(0, seg["start_ms"] - 5000)
+        seg["end_ms"] = seg["end_ms"] + 5000
+
     logger.info("Checking %d segment(s) for '%s' at pos=%dms (client=%s)", len(segments), session.full_title, pos, session.client_identifier)
     for seg in segments:
         # Trigger when approaching the segment (within lookahead_ms before start) or already inside.
         # This compensates for polling latency so the seek fires before/at the segment start.
         if seg["start_ms"] - lookahead_ms <= pos <= seg["end_ms"]:
-            target = seg["end_ms"] + skip_buffer_ms
+            # Seek to the expanded segment start
+            target = seg["start_ms"]
             logger.info(
                 "Skipping [%s] for user '%s': %dms → %dms (segment: %d–%d, confidence=%.2f)",
                 session.full_title,
@@ -72,7 +78,8 @@ async def process(session: ActiveSession, client: PlexClient, skip_buffer_ms: in
                 session.client_port,
             )
             if success:
-                _recently_skipped[session.session_key] = target + 5000
+                # Track skip until the expanded segment end to prevent re-triggering
+                _recently_skipped[session.session_key] = seg["end_ms"]
                 _seek_backoff_until.pop(session.session_key, None)
             else:
                 _seek_backoff_until[session.session_key] = time.time() + 20

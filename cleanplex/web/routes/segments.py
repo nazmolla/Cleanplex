@@ -1,9 +1,10 @@
 import json
 import mimetypes
 import os
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from ...logger import get_logger
@@ -12,6 +13,12 @@ from ... import database as db
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["segments"])
+
+
+def _plex_image_proxy_url(path: str) -> str:
+    if not path:
+        return ""
+    return f"/api/plex-image?path={quote(path, safe='')}"
 
 
 # ── Libraries / titles tree ───────────────────────────────────────────────────
@@ -47,8 +54,11 @@ async def sync_library(library_id: str):
         added = 0
         for item in items:
             if item.file_path:
-                if scan_ratings and item.content_rating not in scan_ratings:
-                    continue
+                if scan_ratings:
+                    # Filter strictly: "" = unrated, only included when the
+                    # Unrated checkbox is ticked (saves "" in scan_ratings).
+                    if (item.content_rating or "") not in scan_ratings:
+                        continue
                 existing = await db.get_scan_job_by_guid(item.plex_guid)
                 if not existing:
                     await db.upsert_scan_job(
@@ -76,23 +86,60 @@ async def get_titles_in_library(library_id: str):
     """Return all scan jobs (titles) for a given library, with Plex poster URLs."""
     jobs = await db.get_scan_jobs_by_library(library_id)
     seg_counts = await db.get_segment_counts_for_library(library_id)
+
+    # Apply scan_ratings filter to the library view so it matches what the
+    # scanner will actually process.
+    scan_ratings_raw = json.loads(await db.get_setting("scan_ratings", "[]"))
+    scan_ratings: set[str] = set(scan_ratings_raw)
+    if scan_ratings:
+        # Filter strictly by the ratings the user configured.
+        # "" (empty) = Plex left the title unrated; it only shows when the
+        # "Unrated" checkbox is ticked, which stores "" in scan_ratings.
+        jobs = [j for j in jobs if (j.get("content_rating") or "") in scan_ratings]
     try:
         client = plex_mod.get_client()
     except RuntimeError:
         client = None
 
     result = []
+    # Cache resolved show metadata by show name to avoid repeated Plex API calls.
+    # Value: (show_guid, show_title, show_poster_url)
+    show_meta_by_name: dict[str, tuple[str, str, str]] = {}
     for job in jobs:
         thumb_url = ""
+        poster_url = ""
+        show_guid = ""
+        show_title = ""
         if client and job.get("rating_key"):
-            thumb_url = client.thumb_url(f"/library/metadata/{job['rating_key']}/thumb")
+            rating_key = job["rating_key"]
+            thumb_url = _plex_image_proxy_url(f"/library/metadata/{rating_key}/thumb")
+            if job.get("media_type") == "episode":
+                # Resolve true show-level poster path from episode metadata.
+                # Example resolved path from Plex: /library/metadata/<showKey>/thumb/<version>
+                # which matches how Plex itself loads show posters.
+                parsed_show_name = (job.get("title", "").split(" \u2013 ")[0] or "").strip()
+                if parsed_show_name and parsed_show_name in show_meta_by_name:
+                    show_guid, show_title, poster_url = show_meta_by_name[parsed_show_name]
+                else:
+                    resolved_show_guid, resolved_show_title, show_thumb_path = await client.get_episode_show_art(rating_key)
+                    show_guid = resolved_show_guid
+                    show_title = resolved_show_title or parsed_show_name
+                    poster_url = _plex_image_proxy_url(show_thumb_path) if show_thumb_path else ""
+                    if parsed_show_name:
+                        show_meta_by_name[parsed_show_name] = (show_guid, show_title, poster_url)
+            else:
+                poster_url = thumb_url
         result.append({
             "plex_guid": job["plex_guid"],
             "rating_key": job.get("rating_key", ""),
             "title": job["title"],
             "status": job["status"],
             "progress": job["progress"],
+            "finished_at": job.get("finished_at"),
             "thumb_url": thumb_url,
+            "poster_url": poster_url,
+            "show_guid": show_guid,
+            "show_title": show_title,
             "segment_count": seg_counts.get(job["plex_guid"], 0),
             "content_rating": job.get("content_rating", ""),
             "media_type": job.get("media_type", "movie"),
@@ -102,12 +149,36 @@ async def get_titles_in_library(library_id: str):
     return {"titles": result}
 
 
+@router.get("/plex-image")
+async def get_plex_image(path: str):
+    """Proxy Plex images through Cleanplex so artwork loads from remote clients."""
+    if not path:
+        raise HTTPException(status_code=400, detail="Missing image path")
+
+    try:
+        client = plex_mod.get_client()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Plex not configured")
+
+    content, content_type = await client.fetch_image(path)
+    if not content:
+        raise HTTPException(status_code=404, detail="Image not available")
+
+    return Response(content=content, media_type=content_type or "image/jpeg")
+
+
 @router.get("/titles/{plex_guid:path}/segments")
 async def get_segments_for_title(plex_guid: str):
     """Return all segments for a specific title with all detected labels."""
     segments = await db.get_segments_for_guid(plex_guid)
+    scan_labels_raw = json.loads(await db.get_setting("scan_labels", "[]"))
+    enabled_labels = set(scan_labels_raw) if isinstance(scan_labels_raw, list) else set()
     result = []
     for seg in segments:
+        labels = seg.get("labels", "") or ""
+        if enabled_labels and labels:
+            filtered = [l.strip() for l in labels.split(",") if l.strip() in enabled_labels]
+            labels = ",".join(filtered)
         result.append({
             "id": seg["id"],
             "plex_guid": seg["plex_guid"],
@@ -118,7 +189,7 @@ async def get_segments_for_title(plex_guid: str):
             "has_thumbnail": bool(seg.get("thumbnail_path")),
             "thumbnail_url": f"/api/thumbnails/{seg['id']}" if seg.get("thumbnail_path") else "",
             "created_at": seg["created_at"],
-            "labels": seg.get("labels", ""),
+            "labels": labels,
         })
     return {"segments": result}
 

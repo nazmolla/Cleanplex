@@ -109,6 +109,11 @@ async def skip_session_title(session_key: str):
     if not segments:
         raise HTTPException(status_code=404, detail="No detected segments found for this title")
 
+    # Expand segment boundaries by 5 seconds before and after
+    for seg in segments:
+        seg["start_ms"] = max(0, int(seg["start_ms"]) - 5000)
+        seg["end_ms"] = int(seg["end_ms"]) + 5000
+
     pos = int(session.position_ms)
 
     # Prefer the segment currently playing; otherwise choose the next segment ahead.
@@ -118,7 +123,8 @@ async def skip_session_title(session_key: str):
         raise HTTPException(status_code=409, detail="No remaining segments ahead of current position")
 
     skip_buffer_ms = int(await db.get_setting("skip_buffer_ms", "3000"))
-    seek_to_ms = int(target_seg["end_ms"]) + skip_buffer_ms
+    # Seek to the expanded segment start
+    seek_to_ms = int(target_seg["start_ms"])
 
     ok = await client.seek(
         session.client_identifier,
