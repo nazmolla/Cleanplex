@@ -81,7 +81,7 @@ export default function SettingsPage() {
   const [libraries, setLibraries] = useState<Library[]>([])
   const [detectorLabels, setDetectorLabels] = useState<string[]>([])
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
-  const [syncForm, setSyncForm] = useState({ sync_enabled: false, instance_name: '', github_repo: '', github_token: '' })
+  const [syncForm, setSyncForm] = useState({ sync_enabled: false, instance_name: '' })
   const [savingSync, setSavingSync] = useState(false)
   const [savedSync, setSavedSync] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -105,7 +105,6 @@ export default function SettingsPage() {
           ...f,
           sync_enabled: sync.sync_enabled,
           instance_name: sync.instance_name ?? '',
-          github_repo: sync.github_repo ?? '',
         }))
       }
       setLoading(false)
@@ -158,8 +157,6 @@ export default function SettingsPage() {
       await api.post('/api/sync/settings', {
         instance_name: syncForm.instance_name || 'default',
         sync_enabled: syncForm.sync_enabled,
-        github_repo: syncForm.github_repo || null,
-        github_token: syncForm.github_token || null,
       })
       setSavedSync(true)
       const updated = await api.get<SyncStatus>('/api/sync/status').catch(() => null)
@@ -181,7 +178,7 @@ export default function SettingsPage() {
       const updated = await api.get<SyncStatus>('/api/sync/status').catch(() => null)
       if (updated) setSyncStatus(updated)
     } catch (e: any) {
-      setUploadResult({ ok: false, message: e?.message ?? 'Upload failed' })
+      setUploadResult({ ok: false, message: 'Upload failed' })
     } finally {
       setUploading(false)
     }
@@ -435,22 +432,12 @@ export default function SettingsPage() {
         <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Segment Library Sync</h2>
         <p className="text-xs text-gray-500 mb-4">Crowdsource segment detections through one shared GitHub repository. Upload and download are always manual.</p>
         <div className="space-y-4">
-          <Field label="GitHub Repository" hint="Shared repo used by all users, format: owner/repo">
+          <Field label="Repository" hint="Fixed shared repository used by all users.">
             <input
               type="text"
-              value={syncForm.github_repo}
-              onChange={e => setSyncForm(f => ({ ...f, github_repo: e.target.value }))}
-              placeholder="owner/repo"
-              className={inputCls}
-            />
-          </Field>
-          <Field label="GitHub Token" hint="Personal access token with contents:read/write on that repository.">
-            <input
-              type="password"
-              value={syncForm.github_token}
-              onChange={e => setSyncForm(f => ({ ...f, github_token: e.target.value }))}
-              placeholder="ghp_..."
-              className={inputCls}
+              value={syncStatus?.github_repo || 'nazmolla/cleanplex-segments'}
+              readOnly
+              className={inputCls + ' opacity-80'}
             />
           </Field>
           <Field label="Instance Name" hint="Name attached to your submissions in the crowdsourced dataset.">
@@ -488,7 +475,7 @@ export default function SettingsPage() {
             )}
           </div>
           <div className="pt-2 border-t border-plex-border/50 space-y-3">
-            <p className="text-xs text-gray-500">Manual operations for the shared GitHub segment library.</p>
+            <p className="text-xs text-gray-500">Upload and download crowdsourced segment detections from the shared library.</p>
             <div className="flex items-center gap-3 flex-wrap">
               <button
                 type="button"
