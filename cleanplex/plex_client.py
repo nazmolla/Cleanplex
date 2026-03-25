@@ -9,6 +9,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+# TTL for per-show metadata cache; 10 minutes is long enough to cover a full
+# library-titles request without stale data causing visible issues.
+_SHOW_ART_CACHE_TTL_S = 600
+
 import httpx
 from plexapi.server import PlexServer
 from plexapi.exceptions import PlexApiException
@@ -72,6 +76,8 @@ class PlexClient:
         self.token = token
         self._server: PlexServer | None = None
         self._http = httpx.AsyncClient(timeout=10)
+        # {rating_key: (monotonic_timestamp, (show_guid, show_title, show_thumb))}
+        self._show_art_cache: dict[str, tuple[float, tuple[str, str, str]]] = {}
 
     def _get_server(self) -> PlexServer:
         if self._server is None:
@@ -377,14 +383,25 @@ class PlexClient:
         return f"{self.url}{thumb_path}?X-Plex-Token={self.token}"
 
     async def get_episode_show_art(self, rating_key: str) -> tuple[str, str, str]:
-        """Return (show_guid, show_title, show_thumb_path) for an episode rating key."""
+        """Return (show_guid, show_title, show_thumb_path) for an episode rating key.
+
+        Results are cached per rating_key with a TTL of _SHOW_ART_CACHE_TTL_S seconds
+        to avoid redundant Plex API calls when listing large TV libraries.
+        """
+        now = time.monotonic()
+        cached = self._show_art_cache.get(rating_key)
+        if cached and now - cached[0] < _SHOW_ART_CACHE_TTL_S:
+            return cached[1]
+
         try:
             srv = await asyncio.to_thread(self._get_server)
             item = await asyncio.to_thread(srv.fetchItem, int(rating_key))
             show_guid = getattr(item, "grandparentGuid", "") or ""
             show_title = getattr(item, "grandparentTitle", "") or ""
             show_thumb = getattr(item, "grandparentThumb", "") or ""
-            return show_guid, show_title, show_thumb
+            result = (show_guid, show_title, show_thumb)
+            self._show_art_cache[rating_key] = (now, result)
+            return result
         except Exception as exc:
             logger.debug("Failed to resolve show art for rating_key %s: %s", rating_key, exc)
             return "", "", ""
@@ -466,6 +483,19 @@ def get_client() -> PlexClient:
 
 
 def init_client(url: str, token: str) -> PlexClient:
+    """Create (or replace) the module-level PlexClient singleton.
+
+    The previous AsyncClient is closed before replacement so open connections
+    are not leaked on settings changes or reconnects.
+    """
     global _client
+    if _client is not None:
+        # Schedule close on the running event loop without blocking the caller.
+        try:
+            loop = asyncio.get_event_loop()
+            if not loop.is_closed():
+                loop.create_task(_client.close())
+        except RuntimeError:
+            pass  # no running loop — process is tearing down
     _client = PlexClient(url, token)
     return _client
