@@ -10,6 +10,8 @@ interface Settings {
   skip_buffer_ms: string
   scan_step_ms: string
   scan_workers: string
+  nudenet_model: string
+  nudenet_model_path: string
   segment_gap_ms: string
   segment_min_hits: string
   scan_window_start: string
@@ -34,6 +36,8 @@ const DEFAULT: Settings = {
   skip_buffer_ms: '3000',
   scan_step_ms: '5000',
   scan_workers: '2',
+  nudenet_model: '320n',
+  nudenet_model_path: '',
   segment_gap_ms: '12000',
   segment_min_hits: '1',
   scan_window_start: '23:00',
@@ -61,6 +65,8 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [validatingModel, setValidatingModel] = useState(false)
+  const [modelValidationResult, setModelValidationResult] = useState<{ ok: boolean; message: string } | null>(null)
   const [showToken, setShowToken] = useState(false)
   const [libraries, setLibraries] = useState<Library[]>([])
   const [detectorLabels, setDetectorLabels] = useState<string[]>([])
@@ -114,6 +120,22 @@ export default function SettingsPage() {
       setTestResult(r)
     } finally {
       setTesting(false)
+    }
+  }
+
+  const validateModelPath = async () => {
+    setValidatingModel(true)
+    setModelValidationResult(null)
+    try {
+      const r = await api.post<{ ok: boolean; message: string }>('/api/settings/validate-model-path', {
+        nudenet_model: form.nudenet_model,
+        nudenet_model_path: form.nudenet_model_path,
+      })
+      setModelValidationResult(r)
+    } catch (e) {
+      setModelValidationResult({ ok: false, message: 'Validation request failed' })
+    } finally {
+      setValidatingModel(false)
     }
   }
 
@@ -192,6 +214,38 @@ export default function SettingsPage() {
           </Field>
           <Field label="Scanner Workers" hint="How many titles can be scanned in parallel. Higher values use more CPU, disk, and memory.">
             <input type="number" min="1" max="12" step="1" value={form.scan_workers} onChange={set('scan_workers')} className={inputCls} />
+          </Field>
+          <Field label="NudeNet Model" hint="320n is bundled and faster. 640m can be more accurate but needs a downloaded ONNX model path.">
+            <select value={form.nudenet_model} onChange={set('nudenet_model')} className={inputCls}>
+              <option value="320n">320n (default, fast)</option>
+              <option value="640m">640m (higher accuracy, slower)</option>
+            </select>
+          </Field>
+          <Field label="NudeNet 640m Model Path" hint="Required only when model is 640m. Example: C:/models/640m.onnx">
+            <input
+              type="text"
+              value={form.nudenet_model_path}
+              onChange={set('nudenet_model_path')}
+              placeholder=""
+              className={inputCls}
+            />
+            <div className="mt-2 flex items-center gap-3">
+              <button
+                type="button"
+                onClick={validateModelPath}
+                disabled={validatingModel || form.nudenet_model !== '640m'}
+                className="px-3 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
+              >
+                {validatingModel && <Loader2 size={13} className="animate-spin" />}
+                Validate model path
+              </button>
+              {modelValidationResult && (
+                <span className={`flex items-center gap-1.5 text-xs ${modelValidationResult.ok ? 'text-green-400' : 'text-red-400'}`}>
+                  {modelValidationResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                  {modelValidationResult.message}
+                </span>
+              )}
+            </div>
           </Field>
           <Field label="Segment Merge Gap (ms)" hint="Flagged frames closer than this are merged into one segment.">
             <input type="number" min="1000" max="30000" step="500" value={form.segment_gap_ms} onChange={set('segment_gap_ms')} className={inputCls} />

@@ -81,6 +81,35 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS segment_library_entries (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_hash         TEXT    NOT NULL,
+    file_name         TEXT    NOT NULL,
+    file_size         INTEGER,
+    duration_ms       INTEGER,
+    segments_json     TEXT    NOT NULL,
+    cloud_version     INTEGER DEFAULT 0,
+    source_instance   TEXT    NOT NULL,
+    confidence_level  TEXT    DEFAULT 'local',
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(file_hash, source_instance)
+);
+CREATE INDEX IF NOT EXISTS idx_segment_library_hash ON segment_library_entries(file_hash);
+
+CREATE TABLE IF NOT EXISTS sync_metadata (
+    id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+    instance_name             TEXT    NOT NULL UNIQUE,
+    github_repo               TEXT,
+    github_token              TEXT,
+    last_sync_time            TIMESTAMP,
+    sync_enabled              INTEGER DEFAULT 0,
+    conflict_resolution       TEXT    DEFAULT 'consensus',
+    verified_threshold        INTEGER DEFAULT 2,
+    timing_tolerance_ms       INTEGER DEFAULT 2000,
+    created_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 DEFAULT_SETTINGS = {
@@ -99,6 +128,15 @@ DEFAULT_SETTINGS = {
     "excluded_library_ids": "[]",
     "scan_ratings": "[]",  # empty = scan all ratings
     "scan_labels": "[\"FEMALE_BREAST_EXPOSED\",\"FEMALE_GENITALIA_EXPOSED\",\"MALE_GENITALIA_EXPOSED\",\"ANUS_EXPOSED\",\"BUTTOCKS_EXPOSED\"]",
+    "nudenet_model": "320n",
+    "nudenet_model_path": "",
+    # Segment library sharing settings
+    "sync_enabled": "0",
+    "sync_instance_name": "",
+    "sync_github_repo": "",
+    "sync_conflict_resolution": "consensus",
+    "sync_verified_threshold": "2",
+    "sync_timing_tolerance_ms": "2000",
 }
 
 
@@ -407,3 +445,163 @@ async def get_segment_counts_for_library(library_id: str) -> dict[str, int]:
             (library_id,),
         )
         return {row["plex_guid"]: row["cnt"] for row in rows}
+
+
+# ── Segment Library Sharing ────────────────────────────────────────────────────
+
+async def upsert_segment_library_entry(
+    file_hash: str,
+    file_name: str,
+    file_size: int,
+    duration_ms: int,
+    segments_json: str,
+    source_instance: str,
+    confidence_level: str = "local",
+) -> int:
+    """Insert or update a segment library entry with source tracking."""
+    async with get_connection() as conn:
+        cursor = await conn.execute(
+            """
+            INSERT INTO segment_library_entries(
+                file_hash, file_name, file_size, duration_ms, 
+                segments_json, source_instance, confidence_level, updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(file_hash, source_instance) 
+            DO UPDATE SET 
+                segments_json=excluded.segments_json,
+                confidence_level=excluded.confidence_level,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (file_hash, file_name, file_size, duration_ms, segments_json, source_instance, confidence_level),
+        )
+        await conn.commit()
+        return cursor.lastrowid
+
+
+async def get_segment_library_entries_by_hashes(file_hashes: list[str]) -> list[dict]:
+    """Get all library entries matching the given file hashes, grouped by hash."""
+    if not file_hashes:
+        return []
+    
+    placeholders = ",".join(["?"] * len(file_hashes))
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            f"SELECT * FROM segment_library_entries WHERE file_hash IN ({placeholders}) ORDER BY file_hash, created_at DESC",
+            file_hashes,
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_segment_library_entries_by_hash(file_hash: str) -> list[dict]:
+    """Get all sources for a single file hash."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT * FROM segment_library_entries WHERE file_hash=? ORDER BY created_at DESC",
+            (file_hash,),
+        )
+        return [dict(r) for r in rows]
+
+
+async def delete_segment_library_entry(file_hash: str, source_instance: str) -> bool:
+    """Delete a specific entry (useful for removing outdated sources)."""
+    async with get_connection() as conn:
+        cursor = await conn.execute(
+            "DELETE FROM segment_library_entries WHERE file_hash=? AND source_instance=?",
+            (file_hash, source_instance),
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+
+
+async def get_sync_metadata() -> dict | None:
+    """Get sync configuration for this instance."""
+    async with get_connection() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT * FROM sync_metadata LIMIT 1"
+            )
+        ).fetchone()
+        return dict(row) if row else None
+
+
+async def upsert_sync_metadata(
+    instance_name: str,
+    github_repo: str | None = None,
+    github_token: str | None = None,
+    sync_enabled: bool = False,
+    conflict_resolution: str = "consensus",
+    verified_threshold: int = 2,
+    timing_tolerance_ms: int = 2000,
+) -> int:
+    """Update or create sync metadata for this instance."""
+    async with get_connection() as conn:
+        # Delete existing if it exists (to update)
+        await conn.execute("DELETE FROM sync_metadata")
+        
+        cursor = await conn.execute(
+            """
+            INSERT INTO sync_metadata(
+                instance_name, github_repo, github_token, sync_enabled,
+                conflict_resolution, verified_threshold, timing_tolerance_ms,
+                last_sync_time
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (
+                instance_name,
+                github_repo,
+                github_token,
+                1 if sync_enabled else 0,
+                conflict_resolution,
+                verified_threshold,
+                timing_tolerance_ms,
+            ),
+        )
+        await conn.commit()
+        return cursor.lastrowid
+
+
+async def update_sync_last_time() -> None:
+    """Update last_sync_time to current timestamp."""
+    async with get_connection() as conn:
+        await conn.execute("UPDATE sync_metadata SET last_sync_time=CURRENT_TIMESTAMP")
+        await conn.commit()
+
+
+async def get_local_library_for_sync() -> list[dict]:
+    """
+    Get all local segments grouped by file for sync upload.
+    Returns: [
+        {plex_guid, title, file_path, segments_count, segments: [{...}, ...]}
+    ]
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            """
+            SELECT 
+                j.plex_guid,
+                j.title,
+                j.file_path,
+                COUNT(s.id) as segments_count
+            FROM scan_jobs j
+            LEFT JOIN segments s ON s.plex_guid = j.plex_guid
+            WHERE j.status = 'done' AND j.file_path IS NOT NULL
+            GROUP BY j.plex_guid
+            ORDER BY j.title
+            """
+        )
+        
+        result = []
+        for row in rows:
+            segments = await get_segments_for_guid(row["plex_guid"])
+            result.append({
+                "plex_guid": row["plex_guid"],
+                "title": row["title"],
+                "file_path": row["file_path"],
+                "segments_count": row["segments_count"],
+                "segments": [dict(s) for s in segments],
+            })
+        
+        return result
+

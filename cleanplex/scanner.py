@@ -127,13 +127,39 @@ async def enqueue_pending() -> None:
         logger.info("Queued %d pending scan jobs", len(jobs))
 
 
-def _get_detector():
+def _get_detector(model_name: str = "320n", model_path: str = ""):
+    model_name_normalized = (model_name or "320n").strip().lower()
     detector = getattr(_thread_local, "nude_detector", None)
-    if detector is None:
+    detector_key = getattr(_thread_local, "nude_detector_key", None)
+
+    # 640m is not bundled with NudeNet package by default, so it requires a path.
+    requested_resolution = 640 if model_name_normalized.startswith("640") else 320
+    selected_model_path = (model_path or "").strip()
+    if requested_resolution == 640 and not selected_model_path:
+        logger.warning(
+            "NudeNet model '640m' selected but no model path configured; falling back to bundled 320n"
+        )
+        requested_resolution = 320
+
+    if selected_model_path and not os.path.isfile(selected_model_path):
+        logger.warning(
+            "Configured NudeNet model path not found: %s; falling back to bundled 320n",
+            selected_model_path,
+        )
+        selected_model_path = ""
+        requested_resolution = 320
+
+    current_key = (requested_resolution, selected_model_path)
+    if detector is None or detector_key != current_key:
         try:
             from nudenet import NudeDetector
-            detector = NudeDetector()
+
+            kwargs = {"inference_resolution": requested_resolution}
+            if selected_model_path:
+                kwargs["model_path"] = selected_model_path
+            detector = NudeDetector(**kwargs)
             _thread_local.nude_detector = detector
+            _thread_local.nude_detector_key = current_key
             logger.info("NudeNet detector loaded in thread %s", threading.get_ident())
         except ImportError:
             logger.error("nudenet package not installed. Run: pip install nudenet")
@@ -145,6 +171,8 @@ def _classify_frame(
     jpeg_bytes: bytes,
     threshold: float,
     enabled_labels: set[str],
+    model_name: str,
+    model_path: str,
 ) -> tuple[bool, float, list[str]]:
     """Return (is_nude, confidence, detected_labels) for a JPEG frame.
     
@@ -153,7 +181,7 @@ def _classify_frame(
     """
     try:
         import tempfile, os
-        detector = _get_detector()
+        detector = _get_detector(model_name=model_name, model_path=model_path)
 
         # NudeNet works on file paths; write to a temp file
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
@@ -293,6 +321,8 @@ async def scan_video(plex_guid: str, config) -> None:
 
         threshold = config.confidence_threshold
         enabled_labels = set(config.scan_labels) if config.scan_labels else set()
+        nudenet_model = str(getattr(config, "nudenet_model", "320n"))
+        nudenet_model_path = str(getattr(config, "nudenet_model_path", ""))
 
         THUMBNAILS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -357,7 +387,14 @@ async def scan_video(plex_guid: str, config) -> None:
 
             jpeg = await extract_frame(file_path, offset_ms)
             if jpeg:
-                is_nude, score, detected_labels = await asyncio.to_thread(_classify_frame, jpeg, threshold, enabled_labels)
+                is_nude, score, detected_labels = await asyncio.to_thread(
+                    _classify_frame,
+                    jpeg,
+                    threshold,
+                    enabled_labels,
+                    nudenet_model,
+                    nudenet_model_path,
+                )
                 if is_nude:
                     if cluster_start_ms is None:
                         cluster_start_ms = offset_ms
