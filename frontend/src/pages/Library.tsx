@@ -19,6 +19,7 @@ interface Title {
   content_rating: string
   media_type: string
   year?: number | null
+  ignored: boolean
 }
 
 interface ScannerStatus {
@@ -172,6 +173,15 @@ export default function Library() {
       setTitles(await loadTitles(selected.id))
     } catch (err: any) {
       alert(`Failed to scan selected titles: ${err.message || 'Unknown error'}`)
+    }
+  }
+
+  const toggleIgnored = async (guid: string, currentIgnored: boolean) => {
+    try {
+      await api.post(`/api/scan/title/${guid}/ignore`, { ignored: !currentIgnored })
+      setTitles(await loadTitles(selected!.id))
+    } catch (err: any) {
+      alert(`Failed to update ignore status: ${err.message || 'Unknown error'}`)
     }
   }
 
@@ -434,7 +444,10 @@ export default function Library() {
                       <div className="w-10 h-14 bg-plex-border rounded flex-shrink-0" />
                     )}
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-100 truncate">{title.title}</p>
+                      <p className="text-sm font-medium text-gray-100 truncate">
+                        {title.ignored && <span className="text-gray-600 mr-1">[IGNORED]</span>}
+                        {title.title}
+                      </p>
                       <div className="flex items-center gap-2 mt-1">
                         <StatusBadge status={title.status} progress={title.progress} />
                         {title.media_type === 'episode' && (
@@ -472,6 +485,17 @@ export default function Library() {
                         className="p-1.5 text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded transition-colors disabled:opacity-40"
                       >
                         <RotateCcw size={14} />
+                      </button>
+                      <button
+                        onClick={() => toggleIgnored(title.plex_guid, title.ignored)}
+                        title={title.ignored ? "Un-ignore this title" : "Ignore this title"}
+                        className={`p-1.5 rounded transition-colors ${
+                          title.ignored
+                            ? 'text-yellow-600 hover:text-yellow-400 hover:bg-yellow-500/10'
+                            : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
+                        }`}
+                      >
+                        {title.ignored ? '✗' : '○'}
                       </button>
                     </div>
                   </div>

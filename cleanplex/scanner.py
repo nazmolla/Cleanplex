@@ -229,6 +229,12 @@ async def scan_video(plex_guid: str, config) -> None:
         logger.warning("No scan job found for guid %s", plex_guid)
         return
 
+    # Check if title is marked as ignored
+    is_ignored = bool(job.get("ignored", 0))
+    if is_ignored:
+        logger.info("Skipping ignored title: %s", job["title"])
+        return
+
     # Safety check: Don't scan outside window unless force-scanned
     is_force_scan = bool(job.get("force_scan", 0))
     if not is_force_scan and not config.is_scan_window():

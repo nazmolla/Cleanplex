@@ -97,6 +97,7 @@ async def get_titles_in_library(library_id: str):
             "content_rating": job.get("content_rating", ""),
             "media_type": job.get("media_type", "movie"),
             "year": job.get("year"),
+            "ignored": bool(job.get("ignored", 0)),
         })
     return {"titles": result}
 

@@ -151,3 +151,18 @@ async def skip_current_scan(body: SkipCurrentScanRequest | None = None):
     else:
         scan_mod.skip_current_scan()
     return {"ok": True, "skipped": target_guid}
+
+
+class ToggleIgnoredRequest(BaseModel):
+    ignored: bool
+
+
+@router.post("/title/{plex_guid}/ignore")
+async def toggle_title_ignored(plex_guid: str, body: ToggleIgnoredRequest):
+    """Mark a title as ignored (will be skipped during scanning) or re-enable it."""
+    job = await db.get_scan_job_by_guid(plex_guid)
+    if not job:
+        raise HTTPException(status_code=404, detail="Title not found")
+    
+    await db.set_ignored(plex_guid, body.ignored)
+    return {"ok": True, "plex_guid": plex_guid, "ignored": body.ignored}

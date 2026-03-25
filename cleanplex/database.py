@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS scan_jobs (
     status      TEXT DEFAULT 'pending',
     progress    REAL DEFAULT 0,
     force_scan  INTEGER DEFAULT 0,
+    ignored     INTEGER DEFAULT 0,
     started_at  TIMESTAMP,
     finished_at TIMESTAMP,
     error_msg   TEXT,
@@ -133,6 +134,12 @@ async def init_db() -> None:
         # Migrate: add labels column if missing
         try:
             await conn.execute("ALTER TABLE segments ADD COLUMN labels TEXT DEFAULT ''")
+            await conn.commit()
+        except Exception:
+            pass  # column already exists
+        # Migrate: add ignored column if missing
+        try:
+            await conn.execute("ALTER TABLE scan_jobs ADD COLUMN ignored INTEGER DEFAULT 0")
             await conn.commit()
         except Exception:
             pass  # column already exists
@@ -364,6 +371,16 @@ async def set_force_scan(plex_guid: str, force: bool) -> None:
         await conn.execute(
             "UPDATE scan_jobs SET force_scan=? WHERE plex_guid=?",
             (1 if force else 0, plex_guid),
+        )
+        await conn.commit()
+
+
+async def set_ignored(plex_guid: str, ignored: bool) -> None:
+    """Set or unset the ignored flag for a specific job."""
+    async with get_connection() as conn:
+        await conn.execute(
+            "UPDATE scan_jobs SET ignored=? WHERE plex_guid=?",
+            (1 if ignored else 0, plex_guid),
         )
         await conn.commit()
 
