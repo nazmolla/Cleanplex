@@ -266,8 +266,8 @@ export default function Segments() {
 
   return (
     <div className="flex gap-4 h-full overflow-hidden">
-      {/* Library tree - independent scroll */}
-      <div className="w-44 flex-shrink-0 overflow-y-auto">
+      {/* Library tree - desktop: side panel; mobile: collapsed above content */}
+      <div className="hidden md:block w-44 flex-shrink-0 overflow-y-auto">
         <h1 className="text-xl font-bold text-gray-100 mb-3">Segments</h1>
         <div className="space-y-0.5 pr-2">
           {libraries.map(lib => (
@@ -314,6 +314,40 @@ export default function Segments() {
 
       {/* Segments detail panel - independent scroll */}
       <div className="flex-1 min-w-0 overflow-y-auto">
+        {/* Mobile library/title selectors */}
+        <div className="flex md:hidden flex-col gap-2 mb-4">
+          <h1 className="text-xl font-bold text-gray-100">Segments</h1>
+          <div className="flex gap-2">
+            <select
+              value={selectedLib?.id ?? ''}
+              onChange={e => {
+                const lib = libraries.find(l => l.id === e.target.value)
+                if (lib) selectLib(lib)
+              }}
+              className="flex-1 px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200 focus:outline-none focus:border-plex-orange/60"
+            >
+              <option value="">Select library…</option>
+              {libraries.map(lib => (
+                <option key={lib.id} value={lib.id}>{lib.title}</option>
+              ))}
+            </select>
+            {selectedLib && (
+              <select
+                value={selectedTitle?.plex_guid ?? ''}
+                onChange={e => {
+                  const t = titles.find(t => t.plex_guid === e.target.value)
+                  if (t) selectTitle(t)
+                }}
+                className="flex-1 px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200 focus:outline-none focus:border-plex-orange/60"
+              >
+                <option value="">Select title…</option>
+                {titles.map(t => (
+                  <option key={t.plex_guid} value={t.plex_guid}>{t.title.split(' – ')[0]} ({t.segment_count})</option>
+                ))}
+              </select>
+            )}
+          </div>
+        </div>
         {scannerStatus && scannerStatus.active_scans.length > 0 && (
           <div className="mb-3 bg-plex-card border border-plex-orange/30 rounded-xl px-4 py-3">
             <div className="flex items-center justify-between text-xs mb-2 text-gray-400">
@@ -407,15 +441,15 @@ export default function Segments() {
                     {episode.isExpanded && (
                       <div className="mt-2 ml-4 space-y-2 pb-2">
                         {episode.segments.map(seg => (
-                          <div key={seg.id} className="bg-plex-card border border-plex-border rounded-xl overflow-hidden flex gap-0">
+                          <div key={seg.id} className="bg-plex-card border border-plex-border rounded-xl overflow-hidden flex flex-col sm:flex-row">
                             {/* Thumbnail */}
-                            <div className="w-40 flex-shrink-0 bg-black relative">
+                            <div className="w-full sm:w-40 flex-shrink-0 bg-black relative">
                               {seg.has_thumbnail ? (
                                 <img
                                   src={seg.thumbnail_url}
                                   alt="Flagged frame"
                                   className="w-full h-full object-cover"
-                                  style={{ minHeight: '90px' }}
+                                  style={{ minHeight: '90px', maxHeight: '160px' }}
                                 />
                               ) : (
                                 <div className="w-full h-24 flex items-center justify-center text-gray-700">
@@ -428,9 +462,9 @@ export default function Segments() {
                             </div>
 
                             {/* Info */}
-                            <div className="flex-1 p-4 flex items-center justify-between gap-4">
-                              <div>
-                                <div className="flex items-center gap-3 mb-1">
+                            <div className="flex-1 p-3 sm:p-4 flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2 mb-1">
                                   <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.start_ms)}</span>
                                   <span className="text-gray-600">→</span>
                                   <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.end_ms)}</span>
@@ -443,11 +477,11 @@ export default function Segments() {
                                 </p>
                                 {renderLabels(seg.labels)}
                               </div>
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-shrink-0">
                                 <button
                                   onClick={() => openPreview(seg)}
                                   title="Preview this segment in-app"
-                                  className="p-2 text-gray-600 hover:text-green-400 hover:bg-green-400/10 rounded-lg transition-colors flex-shrink-0"
+                                  className="p-2 text-gray-600 hover:text-green-400 hover:bg-green-400/10 rounded-lg transition-colors"
                                 >
                                   <Play size={16} />
                                 </button>
@@ -455,7 +489,7 @@ export default function Segments() {
                                   onClick={() => jumpToSegment(seg.id)}
                                   disabled={jumping[seg.id]}
                                   title="Jump active Plex playback for this title to this segment"
-                                  className="p-2 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors disabled:opacity-40 flex-shrink-0"
+                                  className="p-2 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors disabled:opacity-40"
                                 >
                                   <SkipForward size={16} />
                                 </button>
@@ -463,7 +497,7 @@ export default function Segments() {
                                   onClick={() => deleteSegment(seg.id)}
                                   disabled={deleting[seg.id]}
                                   title="Remove this segment (false positive)"
-                                  className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-40 flex-shrink-0"
+                                  className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-40"
                                 >
                                   <Trash2 size={16} />
                                 </button>
@@ -480,15 +514,15 @@ export default function Segments() {
               // Movie view — flat list
               <div className="grid gap-3">
                 {segments.map(seg => (
-                  <div key={seg.id} className="bg-plex-card border border-plex-border rounded-xl overflow-hidden flex gap-0">
+                  <div key={seg.id} className="bg-plex-card border border-plex-border rounded-xl overflow-hidden flex flex-col sm:flex-row">
                     {/* Thumbnail */}
-                    <div className="w-40 flex-shrink-0 bg-black relative">
+                    <div className="w-full sm:w-40 flex-shrink-0 bg-black relative">
                       {seg.has_thumbnail ? (
                         <img
                           src={seg.thumbnail_url}
                           alt="Flagged frame"
                           className="w-full h-full object-cover"
-                          style={{ minHeight: '90px' }}
+                          style={{ minHeight: '90px', maxHeight: '160px' }}
                         />
                       ) : (
                         <div className="w-full h-24 flex items-center justify-center text-gray-700">
@@ -501,9 +535,9 @@ export default function Segments() {
                     </div>
 
                     {/* Info */}
-                    <div className="flex-1 p-4 flex items-center justify-between gap-4">
-                      <div>
-                        <div className="flex items-center gap-3 mb-1">
+                    <div className="flex-1 p-3 sm:p-4 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2 mb-1">
                           <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.start_ms)}</span>
                           <span className="text-gray-600">→</span>
                           <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.end_ms)}</span>
@@ -516,11 +550,11 @@ export default function Segments() {
                         </p>
                         {renderLabels(seg.labels)}
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-shrink-0">
                         <button
                           onClick={() => openPreview(seg)}
                           title="Preview this segment in-app"
-                          className="p-2 text-gray-600 hover:text-green-400 hover:bg-green-400/10 rounded-lg transition-colors flex-shrink-0"
+                          className="p-2 text-gray-600 hover:text-green-400 hover:bg-green-400/10 rounded-lg transition-colors"
                         >
                           <Play size={16} />
                         </button>
@@ -528,7 +562,7 @@ export default function Segments() {
                           onClick={() => jumpToSegment(seg.id)}
                           disabled={jumping[seg.id]}
                           title="Jump active Plex playback for this title to this segment"
-                          className="p-2 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors disabled:opacity-40 flex-shrink-0"
+                          className="p-2 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors disabled:opacity-40"
                         >
                           <SkipForward size={16} />
                         </button>
@@ -536,7 +570,7 @@ export default function Segments() {
                           onClick={() => deleteSegment(seg.id)}
                           disabled={deleting[seg.id]}
                           title="Remove this segment (false positive)"
-                          className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-40 flex-shrink-0"
+                          className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-40"
                         >
                           <Trash2 size={16} />
                         </button>

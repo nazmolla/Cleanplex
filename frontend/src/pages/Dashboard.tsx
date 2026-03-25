@@ -138,14 +138,16 @@ export default function Dashboard() {
       {/* Scanner status bar */}
       {scanner && (
         <div className="bg-plex-card border border-plex-border rounded-xl p-4 space-y-3">
-          <div className="flex items-center gap-4 text-sm">
-            <div className={`w-2 h-2 rounded-full flex-shrink-0 ${scanner.paused ? 'bg-yellow-500' : 'bg-green-500 animate-pulse'}`} />
-            <span className="text-gray-400">
-              Scanner:{' '}
-              <span className={scanner.paused ? 'text-yellow-400' : 'text-green-400'}>
-                {scanner.paused ? 'Paused (outside scan window)' : 'Active'}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full flex-shrink-0 ${scanner.paused ? 'bg-yellow-500' : 'bg-green-500 animate-pulse'}`} />
+              <span className="text-gray-400">
+                Scanner:{' '}
+                <span className={scanner.paused ? 'text-yellow-400' : 'text-green-400'}>
+                  {scanner.paused ? 'Paused' : 'Active'}
+                </span>
               </span>
-            </span>
+            </div>
             <span className="text-gray-500">
               Workers: <span className="text-gray-300">{scanner.workers_active}/{scanner.workers_configured}</span>
             </span>
@@ -155,7 +157,7 @@ export default function Dashboard() {
               </span>
             )}
             {scanner.queue_size > 0 && (
-              <span className="text-gray-500 ml-auto">Queue: <span className="text-gray-300">{scanner.queue_size}</span></span>
+              <span className="text-gray-500 sm:ml-auto">Queue: <span className="text-gray-300">{scanner.queue_size}</span></span>
             )}
           </div>
           {scanner.active_scans.length > 0 && (
@@ -217,9 +219,9 @@ export default function Dashboard() {
                   />
                 )}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-start justify-between gap-2 flex-wrap">
                     <p className="font-medium text-gray-100 truncate">{s.title}</p>
-                    <div className="flex items-center gap-2 flex-shrink-0">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       {s.is_controllable
                         ? <span className="flex items-center gap-1 text-xs text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full"><Wifi size={11} />Controllable</span>
                         : <span className="flex items-center gap-1 text-xs text-gray-500 bg-white/5 px-2 py-0.5 rounded-full"><WifiOff size={11} />Not controllable</span>

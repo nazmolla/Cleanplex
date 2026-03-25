@@ -22,6 +22,7 @@ class Config:
     nudenet_model_path: str = ""
     segment_gap_ms: int = 12000
     segment_min_hits: int = 1
+    scan_ratings: list[str] = field(default_factory=list)  # empty = scan all ratings
     scan_labels: list[str] = field(default_factory=lambda: [
         "FEMALE_BREAST_EXPOSED",
         "FEMALE_GENITALIA_EXPOSED",
@@ -63,6 +64,7 @@ class Config:
             nudenet_model_path=s.get("nudenet_model_path", ""),
             segment_gap_ms=int(s.get("segment_gap_ms", "12000")),
             segment_min_hits=int(s.get("segment_min_hits", "1")),
+            scan_ratings=_labels(s.get("scan_ratings", "[]")),
             scan_labels=_labels(s.get("scan_labels", "[]")),
             scan_window_start=_time(s.get("scan_window_start", "23:00")),
             scan_window_end=_time(s.get("scan_window_end", "06:00")),

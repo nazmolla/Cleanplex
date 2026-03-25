@@ -425,8 +425,8 @@ export default function Library() {
 
   return (
     <div className="flex gap-6 h-full">
-      {/* Library list */}
-      <div className="w-52 flex-shrink-0">
+      {/* Library list — desktop only */}
+      <div className="hidden md:block w-52 flex-shrink-0">
         <h1 className="text-2xl font-bold text-gray-100 mb-4">Library</h1>
         <div className="space-y-1">
           {libraries.map(lib => (
@@ -449,6 +449,23 @@ export default function Library() {
 
       {/* Titles panel */}
       <div className="flex-1 min-w-0 flex flex-col min-h-0">
+        {/* Mobile library selector */}
+        <div className="flex md:hidden items-center gap-2 mb-4">
+          <h1 className="text-xl font-bold text-gray-100">Library</h1>
+          <select
+            value={selected?.id ?? ''}
+            onChange={e => {
+              const lib = libraries.find(l => l.id === e.target.value)
+              if (lib) selectLibrary(lib)
+            }}
+            className="flex-1 px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200 focus:outline-none focus:border-plex-orange/60"
+          >
+            <option value="">Select library…</option>
+            {libraries.map(lib => (
+              <option key={lib.id} value={lib.id}>{lib.title}</option>
+            ))}
+          </select>
+        </div>
         {!selected ? (
           <div className="flex items-center justify-center h-64 text-gray-600">
             Select a library to browse titles
@@ -456,9 +473,9 @@ export default function Library() {
         ) : (
           <>
             {/* Header row */}
-            <div className="flex items-center justify-between mb-3 gap-3">
+            <div className="flex flex-wrap items-center justify-between mb-3 gap-2">
               <h2 className="text-xl font-semibold text-gray-100 truncate">{selected.title}</h2>
-              <div className="flex gap-2 flex-shrink-0">
+              <div className="flex flex-wrap gap-2">
                 <button
                   onClick={syncLibraryNow}
                   disabled={refreshing}
@@ -540,7 +557,7 @@ export default function Library() {
             </div>
 
             {/* Text + rating filters */}
-            <div className="flex gap-2 mb-4">
+            <div className="flex flex-wrap gap-2 mb-4">
               <input
                 type="text"
                 placeholder="Filter titles..."
