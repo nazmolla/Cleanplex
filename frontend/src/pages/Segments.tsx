@@ -84,8 +84,10 @@ export default function Segments() {
   const [loadingTitles, setLoadingTitles] = useState(false)
   const [loadingSegs, setLoadingSegs] = useState(false)
   const [deleting, setDeleting] = useState<Record<number, boolean>>({})
+  const [deletingAll, setDeletingAll] = useState(false)
   const [jumping, setJumping] = useState<Record<number, boolean>>({})
   const [previewSeg, setPreviewSeg] = useState<Segment | null>(null)
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState(false)
   const [expandedEpisodes, setExpandedEpisodes] = useState<Set<string>>(new Set())
   const previewVideoRef = useRef<HTMLVideoElement | null>(null)
 
@@ -174,6 +176,25 @@ export default function Segments() {
     }
   }
 
+  const deleteAllSegments = async () => {
+    if (!selectedTitle) return
+    setDeletingAll(true)
+    try {
+      await api.delete(`/api/titles/${selectedTitle.plex_guid}/segments`)
+      setSegments([])
+      if (selectedTitle) {
+        setTitles(ts => ts.map(t =>
+          t.plex_guid === selectedTitle.plex_guid
+            ? { ...t, segment_count: 0 }
+            : t
+        ))
+      }
+      setConfirmDeleteAll(false)
+    } finally {
+      setDeletingAll(false)
+    }
+  }
+
   const jumpToSegment = async (id: number) => {
     setJumping(j => ({ ...j, [id]: true }))
     try {
@@ -252,19 +273,30 @@ export default function Segments() {
           </div>
         ) : (
           <>
-            <div className="flex items-center gap-3 mb-4">
-              {selectedTitle.thumb_url && (
-                <img
-                  src={selectedTitle.thumb_url}
-                  alt=""
-                  className="w-10 h-14 object-cover rounded bg-plex-border"
-                  onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
-                />
-              )}
-              <div>
-                <h2 className="text-lg font-semibold text-gray-100">{selectedTitle.title}</h2>
-                <p className="text-sm text-gray-500">{segments.length} segment{segments.length !== 1 ? 's' : ''} detected</p>
+            <div className="flex items-center gap-3 mb-4 justify-between">
+              <div className="flex items-center gap-3">
+                {selectedTitle.thumb_url && (
+                  <img
+                    src={selectedTitle.thumb_url}
+                    alt=""
+                    className="w-10 h-14 object-cover rounded bg-plex-border"
+                    onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+                  />
+                )}
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-100">{selectedTitle.title}</h2>
+                  <p className="text-sm text-gray-500">{segments.length} segment{segments.length !== 1 ? 's' : ''} detected</p>
+                </div>
               </div>
+              {segments.length > 0 && (
+                <button
+                  onClick={() => setConfirmDeleteAll(true)}
+                  disabled={deletingAll}
+                  className="px-3 py-1.5 text-xs bg-red-500/20 border border-red-500/30 rounded-lg text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-40 flex-shrink-0"
+                >
+                  Delete All
+                </button>
+              )}
             </div>
 
             {loadingSegs ? (
@@ -437,6 +469,37 @@ export default function Segments() {
               </div>
             )}
           </>
+        )}
+
+        {confirmDeleteAll && selectedTitle && (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="w-full max-w-sm bg-plex-card border border-plex-border rounded-xl overflow-hidden">
+              <div className="px-4 py-3 border-b border-plex-border">
+                <h3 className="text-sm font-semibold text-gray-100">Delete All Segments?</h3>
+              </div>
+              <div className="p-4">
+                <p className="text-sm text-gray-300 mb-4">
+                  Are you sure you want to delete all {segments.length} segment{segments.length !== 1 ? 's' : ''} for <strong>{selectedTitle.title}</strong>? This cannot be undone.
+                </p>
+                <div className="flex gap-2 justify-end">
+                  <button
+                    onClick={() => setConfirmDeleteAll(false)}
+                    disabled={deletingAll}
+                    className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={deleteAllSegments}
+                    disabled={deletingAll}
+                    className="px-3 py-1.5 text-xs bg-red-500/20 border border-red-500/30 rounded-lg text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-40"
+                  >
+                    {deletingAll ? 'Deleting...' : 'Delete All'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
         {previewSeg && (

@@ -204,6 +204,13 @@ async def delete_segment(segment_id: int):
     return {"ok": True}
 
 
+@router.delete("/titles/{plex_guid:path}/segments")
+async def delete_all_segments_for_title(plex_guid: str):
+    """Delete all segments for a specific title."""
+    deleted = await db.delete_segments_for_guid(plex_guid)
+    return {"ok": True, "deleted": deleted}
+
+
 @router.get("/segments")
 async def get_all_segments(limit: int = 100, offset: int = 0):
     segments = await db.get_all_segments(limit=limit, offset=offset)
