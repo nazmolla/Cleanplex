@@ -10,6 +10,7 @@ All sync is completely under user control via API endpoints.
 import base64
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -197,13 +198,13 @@ async def push_segments_to_library(
     Returns number of file entries updated.
     """
     sync_config = await get_sync_config()
-    repo_slug = _parse_repo_slug((sync_config or {}).get("github_repo") or DEFAULT_SYNC_GITHUB_REPO)
-    github_token = ((sync_config or {}).get("github_token") or "").strip()
+    repo_slug = DEFAULT_SYNC_GITHUB_REPO
+    github_token = (((sync_config or {}).get("github_token") or os.environ.get("CLEANPLEX_SYNC_GITHUB_TOKEN") or "").strip())
 
     if not repo_slug:
         raise RuntimeError("Sync repository is not configured")
     if not github_token:
-        raise RuntimeError("GitHub token is required for upload")
+        raise RuntimeError("Upload requires CLEANPLEX_SYNC_GITHUB_TOKEN on the server")
 
     count = 0
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -270,8 +271,8 @@ async def fetch_cloud_segments(file_hashes: list[str]) -> dict[str, list[dict]]:
         return {}
     
     sync_config = await get_sync_config()
-    repo_slug = _parse_repo_slug((sync_config or {}).get("github_repo") or DEFAULT_SYNC_GITHUB_REPO)
-    github_token = ((sync_config or {}).get("github_token") or "").strip()
+    repo_slug = DEFAULT_SYNC_GITHUB_REPO
+    github_token = (((sync_config or {}).get("github_token") or os.environ.get("CLEANPLEX_SYNC_GITHUB_TOKEN") or "").strip())
 
     if not repo_slug:
         raise RuntimeError("Sync repository is not configured")

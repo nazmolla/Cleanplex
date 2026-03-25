@@ -81,7 +81,7 @@ async def get_sync_status():
     return SyncStatus(
         sync_enabled=bool(metadata.get("sync_enabled", 0)),
         instance_name=metadata.get("instance_name"),
-        github_repo=metadata.get("github_repo"),
+        github_repo=DEFAULT_SYNC_GITHUB_REPO,
         conflict_resolution=metadata.get("conflict_resolution", "consensus"),
         verified_threshold=metadata.get("verified_threshold", 2),
         timing_tolerance_ms=metadata.get("timing_tolerance_ms", 2000),
@@ -92,8 +92,6 @@ async def get_sync_status():
 @router.post("/settings")
 async def configure_sync(
     instance_name: str = Body(...),
-    github_repo: str | None = Body(None),
-    github_token: str | None = Body(None),
     sync_enabled: bool = Body(False),
     conflict_resolution: str = Body("consensus"),
     verified_threshold: int = Body(2),
@@ -101,21 +99,18 @@ async def configure_sync(
 ):
     """
     Update sync configuration.
-    Stores instance name, GitHub repo, and sync preferences.
+    Repository is fixed to the default crowdsourced repo.
     """
     if not instance_name or not instance_name.strip():
         raise HTTPException(status_code=400, detail="instance_name is required")
-    
-    if sync_enabled and (not github_repo or not github_token):
-        raise HTTPException(
-            status_code=400,
-            detail="github_repo and github_token are required when sync_enabled=true",
-        )
-    
+
+    current = await get_sync_metadata()
+    existing_token = current.get("github_token") if current else None
+
     await upsert_sync_metadata(
         instance_name=instance_name,
-        github_repo=(github_repo or DEFAULT_SYNC_GITHUB_REPO),
-        github_token=github_token,
+        github_repo=DEFAULT_SYNC_GITHUB_REPO,
+        github_token=existing_token,
         sync_enabled=sync_enabled,
         conflict_resolution=conflict_resolution,
         verified_threshold=verified_threshold,
