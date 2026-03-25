@@ -23,9 +23,38 @@ dependencies = [
 [project.scripts]
 cleanplex = "cleanplex.main:main"
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "anyio[asyncio]>=4.0",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cleanplex*"]
 
 [tool.setuptools.package-data]
 cleanplex = ["web/static/**/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--tb=short"
+
+[tool.coverage.run]
+source = ["cleanplex"]
+omit = [
+    "cleanplex/main.py",
+    "cleanplex/frame_extractor.py",   # requires ffmpeg binary
+    "cleanplex/watcher.py",           # requires live Plex + running event loop
+]
+
+[tool.coverage.report]
+fail_under = 60
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
