@@ -134,18 +134,75 @@ async def enqueue(plex_guid: str) -> None:
 
 
 async def enqueue_pending() -> None:
-    """Push all pending scan jobs onto the queue, excluding ignored titles."""
+    """Drain the normal queue and re-enqueue all pending jobs in priority order.
+
+    Safe to call at any time (e.g. on startup or via the reorder-queue API).
+    Already-scanning titles (in _current_guids) are not affected.
+
+    Order:
+      1. Movies — most recently added first (descending integer rating_key).
+      2. TV episodes — grouped by show_guid so all episodes of a show are
+         contiguous; shows ordered by their highest rating_key descending
+         (most recently added show first); episodes within each show
+         ordered by rating_key ascending (episode order).
+
+    Ignored titles are excluded; they remain pending in the DB so they can
+    be un-ignored later without a fresh Plex sync.
+    """
+    # Drain the normal queue and clear tracking set so we can re-enqueue in order.
+    # Force-queue and _current_guids are intentionally left untouched.
+    async with _state_lock:
+        while not _scan_queue.empty():
+            try:
+                _scan_queue.get_nowait()
+            except Exception:
+                break
+        _queued_normal.clear()
+
     jobs = await db.get_scan_jobs(status="pending")
+    active = [j for j in jobs if not j.get("ignored")]
+
+    movies = [j for j in active if j.get("media_type") != "episode"]
+    episodes = [j for j in active if j.get("media_type") == "episode"]
+
+    # Movies: newest Plex item first.
+    movies.sort(key=lambda j: int(j.get("rating_key") or 0), reverse=True)
+
+    # TV: group episodes by show_guid; fall back to the show name portion of
+    # the title ("ShowName – Season – Episode") when show_guid is absent.
+    from collections import defaultdict
+
+    show_buckets: dict[str, list[dict]] = defaultdict(list)
+    for ep in episodes:
+        key = ep.get("show_guid") or ep.get("title", "").split(" – ")[0]
+        show_buckets[key].append(ep)
+
+    # Within each show sort by rating_key asc (episode order).
+    for bucket in show_buckets.values():
+        bucket.sort(key=lambda j: int(j.get("rating_key") or 0))
+
+    # Order shows by the highest rating_key in each bucket desc
+    # (most recently added show comes first).
+    ordered_shows = sorted(
+        show_buckets.values(),
+        key=lambda eps: max(int(j.get("rating_key") or 0) for j in eps),
+        reverse=True,
+    )
+
+    ordered = movies + [ep for eps in ordered_shows for ep in eps]
+
     enqueued = 0
-    for job in jobs:
-        # Ignored titles stay pending in the DB but must never enter the queue;
-        # scan_video() enforces this too, but filtering here avoids wasteful dequeues.
-        if job.get("ignored"):
-            continue
+    for job in ordered:
         await enqueue(job["plex_guid"])
         enqueued += 1
     if enqueued:
-        logger.info("Queued %d pending scan jobs (%d ignored skipped)", enqueued, len(jobs) - enqueued)
+        logger.info(
+            "Queued %d pending scan jobs (%d movies, %d episodes, %d ignored skipped)",
+            enqueued,
+            len(movies),
+            len(episodes),
+            len(jobs) - len(active),
+        )
 
 
 def _get_detector(model_name: str = "320n", model_path: str = ""):
@@ -636,9 +693,12 @@ async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
 async def scanner_loop(get_config_fn) -> None:
     """Main scanner supervisor — runs multiple scanner workers concurrently."""
     global _worker_pool_size, _restart_requested
-    await enqueue_pending()
 
     while True:
+        # Re-apply queue ordering on every start/restart so settings changes
+        # (or an explicit reorder-queue API call) take effect immediately.
+        await enqueue_pending()
+
         config = await get_config_fn()
         worker_count = max(1, int(getattr(config, "scan_workers", 2)))
         _worker_pool_size = worker_count

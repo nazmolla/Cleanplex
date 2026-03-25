@@ -172,6 +172,9 @@ async def init_db() -> None:
             "ALTER TABLE scan_jobs ADD COLUMN year INTEGER",
             "ALTER TABLE segments ADD COLUMN labels TEXT DEFAULT ''",
             "ALTER TABLE scan_jobs ADD COLUMN ignored INTEGER DEFAULT 0",
+            # show_guid stores the Plex grandparentGuid for episodes so the
+            # scan queue can group all episodes of a show together.
+            "ALTER TABLE scan_jobs ADD COLUMN show_guid TEXT DEFAULT ''",
         ]
         for stmt in migrations:
             try:
@@ -352,12 +355,14 @@ async def upsert_scan_job(
     content_rating: str = "",
     media_type: str = "movie",
     year: int | None = None,
+    show_guid: str = "",
 ) -> None:
     async with get_connection() as conn:
         await conn.execute(
-            "INSERT OR IGNORE INTO scan_jobs(plex_guid, title, file_path, rating_key, library_id, library_title, content_rating, media_type, year) "
-            "VALUES(?,?,?,?,?,?,?,?,?)",
-            (plex_guid, title, file_path, rating_key, library_id, library_title, content_rating, media_type, year),
+            "INSERT OR IGNORE INTO scan_jobs"
+            "(plex_guid, title, file_path, rating_key, library_id, library_title, content_rating, media_type, year, show_guid) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (plex_guid, title, file_path, rating_key, library_id, library_title, content_rating, media_type, year, show_guid),
         )
         await conn.commit()
 

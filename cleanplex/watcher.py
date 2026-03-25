@@ -93,6 +93,7 @@ async def library_watcher_loop(get_config_fn, get_client_fn) -> None:
                             content_rating=item.content_rating,
                             media_type=item.media_type,
                             year=item.year,
+                            show_guid=item.show_guid,
                         )
                         await enqueue(item.plex_guid)
                         logger.info("New item queued for scan: %s", item.title)

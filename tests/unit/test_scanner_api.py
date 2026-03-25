@@ -152,3 +152,74 @@ def test_request_skip_scan_returns_true_when_active():
 
 def test_get_worker_pool_size_returns_int():
     assert isinstance(scanner.get_worker_pool_size(), int)
+
+
+# ── enqueue_pending ordering ───────────────────────────────────────────────────
+
+async def test_enqueue_pending_movies_before_episodes():
+    """All movie jobs must be enqueued before any TV episode jobs."""
+    await db.upsert_scan_job("ep1", "Show – S01 – E1", "/e1.mkv", "10", "lib", "L", media_type="episode", show_guid="show-a")
+    await db.upsert_scan_job("mov1", "Movie A", "/m1.mkv", "5", "lib", "L", media_type="movie")
+    await db.upsert_scan_job("ep2", "Show – S01 – E2", "/e2.mkv", "11", "lib", "L", media_type="episode", show_guid="show-a")
+    await db.upsert_scan_job("mov2", "Movie B", "/m2.mkv", "6", "lib", "L", media_type="movie")
+
+    await scanner.enqueue_pending()
+
+    queued = []
+    while not scanner._scan_queue.empty():
+        queued.append(scanner._scan_queue.get_nowait())
+
+    assert queued.index("mov1") < queued.index("ep1")
+    assert queued.index("mov2") < queued.index("ep1")
+    assert queued.index("mov1") < queued.index("ep2")
+    assert queued.index("mov2") < queued.index("ep2")
+
+
+async def test_enqueue_pending_movies_newest_first():
+    """Within movies, higher rating_key (more recently added) comes first."""
+    await db.upsert_scan_job("old-movie", "Old Film", "/old.mkv", "100", "lib", "L", media_type="movie")
+    await db.upsert_scan_job("new-movie", "New Film", "/new.mkv", "999", "lib", "L", media_type="movie")
+
+    await scanner.enqueue_pending()
+
+    queued = []
+    while not scanner._scan_queue.empty():
+        queued.append(scanner._scan_queue.get_nowait())
+
+    assert queued.index("new-movie") < queued.index("old-movie")
+
+
+async def test_enqueue_pending_episodes_grouped_by_show():
+    """Episodes from the same show must be contiguous — no interleaving between shows."""
+    await db.upsert_scan_job("a-ep1", "ShowA – S01 – E1", "/a1.mkv", "1", "lib", "L", media_type="episode", show_guid="show-a")
+    await db.upsert_scan_job("b-ep1", "ShowB – S01 – E1", "/b1.mkv", "2", "lib", "L", media_type="episode", show_guid="show-b")
+    await db.upsert_scan_job("a-ep2", "ShowA – S01 – E2", "/a2.mkv", "3", "lib", "L", media_type="episode", show_guid="show-a")
+    await db.upsert_scan_job("b-ep2", "ShowB – S01 – E2", "/b2.mkv", "4", "lib", "L", media_type="episode", show_guid="show-b")
+
+    await scanner.enqueue_pending()
+
+    queued = []
+    while not scanner._scan_queue.empty():
+        queued.append(scanner._scan_queue.get_nowait())
+
+    idx_a1, idx_a2 = queued.index("a-ep1"), queued.index("a-ep2")
+    idx_b1, idx_b2 = queued.index("b-ep1"), queued.index("b-ep2")
+
+    # No show-B episode should appear between show-A episodes and vice-versa
+    assert max(idx_a1, idx_a2) < min(idx_b1, idx_b2) or max(idx_b1, idx_b2) < min(idx_a1, idx_a2)
+
+
+async def test_enqueue_pending_ignored_titles_excluded():
+    """Ignored jobs must not be enqueued."""
+    await db.upsert_scan_job("normal", "Keep Me", "/k.mkv", "1", "lib", "L")
+    await db.upsert_scan_job("ignored", "Skip Me", "/s.mkv", "2", "lib", "L")
+    await db.set_ignored("ignored", True)
+
+    await scanner.enqueue_pending()
+
+    queued = []
+    while not scanner._scan_queue.empty():
+        queued.append(scanner._scan_queue.get_nowait())
+
+    assert "normal" in queued
+    assert "ignored" not in queued

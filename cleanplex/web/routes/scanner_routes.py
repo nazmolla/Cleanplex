@@ -157,6 +157,15 @@ class ToggleIgnoredRequest(BaseModel):
     ignored: bool
 
 
+@router.post("/reorder-queue")
+async def reorder_queue():
+    """Drain and re-enqueue all pending jobs in priority order (movies newest-first,
+    then TV episodes grouped by show). Use this to fix queue ordering at any time
+    without restarting the server."""
+    await scan_mod.enqueue_pending()
+    return {"ok": True, "queue_size": scan_mod.get_queue_size()}
+
+
 @router.post("/title/{plex_guid:path}/ignore")
 async def toggle_title_ignored(plex_guid: str, body: ToggleIgnoredRequest):
     """Mark a title as ignored (will be skipped during scanning) or re-enable it."""

@@ -61,6 +61,7 @@ class MediaItem:
     library_title: str
     media_type: str       # "movie" or "episode"
     content_rating: str = ""  # e.g. "PG-13", "R", "TV-MA"
+    show_guid: str = ""       # grandparentGuid for episodes; empty for movies
 
 
 @dataclass
@@ -336,6 +337,8 @@ class PlexClient:
 
             year = getattr(item, "year", None)
 
+            show_guid = getattr(item, "grandparentGuid", "") or ""
+
             return MediaItem(
                 rating_key=str(item.ratingKey),
                 plex_guid=guid,
@@ -347,6 +350,7 @@ class PlexClient:
                 library_title=library_title,
                 media_type=item.type,
                 content_rating=getattr(item, "contentRating", "") or "",
+                show_guid=show_guid,
             )
         except Exception:
             return None
