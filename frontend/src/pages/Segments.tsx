@@ -439,11 +439,23 @@ export default function Segments() {
                 className="flex-1 px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200 focus:outline-none focus:border-plex-orange/60"
               >
                 <option value="">Select title…</option>
-                {titles.map(t => {
-                  const { show, season, episode } = parseShowInfo(t.title)
-                  const label = season ? `${show} – ${season} – ${episode}` : t.title
-                  return <option key={t.plex_guid} value={t.plex_guid}>{label} ({t.segment_count})</option>
-                })}
+                {selectedLib?.type === 'show' ? (
+                  // TV: grouped by show → season using optgroup
+                  buildShowGroups().map(showGroup =>
+                    showGroup.seasons.map(seasonGroup => (
+                      <optgroup key={`${showGroup.show}__${seasonGroup.season}`} label={`${showGroup.show} – ${seasonGroup.season}`}>
+                        {seasonGroup.episodes.map(t => {
+                          const { episode } = parseShowInfo(t.title)
+                          return <option key={t.plex_guid} value={t.plex_guid}>{episode} ({t.segment_count})</option>
+                        })}
+                      </optgroup>
+                    ))
+                  )
+                ) : (
+                  titles.map(t => (
+                    <option key={t.plex_guid} value={t.plex_guid}>{t.title} ({t.segment_count})</option>
+                  ))
+                )}
               </select>
             )}
           </div>
