@@ -416,6 +416,38 @@ export default function Library() {
               >
                 <Zap size={13} /> Scan Selected Now ({selectedGuids.length})
               </button>
+              <button
+                onClick={async () => {
+                  if (selectedGuids.length === 0 || !selected) return
+                  for (const guid of selectedGuids) {
+                    try {
+                      await api.post(`/api/scan/title/${guid}/ignore`, { ignored: true })
+                    } catch {}
+                  }
+                  setSelectedGuids([])
+                  setTitles(await loadTitles(selected.id))
+                }}
+                disabled={selectedGuids.length === 0}
+                className="px-2.5 py-1.5 text-xs bg-yellow-500/20 border border-yellow-500/30 rounded-lg text-yellow-500 hover:bg-yellow-500/30 transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
+              >
+                ✗ IGNORE SELECTED ({selectedGuids.length})
+              </button>
+              <button
+                onClick={async () => {
+                  if (selectedGuids.length === 0 || !selected) return
+                  for (const guid of selectedGuids) {
+                    try {
+                      await api.post(`/api/scan/title/${guid}/ignore`, { ignored: false })
+                    } catch {}
+                  }
+                  setSelectedGuids([])
+                  setTitles(await loadTitles(selected.id))
+                }}
+                disabled={selectedGuids.length === 0}
+                className="px-2.5 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
+              >
+                ○ Un-ignore Selected ({selectedGuids.length})
+              </button>
             </div>
 
             {/* Title list */}
