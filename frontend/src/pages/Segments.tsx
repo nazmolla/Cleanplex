@@ -197,11 +197,11 @@ export default function Segments() {
   }
 
   return (
-    <div className="flex gap-4 h-full">
-      {/* Library tree */}
-      <div className="w-44 flex-shrink-0">
+    <div className="flex gap-4 h-full overflow-hidden">
+      {/* Library tree - independent scroll */}
+      <div className="w-44 flex-shrink-0 overflow-y-auto">
         <h1 className="text-xl font-bold text-gray-100 mb-3">Segments</h1>
-        <div className="space-y-0.5">
+        <div className="space-y-0.5 pr-2">
           {libraries.map(lib => (
             <div key={lib.id}>
               <button
@@ -244,8 +244,8 @@ export default function Segments() {
         </div>
       </div>
 
-      {/* Segments detail panel */}
-      <div className="flex-1 min-w-0">
+      {/* Segments detail panel - independent scroll */}
+      <div className="flex-1 min-w-0 overflow-y-auto">
         {!selectedTitle ? (
           <div className="flex items-center justify-center h-64 text-gray-600 text-sm">
             Select a title to review its segments
