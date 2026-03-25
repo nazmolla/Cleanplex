@@ -29,6 +29,7 @@ logger = get_logger(__name__)
 
 GITHUB_API_BASE = "https://api.github.com"
 GITHUB_SEGMENTS_DIR = "segments"
+DEFAULT_SYNC_GITHUB_REPO = "nazmolla/cleanplex-segments"
 
 
 def _parse_repo_slug(repo: str | None) -> str:
@@ -196,7 +197,7 @@ async def push_segments_to_library(
     Returns number of file entries updated.
     """
     sync_config = await get_sync_config()
-    repo_slug = _parse_repo_slug((sync_config or {}).get("github_repo"))
+    repo_slug = _parse_repo_slug((sync_config or {}).get("github_repo") or DEFAULT_SYNC_GITHUB_REPO)
     github_token = ((sync_config or {}).get("github_token") or "").strip()
 
     if not repo_slug:
@@ -269,7 +270,7 @@ async def fetch_cloud_segments(file_hashes: list[str]) -> dict[str, list[dict]]:
         return {}
     
     sync_config = await get_sync_config()
-    repo_slug = _parse_repo_slug((sync_config or {}).get("github_repo"))
+    repo_slug = _parse_repo_slug((sync_config or {}).get("github_repo") or DEFAULT_SYNC_GITHUB_REPO)
     github_token = ((sync_config or {}).get("github_token") or "").strip()
 
     if not repo_slug:

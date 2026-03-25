@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Query, Body
 from pydantic import BaseModel
 
 from ...sync import (
+    DEFAULT_SYNC_GITHUB_REPO,
     prepare_segments_for_upload,
     push_segments_to_library,
     fetch_cloud_segments,
@@ -70,7 +71,7 @@ async def get_sync_status():
         return SyncStatus(
             sync_enabled=False,
             instance_name=None,
-            github_repo=None,
+            github_repo=DEFAULT_SYNC_GITHUB_REPO,
             conflict_resolution="consensus",
             verified_threshold=2,
             timing_tolerance_ms=2000,
@@ -113,7 +114,7 @@ async def configure_sync(
     
     await upsert_sync_metadata(
         instance_name=instance_name,
-        github_repo=github_repo,
+        github_repo=(github_repo or DEFAULT_SYNC_GITHUB_REPO),
         github_token=github_token,
         sync_enabled=sync_enabled,
         conflict_resolution=conflict_resolution,
