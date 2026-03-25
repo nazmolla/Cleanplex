@@ -149,6 +149,7 @@ The seek command is sent via the Plex Player Control API and works with most mod
 | Plex for iOS / Android | ✅ Fully supported |
 | Plex HTPC | ✅ Fully supported |
 | Plex Media Player (desktop) | ✅ Fully supported |
+| Apple TV | ✅ Fully supported |
 | Roku | ⚠️ Limited support |
 | Some Smart TV apps | ⚠️ Limited support |
 
