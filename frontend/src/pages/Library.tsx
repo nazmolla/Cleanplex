@@ -126,27 +126,49 @@ export default function Library() {
     api.get<{ libraries: Library[] }>('/api/libraries').then(d => setLibraries(d.libraries))
   }, [])
 
-  // Poll scanner status every 3s
+  // Poll scanner status every 3s.
+  // AbortController prevents stale responses from overwriting newer state.
   useEffect(() => {
-    const poll = () =>
-      api.get<ScannerStatus>('/api/sessions/scanner-status')
+    let controller = new AbortController()
+
+    const tick = () => {
+      controller.abort()
+      controller = new AbortController()
+      api.get<ScannerStatus>('/api/sessions/scanner-status', { signal: controller.signal })
         .then(setScannerStatus)
         .catch(() => {})
-    poll()
-    const id = setInterval(poll, 3000)
-    return () => clearInterval(id)
+    }
+
+    tick()
+    const id = setInterval(tick, 3000)
+    return () => {
+      clearInterval(id)
+      controller.abort()
+    }
   }, [])
 
-  // Auto-refresh titles when something is scanning
+  // Auto-refresh titles while scanning; cancel in-flight request before each new tick.
   useEffect(() => {
     if (!selected || !scannerStatus || scannerStatus.active_scans.length === 0) return
-    const id = setInterval(async () => {
+    let controller = new AbortController()
+
+    const tick = async () => {
+      controller.abort()
+      controller = new AbortController()
       try {
-        const d = await api.get<{ titles: Title[] }>(`/api/libraries/${selected.id}/titles`)
+        const d = await api.get<{ titles: Title[] }>(
+          `/api/libraries/${selected.id}/titles`,
+          { signal: controller.signal },
+        )
         setTitles(d.titles)
       } catch {}
-    }, 5000)
-    return () => clearInterval(id)
+    }
+
+    const id = setInterval(tick, 5000)
+    return () => {
+      clearInterval(id)
+      controller.abort()
+    }
   }, [selected, scannerStatus])
 
   const loadTitles = useCallback(async (libId: string) => {
@@ -163,18 +185,24 @@ export default function Library() {
     setSelectedGuids([])
     setLoadingTitles(true)
     try {
-      const titles = await loadTitles(lib.id)
-      setTitles(titles)
-      // Always sync in background to ensure we're up-to-date
-      api.post(`/api/libraries/${lib.id}/sync`)
-        .then(async () => {
-          // Reload titles after sync completes
-          const updated = await loadTitles(lib.id)
-          setTitles(updated)
-        })
-        .catch(err => console.warn('Library sync failed:', err.message))
+      // Load titles from DB only — no automatic Plex sync on select.
+      // Use the "Sync from Plex" button to pull new titles explicitly.
+      setTitles(await loadTitles(lib.id))
     } finally {
       setLoadingTitles(false)
+    }
+  }
+
+  const syncLibraryNow = async () => {
+    if (!selected) return
+    setRefreshing(true)
+    try {
+      await api.post(`/api/libraries/${selected.id}/sync`)
+      setTitles(await loadTitles(selected.id))
+    } catch (err: any) {
+      console.warn('Library sync failed:', err.message)
+    } finally {
+      setRefreshing(false)
     }
   }
 
@@ -215,14 +243,28 @@ export default function Library() {
 
   const scanSelected = async (now: boolean) => {
     if (!selected || selectedGuids.length === 0) return
-    try {
-      for (const guid of selectedGuids) {
-        await api.post('/api/scan/title', { plex_guid: guid, now, library_id: selected.id })
+    // Limit to 5 concurrent requests to avoid overwhelming the server.
+    const CONCURRENCY = 5
+    const errors: string[] = []
+    const queue = [...selectedGuids]
+
+    const worker = async () => {
+      while (queue.length > 0) {
+        const guid = queue.shift()
+        if (!guid) break
+        try {
+          await api.post('/api/scan/title', { plex_guid: guid, now, library_id: selected.id })
+        } catch (err: any) {
+          errors.push(err.message || guid)
+        }
       }
-      setSelectedGuids([])
-      setTitles(await loadTitles(selected.id))
-    } catch (err: any) {
-      alert(`Failed to scan selected titles: ${err.message || 'Unknown error'}`)
+    }
+
+    await Promise.all(Array.from({ length: CONCURRENCY }, worker))
+    setSelectedGuids([])
+    setTitles(await loadTitles(selected.id))
+    if (errors.length > 0) {
+      alert(`${errors.length} title(s) failed to enqueue:\n${errors.slice(0, 5).join('\n')}`)
     }
   }
 
@@ -418,9 +460,17 @@ export default function Library() {
               <h2 className="text-xl font-semibold text-gray-100 truncate">{selected.title}</h2>
               <div className="flex gap-2 flex-shrink-0">
                 <button
+                  onClick={syncLibraryNow}
+                  disabled={refreshing}
+                  title="Sync new titles from Plex into the database"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-plex-orange/50 transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} /> Sync from Plex
+                </button>
+                <button
                   onClick={refreshTitles}
                   disabled={refreshing}
-                  title="Refresh"
+                  title="Reload titles from local database"
                   className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-50"
                 >
                   <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} /> Refresh

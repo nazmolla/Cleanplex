@@ -54,6 +54,8 @@ export default function Dashboard() {
   const [skipLoadingKey, setSkipLoadingKey] = useState<string | null>(null)
   const [skipScanLoadingGuid, setSkipScanLoadingGuid] = useState<string | null>(null)
 
+  // refresh is called ad-hoc by skipNow/skipCurrentScan — reuses the same fetch logic
+  // without a signal since it's a one-shot, user-triggered call.
   const refresh = async () => {
     try {
       const [s, e, sc] = await Promise.all([
@@ -72,9 +74,35 @@ export default function Dashboard() {
   }
 
   useEffect(() => {
-    refresh()
-    const id = setInterval(refresh, 5000)
-    return () => clearInterval(id)
+    // AbortController is created per tick so stale responses from a previous
+    // tick cannot overwrite state after a newer tick has already updated it.
+    let controller = new AbortController()
+
+    const tick = async () => {
+      controller.abort()
+      controller = new AbortController()
+      try {
+        const [s, e, sc] = await Promise.all([
+          api.get<{ sessions: Session[] }>('/api/sessions', { signal: controller.signal }),
+          api.get<{ events: SkipEvent[] }>('/api/sessions/events', { signal: controller.signal }),
+          api.get<ScannerStatus>('/api/sessions/scanner-status', { signal: controller.signal }),
+        ])
+        setSessions(s.sessions)
+        setEvents(e.events)
+        setScanner(sc)
+      } catch {
+        // Ignore — includes intentional abort
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    tick()
+    const id = setInterval(tick, 5000)
+    return () => {
+      clearInterval(id)
+      controller.abort()
+    }
   }, [])
 
   const skipNow = async (sessionKey: string) => {

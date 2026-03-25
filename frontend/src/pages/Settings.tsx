@@ -178,17 +178,18 @@ export default function SettingsPage() {
       const jobId = r.job_id
       setUploadResult({ ok: true, message: `Upload job ${jobId} queued. Starting...` })
       
-      // Step 2: Poll for job status
+      // Step 2: Poll for job status — max 120 attempts (≈2 min) before timing out.
+      const MAX_POLLS = 120
       let completed = false
       let isSuccess = false
       let finalMessage = ''
-      
-      while (!completed && isSuccess === isSuccess) {
-        await new Promise(resolve => setTimeout(resolve, 1000)) // Wait 1 second between polls
-        
+
+      for (let attempt = 0; attempt < MAX_POLLS && !completed; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 1000))
+
         try {
           const status = await api.get<any>(`/api/sync/job-status/${jobId}`)
-          
+
           if (status.status === 'completed') {
             completed = true
             isSuccess = true
@@ -199,16 +200,20 @@ export default function SettingsPage() {
             isSuccess = false
             finalMessage = status.error || 'Upload failed'
           } else {
-            // Still running - show progress
             const progress = status.progress || 0
             finalMessage = `Uploading... ${progress}%`
           }
-          
+
           setUploadResult({ ok: isSuccess, message: finalMessage })
-        } catch (pollError) {
-          // Continue polling even if we get a temp error
-          continue
+        } catch {
+          // Transient poll error — keep trying until max attempts
         }
+      }
+
+      if (!completed) {
+        isSuccess = false
+        finalMessage = 'Upload timed out — check server logs'
+        setUploadResult({ ok: false, message: finalMessage })
       }
       
       const updated = await api.get<SyncStatus>('/api/sync/status').catch(() => null)

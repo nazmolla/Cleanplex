@@ -156,14 +156,24 @@ export default function Segments() {
   }, [])
 
   // Poll scanner status every 3s so Segments page mirrors live scan activity.
+  // AbortController prevents stale responses from overwriting newer state.
   useEffect(() => {
-    const poll = () =>
-      api.get<ScannerStatus>('/api/sessions/scanner-status')
+    let controller = new AbortController()
+
+    const tick = () => {
+      controller.abort()
+      controller = new AbortController()
+      api.get<ScannerStatus>('/api/sessions/scanner-status', { signal: controller.signal })
         .then(setScannerStatus)
         .catch(() => {})
-    poll()
-    const id = setInterval(poll, 3000)
-    return () => clearInterval(id)
+    }
+
+    tick()
+    const id = setInterval(tick, 3000)
+    return () => {
+      clearInterval(id)
+      controller.abort()
+    }
   }, [])
 
   const selectLib = async (lib: Library) => {
