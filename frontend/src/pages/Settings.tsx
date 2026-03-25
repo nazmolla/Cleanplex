@@ -173,12 +173,48 @@ export default function SettingsPage() {
     setUploading(true)
     setUploadResult(null)
     try {
-      const r = await api.post<{ status: string; files_processed: number; entries_updated: number; message: string }>('/api/sync/upload-segment-library')
-      setUploadResult({ ok: r.status === 'success' || r.status === 'no_data', message: r.message })
+      // Step 1: Enqueue the upload job
+      const r = await api.post<{ status: string; job_id: number; message: string }>('/api/sync/upload-segment-library')
+      const jobId = r.job_id
+      setUploadResult({ ok: true, message: `Upload job ${jobId} queued. Starting...` })
+      
+      // Step 2: Poll for job status
+      let completed = false
+      let isSuccess = false
+      let finalMessage = ''
+      
+      while (!completed && isSuccess === isSuccess) {
+        await new Promise(resolve => setTimeout(resolve, 1000)) // Wait 1 second between polls
+        
+        try {
+          const status = await api.get<any>(`/api/sync/job-status/${jobId}`)
+          
+          if (status.status === 'completed') {
+            completed = true
+            isSuccess = true
+            const result = status.result || {}
+            finalMessage = result.message || 'Upload completed'
+          } else if (status.status === 'failed') {
+            completed = true
+            isSuccess = false
+            finalMessage = status.error || 'Upload failed'
+          } else {
+            // Still running - show progress
+            const progress = status.progress || 0
+            finalMessage = `Uploading... ${progress}%`
+          }
+          
+          setUploadResult({ ok: isSuccess, message: finalMessage })
+        } catch (pollError) {
+          // Continue polling even if we get a temp error
+          continue
+        }
+      }
+      
       const updated = await api.get<SyncStatus>('/api/sync/status').catch(() => null)
       if (updated) setSyncStatus(updated)
     } catch (e: any) {
-      setUploadResult({ ok: false, message: 'Upload failed' })
+      setUploadResult({ ok: false, message: 'Upload failed to start' })
     } finally {
       setUploading(false)
     }

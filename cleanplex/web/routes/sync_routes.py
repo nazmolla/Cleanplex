@@ -19,6 +19,7 @@ from ...database import (
     get_sync_metadata,
     upsert_sync_metadata,
 )
+from ...bg_jobs import enqueue_upload_job, get_job_status
 from ...logger import get_logger
 
 logger = get_logger(__name__)
@@ -125,21 +126,16 @@ async def configure_sync(
     }
 
 
-@router.post("/upload-segment-library", response_model=SyncUploadResponse)
+@router.post("/upload-segment-library")
 async def upload_segment_library():
     """
-    Upload all local segments to the cloud library.
+    Enqueue a segment library upload job.
+    
+    Returns immediately with a job ID.
+    Use /api/sync/job-status/{job_id} to check progress.
     
     ⚠️  MANUAL OPERATION ONLY - Never called automatically
     User must explicitly trigger from UI or API client
-    
-    Process:
-    1. Gather all local scans with valid file paths
-    2. Compute SHA256 file hash for each
-    3. Package segments with metadata (confidence, labels, source instance)
-    4. Store in local library table (future: push to GitHub as backup)
-    
-    Returns: Count of files processed and entries updated
     """
     if not await is_sync_enabled():
         raise HTTPException(status_code=400, detail="Sync not enabled")
@@ -148,39 +144,38 @@ async def upload_segment_library():
     if not config:
         raise HTTPException(status_code=500, detail="Sync not configured")
     
-    instance_name = config.get("instance_name", "unknown")
-    
     try:
-        # Gather local segments
-        upload_data = await prepare_segments_for_upload(instance_name)
+        # Enqueue the upload job (runs in background)
+        job_id = await enqueue_upload_job()
         
-        if not upload_data:
-            logger.warning("No segments available for upload")
-            return SyncUploadResponse(
-                status="no_data",
-                files_processed=0,
-                entries_updated=0,
-                message="No segments to upload",
-            )
-        
-        # Push to crowdsourced GitHub library.
-        entries_count = await push_segments_to_library(instance_name, upload_data)
-        
-        # Update last sync time
-        await mark_sync_complete()
-        
-        logger.info(f"Uploaded {len(upload_data)} files with {entries_count} entries")
-        
-        return SyncUploadResponse(
-            status="success",
-            files_processed=len(upload_data),
-            entries_updated=entries_count,
-            message=f"Uploaded {len(upload_data)} files to GitHub segment library",
-        )
+        return {
+            "status": "queued",
+            "job_id": job_id,
+            "message": f"Upload job {job_id} queued. Check status at /api/sync/job-status/{job_id}",
+        }
     
     except Exception as e:
-        logger.error(f"Upload failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+        logger.error(f"Failed to enqueue upload: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to enqueue upload: {str(e)}")
+
+
+@router.get("/job-status/{job_id}")
+async def get_upload_job_status(job_id: int):
+    """
+    Check the status of a background upload job.
+    
+    Returns:
+    - status: 'running', 'completed', 'failed', or 'queued'
+    - progress: 0-100 percent complete
+    - result: Upload result if completed (files_processed, entries_updated, etc)
+    - error: Error message if failed
+    """
+    job = await get_job_status(job_id)
+    
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    return job
 
 
 @router.get("/download-segment-library", response_model=SyncDownloadResponse)

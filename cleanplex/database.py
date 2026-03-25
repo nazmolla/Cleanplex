@@ -110,6 +110,19 @@ CREATE TABLE IF NOT EXISTS sync_metadata (
     timing_tolerance_ms       INTEGER DEFAULT 2000,
     created_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS bg_jobs (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_type           TEXT    NOT NULL,
+    status             TEXT    DEFAULT 'queued',
+    progress_percent   INTEGER DEFAULT 0,
+    result_data        TEXT,
+    error_message      TEXT,
+    created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at         TIMESTAMP,
+    completed_at       TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_bg_jobs_status ON bg_jobs(status, created_at DESC);
 """
 
 DEFAULT_SETTINGS = {
@@ -567,6 +580,57 @@ async def update_sync_last_time() -> None:
     async with get_connection() as conn:
         await conn.execute("UPDATE sync_metadata SET last_sync_time=CURRENT_TIMESTAMP")
         await conn.commit()
+
+
+# ── Background Job Management ──────────────────────────────────────────────────
+
+async def create_bg_job(job_type: str) -> int:
+    """Create a new background job. Returns job_id."""
+    async with get_connection() as conn:
+        cursor = await conn.execute(
+            "INSERT INTO bg_jobs(job_type, status, started_at) VALUES(?, ?, CURRENT_TIMESTAMP)",
+            (job_type, 'running'),
+        )
+        await conn.commit()
+        return cursor.lastrowid
+
+
+async def get_bg_job(job_id: int) -> dict | None:
+    """Get background job status."""
+    async with get_connection() as conn:
+        row = await (await conn.execute("SELECT * FROM bg_jobs WHERE id = ?", (job_id,))).fetchone()
+        return dict(row) if row else None
+
+
+async def update_bg_job(job_id: int, status: str = None, progress: int = None, error: str = None, result: str = None) -> None:
+    """Update background job status."""
+    async with get_connection() as conn:
+        updates = []
+        params = []
+        
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status)
+            if status == 'completed':
+                updates.append("completed_at = CURRENT_TIMESTAMP")
+        
+        if progress is not None:
+            updates.append("progress_percent = ?")
+            params.append(progress)
+        
+        if error is not None:
+            updates.append("error_message = ?")
+            params.append(error)
+        
+        if result is not None:
+            updates.append("result_data = ?")
+            params.append(result)
+        
+        if updates:
+            params.append(job_id)
+            query = f"UPDATE bg_jobs SET {', '.join(updates)} WHERE id = ?"
+            await conn.execute(query, params)
+            await conn.commit()
 
 
 async def get_local_library_for_sync() -> list[dict]:
