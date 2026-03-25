@@ -4,7 +4,7 @@ import asyncio
 import json
 from .logger import get_logger
 from . import database as db
-from .sync import prepare_segments_for_upload, push_segments_to_library, mark_sync_complete
+from .sync import prepare_segments_for_upload, push_segments_to_library, mark_sync_complete, get_sync_config
 
 logger = get_logger(__name__)
 
@@ -21,7 +21,7 @@ async def process_upload_job(job_id: int) -> None:
         await db.update_bg_job(job_id, status='running', progress=0)
         
         # Get sync config
-        config = await db.get_sync_config()
+        config = await get_sync_config()
         if not config:
             raise Exception("Sync not configured")
         
