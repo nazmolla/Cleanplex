@@ -128,6 +128,8 @@ DEFAULT_SETTINGS = {
     "excluded_library_ids": "[]",
     "scan_ratings": "[]",  # empty = scan all ratings
     "scan_labels": "[\"FEMALE_BREAST_EXPOSED\",\"FEMALE_GENITALIA_EXPOSED\",\"MALE_GENITALIA_EXPOSED\",\"ANUS_EXPOSED\",\"BUTTOCKS_EXPOSED\"]",
+    "nudenet_model": "320n",
+    "nudenet_model_path": "",
     # Segment library sharing settings
     "sync_enabled": "0",
     "sync_instance_name": "",

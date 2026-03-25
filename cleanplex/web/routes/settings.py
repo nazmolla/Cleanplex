@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -43,6 +45,8 @@ class SettingsPayload(BaseModel):
     skip_buffer_ms: str | None = None
     scan_step_ms: str | None = None
     scan_workers: str | None = None
+    nudenet_model: str | None = None
+    nudenet_model_path: str | None = None
     segment_gap_ms: str | None = None
     segment_min_hits: str | None = None
     scan_window_start: str | None = None
@@ -51,6 +55,11 @@ class SettingsPayload(BaseModel):
     excluded_library_ids: str | None = None
     scan_ratings: str | None = None
     scan_labels: str | None = None
+
+
+class ValidateModelPathPayload(BaseModel):
+    nudenet_model: str = "320n"
+    nudenet_model_path: str = ""
 
 
 @router.get("")
@@ -102,3 +111,44 @@ async def test_connection():
 @router.get("/detector-labels")
 async def get_detector_labels():
     return {"labels": DETECTOR_LABELS}
+
+
+@router.post("/validate-model-path")
+async def validate_model_path(payload: ValidateModelPathPayload):
+    model_name = (payload.nudenet_model or "320n").strip().lower()
+    model_path = (payload.nudenet_model_path or "").strip()
+
+    # 320n is bundled with nudenet package; no path required.
+    if not model_name.startswith("640"):
+        return {
+            "ok": True,
+            "message": "320n uses bundled model; no custom file path required.",
+        }
+
+    if not model_path:
+        return {
+            "ok": False,
+            "message": "Please provide a 640m ONNX file path.",
+        }
+
+    if not os.path.isfile(model_path):
+        return {
+            "ok": False,
+            "message": "Model file does not exist at the provided path.",
+        }
+
+    try:
+        from nudenet import NudeDetector
+
+        # Validate by constructing the detector with the selected model path.
+        NudeDetector(model_path=model_path, inference_resolution=640)
+        return {
+            "ok": True,
+            "message": "640m model path is valid and loadable.",
+        }
+    except Exception as exc:
+        logger.warning("NudeNet model validation failed for path '%s': %s", model_path, exc)
+        return {
+            "ok": False,
+            "message": f"Model could not be loaded: {exc}",
+        }

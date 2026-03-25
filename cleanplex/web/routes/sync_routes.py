@@ -1,12 +1,9 @@
 """Web API routes for segment library synchronization."""
 
-import json
-from typing import Any
-
 from fastapi import APIRouter, HTTPException, Query, Body
 from pydantic import BaseModel
 
-from .sync import (
+from ...sync import (
     prepare_segments_for_upload,
     push_segments_to_library,
     fetch_cloud_segments,
@@ -15,14 +12,12 @@ from .sync import (
     mark_sync_complete,
     compute_file_hash,
 )
-from .sync_merge import resolve_segments
-from .database import (
+from ...sync_merge import resolve_segments
+from ...database import (
     get_sync_metadata,
     upsert_sync_metadata,
-    get_setting,
-    set_setting,
 )
-from .logger import get_logger
+from ...logger import get_logger
 
 logger = get_logger(__name__)
 
