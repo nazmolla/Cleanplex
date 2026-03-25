@@ -15,6 +15,7 @@ import cleanplex.plex_client as plex_mod
 from .watcher import session_watcher_loop, library_watcher_loop
 from .scanner import scanner_loop
 from .web.app import create_app
+from .bg_jobs import recover_stale_jobs
 
 DATA_DIR = Path(os.environ.get("CLEANPLEX_DATA", Path.home() / ".cleanplex"))
 logger = get_logger(__name__)
@@ -28,6 +29,9 @@ async def _amain() -> None:
 
     config = await Config.load()
     setup_logging(config.log_level)
+
+    # Mark any jobs left in running/queued state from a previous crashed process.
+    await recover_stale_jobs()
 
     logger.info("Cleanplex starting — data dir: %s", DATA_DIR)
 

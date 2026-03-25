@@ -6,6 +6,8 @@ from .logger import get_logger
 from . import database as db
 from .sync import prepare_segments_for_upload, push_segments_to_library, mark_sync_complete, get_sync_config
 
+# db.get_connection is imported directly by recover_stale_jobs for a raw UPDATE.
+
 logger = get_logger(__name__)
 
 # Global task tracking
@@ -105,6 +107,25 @@ async def enqueue_upload_job() -> int:
     
     logger.info(f"Enqueued upload job {job_id}")
     return job_id
+
+
+async def recover_stale_jobs() -> None:
+    """Mark any jobs still in 'running' state as failed on startup.
+
+    A job stuck in 'running' means the process was killed mid-flight; it can
+    never complete now, so we surface it as failed rather than leaving it orphaned.
+    """
+    async with db.get_connection() as conn:
+        cursor = await conn.execute(
+            "UPDATE bg_jobs SET status='failed', error_message='Process restarted while job was running' "
+            "WHERE status IN ('running', 'queued')"
+        )
+        await conn.commit()
+        if cursor.rowcount:
+            logger.warning(
+                "Recovered %d stale background job(s) left in running/queued state",
+                cursor.rowcount,
+            )
 
 
 async def get_job_status(job_id: int) -> dict | None:
