@@ -18,9 +18,11 @@ async def get_sessions():
         return {"sessions": [], "error": "Plex not configured"}
 
     sessions = await client.get_active_sessions()
+    # Load all user filters in one query and map by username to avoid N+1 DB calls.
+    all_filters = {f["plex_username"]: f for f in await db.get_all_user_filters()}
     result = []
     for s in sessions:
-        user_filter = await db.get_user_filter(s.user)
+        user_filter = all_filters.get(s.user)
         filtering_enabled = user_filter is None or bool(user_filter["enabled"])
         result.append({
             "session_key": s.session_key,
@@ -50,8 +52,10 @@ async def scanner_status():
     active_scans: list[dict] = []
 
     current_guids = get_current_scans()
+    # Fetch all active scan jobs in a single IN query rather than one query per guid.
+    jobs_by_guid = await db.get_scan_jobs_by_guids(current_guids)
     for guid in current_guids:
-        job = await db.get_scan_job_by_guid(guid)
+        job = jobs_by_guid.get(guid)
         if not job:
             continue
         active_scans.append({
@@ -62,7 +66,7 @@ async def scanner_status():
         })
 
     if current_guid:
-        job = await db.get_scan_job_by_guid(current_guid)
+        job = jobs_by_guid.get(current_guid)
         if job:
             current_title = job["title"]
             current_progress = job["progress"]

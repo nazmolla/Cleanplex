@@ -32,7 +32,8 @@ def get_db_path() -> Path:
 async def get_connection():
     async with aiosqlite.connect(str(get_db_path())) as conn:
         conn.row_factory = aiosqlite.Row
-        await conn.execute("PRAGMA journal_mode=WAL")
+        # foreign_keys is connection-scoped and must be set per connection.
+        # journal_mode=WAL is persistent after init_db(); no need to repeat it here.
         await conn.execute("PRAGMA foreign_keys=ON")
         yield conn
 
@@ -157,43 +158,30 @@ async def init_db() -> None:
     db_path = get_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     async with get_connection() as conn:
+        # WAL mode is a persistent DB property; set it once at init rather than
+        # on every connection to avoid redundant per-connection overhead.
+        await conn.execute("PRAGMA journal_mode=WAL")
         await conn.executescript(SCHEMA)
-        # Migrate: add content_rating column if missing
-        try:
-            await conn.execute("ALTER TABLE scan_jobs ADD COLUMN content_rating TEXT DEFAULT ''")
-            await conn.commit()
-        except Exception:
-            pass  # column already exists
-        # Migrate: add media_type column if missing
-        try:
-            await conn.execute("ALTER TABLE scan_jobs ADD COLUMN media_type TEXT DEFAULT 'movie'")
-            await conn.commit()
-        except Exception:
-            pass  # column already exists
-        # Migrate: add force_scan column if missing
-        try:
-            await conn.execute("ALTER TABLE scan_jobs ADD COLUMN force_scan INTEGER DEFAULT 0")
-            await conn.commit()
-        except Exception:
-            pass  # column already exists
-        # Migrate: add year column if missing
-        try:
-            await conn.execute("ALTER TABLE scan_jobs ADD COLUMN year INTEGER")
-            await conn.commit()
-        except Exception:
-            pass  # column already exists
-        # Migrate: add labels column if missing
-        try:
-            await conn.execute("ALTER TABLE segments ADD COLUMN labels TEXT DEFAULT ''")
-            await conn.commit()
-        except Exception:
-            pass  # column already exists
-        # Migrate: add ignored column if missing
-        try:
-            await conn.execute("ALTER TABLE scan_jobs ADD COLUMN ignored INTEGER DEFAULT 0")
-            await conn.commit()
-        except Exception:
-            pass  # column already exists
+        # Additive schema migrations — each ALTER TABLE is idempotent.
+        # Catch only the specific OperationalError SQLite raises for duplicate columns;
+        # any other error (e.g. corrupt DB, permission failure) is re-raised immediately.
+        migrations = [
+            "ALTER TABLE scan_jobs ADD COLUMN content_rating TEXT DEFAULT ''",
+            "ALTER TABLE scan_jobs ADD COLUMN media_type TEXT DEFAULT 'movie'",
+            "ALTER TABLE scan_jobs ADD COLUMN force_scan INTEGER DEFAULT 0",
+            "ALTER TABLE scan_jobs ADD COLUMN year INTEGER",
+            "ALTER TABLE segments ADD COLUMN labels TEXT DEFAULT ''",
+            "ALTER TABLE scan_jobs ADD COLUMN ignored INTEGER DEFAULT 0",
+        ]
+        for stmt in migrations:
+            try:
+                await conn.execute(stmt)
+                await conn.commit()
+            except aiosqlite.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    # Unexpected error — surface it rather than silently continuing.
+                    logger.error("Unexpected migration failure: %s — %s", stmt, exc)
+                    raise
         for key, value in DEFAULT_SETTINGS.items():
             await conn.execute(
                 "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
@@ -283,6 +271,15 @@ async def get_segments_by_rating_key(rating_key: str) -> list[dict]:
             (rating_key,),
         )
         return [dict(r) for r in rows]
+
+
+async def count_segments_for_guid(plex_guid: str) -> int:
+    """Return segment count for a title using SELECT COUNT — avoids loading full rows."""
+    async with get_connection() as conn:
+        row = await (
+            await conn.execute("SELECT COUNT(*) FROM segments WHERE plex_guid=?", (plex_guid,))
+        ).fetchone()
+        return row[0] if row else 0
 
 
 async def delete_segments_for_guid(plex_guid: str) -> int:
@@ -434,6 +431,19 @@ async def set_ignored(plex_guid: str, ignored: bool) -> None:
             (1 if ignored else 0, plex_guid),
         )
         await conn.commit()
+
+
+async def get_scan_jobs_by_guids(guids: list[str]) -> dict[str, dict]:
+    """Return {plex_guid: job} for all provided guids in a single IN query."""
+    if not guids:
+        return {}
+    placeholders = ",".join(["?"] * len(guids))
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            f"SELECT * FROM scan_jobs WHERE plex_guid IN ({placeholders})",
+            guids,
+        )
+        return {row["plex_guid"]: dict(row) for row in rows}
 
 
 async def get_scan_jobs_by_library(library_id: str) -> list[dict]:
@@ -634,38 +644,50 @@ async def update_bg_job(job_id: int, status: str = None, progress: int = None, e
 
 
 async def get_local_library_for_sync() -> list[dict]:
-    """
-    Get all local segments grouped by file for sync upload.
-    Returns: [
-        {plex_guid, title, file_path, segments_count, segments: [{...}, ...]}
-    ]
+    """Return all locally-scanned titles with their segments, grouped by plex_guid.
+
+    Uses a single JOIN query instead of one query per title to avoid N+1 DB round-trips.
+    Returns: [{plex_guid, title, file_path, segments_count, segments: [{...}]}]
     """
     async with get_connection() as conn:
-        rows = await conn.execute_fetchall(
+        # Fetch all segment rows for done jobs in a single pass.
+        seg_rows = await conn.execute_fetchall(
             """
-            SELECT 
-                j.plex_guid,
-                j.title,
-                j.file_path,
-                COUNT(s.id) as segments_count
-            FROM scan_jobs j
-            LEFT JOIN segments s ON s.plex_guid = j.plex_guid
+            SELECT s.*, j.file_path, j.title AS job_title
+            FROM segments s
+            JOIN scan_jobs j ON j.plex_guid = s.plex_guid
             WHERE j.status = 'done' AND j.file_path IS NOT NULL
-            GROUP BY j.plex_guid
-            ORDER BY j.title
+            ORDER BY j.title, s.start_ms
             """
         )
-        
-        result = []
-        for row in rows:
-            segments = await get_segments_for_guid(row["plex_guid"])
-            result.append({
-                "plex_guid": row["plex_guid"],
-                "title": row["title"],
-                "file_path": row["file_path"],
-                "segments_count": row["segments_count"],
-                "segments": [dict(s) for s in segments],
-            })
-        
-        return result
+        # Also fetch done jobs with no segments so they still appear in the result.
+        job_rows = await conn.execute_fetchall(
+            """
+            SELECT plex_guid, title, file_path
+            FROM scan_jobs
+            WHERE status = 'done' AND file_path IS NOT NULL
+            ORDER BY title
+            """
+        )
+
+    # Build {plex_guid: {title, file_path, segments: []}} in Python — O(1) per row.
+    job_map: dict[str, dict] = {
+        r["plex_guid"]: {
+            "plex_guid": r["plex_guid"],
+            "title": r["title"],
+            "file_path": r["file_path"],
+            "segments": [],
+        }
+        for r in job_rows
+    }
+    for row in seg_rows:
+        guid = row["plex_guid"]
+        if guid in job_map:
+            job_map[guid]["segments"].append(dict(row))
+
+    result = []
+    for item in job_map.values():
+        item["segments_count"] = len(item["segments"])
+        result.append(item)
+    return result
 
