@@ -140,8 +140,8 @@ export default function Segments() {
     setLoadingTitles(true)
     try {
       const d = await api.get<{ titles: Title[] }>(`/api/libraries/${lib.id}/titles`)
-      // Only show titles that have segments or are done
-      setTitles(d.titles.filter(t => t.segment_count > 0 || t.status === 'done'))
+      // Only show titles that currently have at least one segment.
+      setTitles(d.titles.filter(t => t.segment_count > 0))
     } finally {
       setLoadingTitles(false)
     }
@@ -163,13 +163,19 @@ export default function Segments() {
     setDeleting(d => ({ ...d, [id]: true }))
     try {
       await api.delete(`/api/segments/${id}`)
-      setSegments(s => s.filter(seg => seg.id !== id))
-      if (selectedTitle) {
-        setTitles(ts => ts.map(t =>
-          t.plex_guid === selectedTitle.plex_guid
-            ? { ...t, segment_count: t.segment_count - 1 }
-            : t
-        ))
+      if (selectedTitle && selectedLib) {
+        const d = await api.get<{ titles: Title[] }>(`/api/libraries/${selectedLib.id}/titles`)
+        const visibleTitles = d.titles.filter(t => t.segment_count > 0)
+        setTitles(visibleTitles)
+
+        const stillVisible = visibleTitles.some(t => t.plex_guid === selectedTitle.plex_guid)
+        if (!stillVisible) {
+          setSelectedTitle(null)
+          setSegments([])
+        } else {
+          const segData = await api.get<{ segments: Segment[] }>(`/api/titles/${encodeURIComponent(selectedTitle.plex_guid)}/segments`)
+          setSegments(segData.segments)
+        }
       }
     } finally {
       setDeleting(d => ({ ...d, [id]: false }))
@@ -182,13 +188,11 @@ export default function Segments() {
     try {
       await api.delete(`/api/titles/${selectedTitle.plex_guid}/segments`)
       setSegments([])
-      if (selectedTitle) {
-        setTitles(ts => ts.map(t =>
-          t.plex_guid === selectedTitle.plex_guid
-            ? { ...t, segment_count: 0 }
-            : t
-        ))
+      if (selectedLib) {
+        const d = await api.get<{ titles: Title[] }>(`/api/libraries/${selectedLib.id}/titles`)
+        setTitles(d.titles.filter(t => t.segment_count > 0))
       }
+      setSelectedTitle(null)
       setConfirmDeleteAll(false)
     } finally {
       setDeletingAll(false)

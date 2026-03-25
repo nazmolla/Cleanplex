@@ -41,6 +41,39 @@ type StatusTab = typeof STATUS_TABS[number]
 const SORT_OPTIONS = ['title', 'date-added', 'year', 'year-release'] as const
 type SortOption = typeof SORT_OPTIONS[number]
 
+interface ParsedEpisodeTitle {
+  show: string
+  season: string
+  episode: string
+}
+
+interface SeasonGroup {
+  season: string
+  episodes: Title[]
+}
+
+interface ShowGroup {
+  show: string
+  seasons: SeasonGroup[]
+  episodes: Title[]
+}
+
+function parseEpisodeTitle(title: string): ParsedEpisodeTitle {
+  const parts = title.split(' – ')
+  if (parts.length >= 3) {
+    return {
+      show: parts[0].trim(),
+      season: parts[1].trim(),
+      episode: parts.slice(2).join(' – ').trim(),
+    }
+  }
+  return {
+    show: 'Unknown Show',
+    season: 'Unknown Season',
+    episode: title,
+  }
+}
+
 function StatusBadge({ status, progress }: { status: string; progress: number }) {
   switch (status) {
     case 'done':
@@ -72,6 +105,8 @@ export default function Library() {
   const [sortDesc, setSortDesc] = useState(true)
   const [scannerStatus, setScannerStatus] = useState<ScannerStatus | null>(null)
   const [selectedGuids, setSelectedGuids] = useState<string[]>([])
+  const [expandedShows, setExpandedShows] = useState<Set<string>>(new Set())
+  const [expandedSeasons, setExpandedSeasons] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     api.get<{ libraries: Library[] }>('/api/libraries').then(d => setLibraries(d.libraries))
@@ -176,12 +211,25 @@ export default function Library() {
     }
   }
 
-  const toggleIgnored = async (guid: string, currentIgnored: boolean) => {
+  const toggleIgnored = async (guid: string, currentIgnored: boolean, label?: string) => {
     try {
-      await api.post(`/api/scan/title/${guid}/ignore`, { ignored: !currentIgnored })
+      await api.post(`/api/scan/title/${encodeURIComponent(guid)}/ignore`, { ignored: !currentIgnored })
       setTitles(await loadTitles(selected!.id))
     } catch (err: any) {
-      alert(`Failed to update ignore status: ${err.message || 'Unknown error'}`)
+      alert(`Failed to update ignore status${label ? ` for ${label}` : ''}: ${err.message || 'Unknown error'}`)
+    }
+  }
+
+  const setIgnoredForGuids = async (guids: string[], ignored: boolean, label?: string) => {
+    if (!selected || guids.length === 0) return
+    try {
+      for (const guid of guids) {
+        await api.post(`/api/scan/title/${encodeURIComponent(guid)}/ignore`, { ignored })
+      }
+      setSelectedGuids(prev => prev.filter(g => !guids.includes(g)))
+      setTitles(await loadTitles(selected.id))
+    } catch (err: any) {
+      alert(`Failed to update ignore status${label ? ` for ${label}` : ''}: ${err.message || 'Unknown error'}`)
     }
   }
 
@@ -229,8 +277,63 @@ export default function Library() {
     return 0
   })
 
+  const isTvLibrary = selected?.type === 'show' || sorted.some(t => t.media_type === 'episode')
+
+  const showGroups: ShowGroup[] = (() => {
+    if (!isTvLibrary) return []
+
+    const showMap = new Map<string, Map<string, Title[]>>()
+    for (const t of sorted) {
+      if (t.media_type !== 'episode') continue
+      const parsed = parseEpisodeTitle(t.title)
+      if (!showMap.has(parsed.show)) {
+        showMap.set(parsed.show, new Map())
+      }
+      const seasonMap = showMap.get(parsed.show)!
+      if (!seasonMap.has(parsed.season)) {
+        seasonMap.set(parsed.season, [])
+      }
+      seasonMap.get(parsed.season)!.push(t)
+    }
+
+    return Array.from(showMap.entries())
+      .map(([show, seasonMap]) => {
+        const seasons = Array.from(seasonMap.entries())
+          .map(([season, episodes]) => ({
+            season,
+            episodes: [...episodes].sort((a, b) => a.title.localeCompare(b.title)),
+          }))
+          .sort((a, b) => a.season.localeCompare(b.season))
+        return {
+          show,
+          seasons,
+          episodes: seasons.flatMap(s => s.episodes),
+        }
+      })
+      .sort((a, b) => a.show.localeCompare(b.show))
+  })()
+
   const filteredGuids = filtered.map(t => t.plex_guid)
   const allFilteredSelected = filteredGuids.length > 0 && filteredGuids.every(g => selectedGuids.includes(g))
+
+  const toggleShowExpanded = (show: string) => {
+    setExpandedShows(prev => {
+      const next = new Set(prev)
+      if (next.has(show)) next.delete(show)
+      else next.add(show)
+      return next
+    })
+  }
+
+  const toggleSeasonExpanded = (show: string, season: string) => {
+    const key = `${show}__${season}`
+    setExpandedSeasons(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
 
   useEffect(() => {
     const valid = new Set(titles.map(t => t.plex_guid))
@@ -417,32 +520,14 @@ export default function Library() {
                 <Zap size={13} /> Scan Selected Now ({selectedGuids.length})
               </button>
               <button
-                onClick={async () => {
-                  if (selectedGuids.length === 0 || !selected) return
-                  for (const guid of selectedGuids) {
-                    try {
-                      await api.post(`/api/scan/title/${guid}/ignore`, { ignored: true })
-                    } catch {}
-                  }
-                  setSelectedGuids([])
-                  setTitles(await loadTitles(selected.id))
-                }}
+                onClick={() => setIgnoredForGuids(selectedGuids, true)}
                 disabled={selectedGuids.length === 0}
                 className="px-2.5 py-1.5 text-xs bg-yellow-500/20 border border-yellow-500/30 rounded-lg text-yellow-500 hover:bg-yellow-500/30 transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
               >
-                ✗ IGNORE SELECTED ({selectedGuids.length})
+                Ignore Selected ({selectedGuids.length})
               </button>
               <button
-                onClick={async () => {
-                  if (selectedGuids.length === 0 || !selected) return
-                  for (const guid of selectedGuids) {
-                    try {
-                      await api.post(`/api/scan/title/${guid}/ignore`, { ignored: false })
-                    } catch {}
-                  }
-                  setSelectedGuids([])
-                  setTitles(await loadTitles(selected.id))
-                }}
+                onClick={() => setIgnoredForGuids(selectedGuids, false)}
                 disabled={selectedGuids.length === 0}
                 className="px-2.5 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
               >
@@ -455,10 +540,152 @@ export default function Library() {
               <div className="text-gray-500 text-sm">Loading...</div>
             ) : filtered.length === 0 ? (
               <div className="text-gray-600 text-sm">No titles found</div>
+            ) : isTvLibrary ? (
+              <div className="space-y-3">
+                {showGroups.map(group => {
+                  const allIgnored = group.episodes.length > 0 && group.episodes.every(ep => ep.ignored)
+                  const someIgnored = group.episodes.some(ep => ep.ignored)
+                  const showOpen = expandedShows.has(group.show)
+                  return (
+                    <div key={group.show} className="bg-plex-card border border-plex-border rounded-xl p-3">
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => toggleShowExpanded(group.show)}
+                          className="p-1 text-gray-400 hover:text-white"
+                          title={showOpen ? 'Collapse show' : 'Expand show'}
+                        >
+                          <ChevronRight size={14} className={showOpen ? 'rotate-90 transition-transform' : 'transition-transform'} />
+                        </button>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-gray-100 truncate">{group.show}</p>
+                          <p className="text-xs text-gray-500">
+                            {group.seasons.length} season{group.seasons.length !== 1 ? 's' : ''} • {group.episodes.length} episode{group.episodes.length !== 1 ? 's' : ''}
+                          </p>
+                        </div>
+                        {allIgnored ? (
+                          <span className="text-xs bg-yellow-500/15 text-yellow-400 px-2 py-0.5 rounded-full">Ignored</span>
+                        ) : someIgnored ? (
+                          <span className="text-xs bg-yellow-500/10 text-yellow-500 px-2 py-0.5 rounded-full">Partially Ignored</span>
+                        ) : null}
+                        <button
+                          onClick={() => setIgnoredForGuids(group.episodes.map(ep => ep.plex_guid), true, group.show)}
+                          className="px-2 py-1 text-xs bg-yellow-500/20 border border-yellow-500/30 rounded text-yellow-500 hover:bg-yellow-500/30 transition-colors"
+                          title="Ignore all episodes in this show"
+                        >
+                          Ignore Show
+                        </button>
+                        <button
+                          onClick={() => setIgnoredForGuids(group.episodes.map(ep => ep.plex_guid), false, group.show)}
+                          className="px-2 py-1 text-xs bg-plex-card border border-plex-border rounded text-gray-300 hover:text-white hover:border-gray-500 transition-colors"
+                          title="Un-ignore all episodes in this show"
+                        >
+                          Un-ignore Show
+                        </button>
+                      </div>
+
+                      {showOpen && (
+                        <div className="mt-3 space-y-2">
+                          {group.seasons.map(season => {
+                            const seasonKey = `${group.show}__${season.season}`
+                            const seasonOpen = expandedSeasons.has(seasonKey)
+                            return (
+                              <div key={seasonKey} className="border border-plex-border rounded-lg p-2">
+                                <button
+                                  onClick={() => toggleSeasonExpanded(group.show, season.season)}
+                                  className="w-full flex items-center gap-2 text-left"
+                                >
+                                  <ChevronRight size={13} className={seasonOpen ? 'rotate-90 transition-transform text-gray-400' : 'transition-transform text-gray-400'} />
+                                  <span className="text-xs text-gray-300 font-medium">{season.season}</span>
+                                  <span className="text-xs text-gray-500 ml-auto">
+                                    {season.episodes.length} episode{season.episodes.length !== 1 ? 's' : ''}
+                                  </span>
+                                </button>
+
+                                {seasonOpen && (
+                                  <div className="mt-2 space-y-2">
+                                    {season.episodes.map(title => {
+                                      const parsed = parseEpisodeTitle(title.title)
+                                      return (
+                                        <div
+                                          key={title.plex_guid}
+                                          className={`border rounded-lg p-2 flex items-center gap-2 ${
+                                            title.ignored
+                                              ? 'border-yellow-500/30 bg-yellow-500/5'
+                                              : 'border-plex-border bg-black/10'
+                                          }`}
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={selectedGuids.includes(title.plex_guid)}
+                                            onChange={() => toggleSelected(title.plex_guid)}
+                                            className="w-4 h-4 accent-plex-orange flex-shrink-0"
+                                          />
+                                          <div className="flex-1 min-w-0">
+                                            <p className="text-sm text-gray-100 truncate">
+                                              {parsed.episode}
+                                              {title.ignored && <span className="ml-2 text-yellow-400 text-xs font-medium">IGNORED</span>}
+                                            </p>
+                                            <div className="flex items-center gap-2 mt-1">
+                                              <StatusBadge status={title.status} progress={title.progress} />
+                                              {title.segment_count > 0 && (
+                                                <span className="text-xs text-gray-500">{title.segment_count} segment{title.segment_count !== 1 ? 's' : ''}</span>
+                                              )}
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                                            <button
+                                              onClick={() => scanTitle(title.plex_guid, false)}
+                                              disabled={scanning[title.plex_guid]}
+                                              title="Scan Tonight"
+                                              className="p-1.5 text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded transition-colors disabled:opacity-40"
+                                            >
+                                              <Moon size={14} />
+                                            </button>
+                                            <button
+                                              onClick={() => scanTitle(title.plex_guid, true)}
+                                              disabled={scanning[title.plex_guid]}
+                                              title="Scan Now"
+                                              className="p-1.5 text-gray-500 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors disabled:opacity-40"
+                                            >
+                                              <Zap size={14} />
+                                            </button>
+                                            <button
+                                              onClick={() => toggleIgnored(title.plex_guid, title.ignored, parsed.episode)}
+                                              title={title.ignored ? 'Un-ignore this episode' : 'Ignore this episode'}
+                                              className={`p-1.5 rounded transition-colors ${
+                                                title.ignored
+                                                  ? 'text-yellow-600 hover:text-yellow-400 hover:bg-yellow-500/10'
+                                                  : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
+                                              }`}
+                                            >
+                                              {title.ignored ? 'Ignored' : 'Ignore'}
+                                            </button>
+                                          </div>
+                                        </div>
+                                      )
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
             ) : (
               <div className="grid gap-2">
                 {sorted.map(title => (
-                  <div key={title.plex_guid} className="bg-plex-card border border-plex-border rounded-xl p-3 flex items-center gap-3">
+                  <div
+                    key={title.plex_guid}
+                    className={`rounded-xl p-3 flex items-center gap-3 ${
+                      title.ignored
+                        ? 'bg-yellow-500/5 border border-yellow-500/30'
+                        : 'bg-plex-card border border-plex-border'
+                    }`}
+                  >
                     <input
                       type="checkbox"
                       checked={selectedGuids.includes(title.plex_guid)}
@@ -477,7 +704,7 @@ export default function Library() {
                     )}
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-gray-100 truncate">
-                        {title.ignored && <span className="text-gray-600 mr-1">[IGNORED]</span>}
+                        {title.ignored && <span className="text-yellow-400 mr-1">[IGNORED]</span>}
                         {title.title}
                       </p>
                       <div className="flex items-center gap-2 mt-1">
@@ -519,7 +746,7 @@ export default function Library() {
                         <RotateCcw size={14} />
                       </button>
                       <button
-                        onClick={() => toggleIgnored(title.plex_guid, title.ignored)}
+                        onClick={() => toggleIgnored(title.plex_guid, title.ignored, title.title)}
                         title={title.ignored ? "Un-ignore this title" : "Ignore this title"}
                         className={`p-1.5 rounded transition-colors ${
                           title.ignored

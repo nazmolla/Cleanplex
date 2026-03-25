@@ -157,7 +157,7 @@ class ToggleIgnoredRequest(BaseModel):
     ignored: bool
 
 
-@router.post("/title/{plex_guid}/ignore")
+@router.post("/title/{plex_guid:path}/ignore")
 async def toggle_title_ignored(plex_guid: str, body: ToggleIgnoredRequest):
     """Mark a title as ignored (will be skipped during scanning) or re-enable it."""
     job = await db.get_scan_job_by_guid(plex_guid)
