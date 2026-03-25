@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import httpx
 import cleanplex.plex_client as plex_mod
 
-from .frame_extractor import extract_frame, get_duration_ms
+from .frame_extractor import extract_frames_batch, get_duration_ms
 from .logger import get_logger
 from . import database as db
 
@@ -438,7 +438,11 @@ async def scan_video(plex_guid: str, config) -> None:
             cluster_best_score = 0.0
             cluster_detected_labels = []
 
-        for idx, offset_ms in enumerate(range(0, duration_ms, step_ms)):
+        # Single ffmpeg process streams all frames; breaking early (skip/pause)
+        # triggers the generator's finally block which kills the process.
+        async for offset_ms, jpeg in extract_frames_batch(file_path, step_ms, duration_ms):
+            idx = offset_ms // step_ms
+
             # User requested skip of this title — leave it as pending (not re-scanned).
             if plex_guid in _skip_requested_guids:
                 _skip_requested_guids.discard(plex_guid)
@@ -462,8 +466,9 @@ async def scan_video(plex_guid: str, config) -> None:
                     pause_scanner()
                 return
 
-            jpeg = await extract_frame(file_path, offset_ms)
             if jpeg:
+                # asyncio.to_thread releases the event loop, allowing ffmpeg's pipe
+                # buffer to continue filling while NudeNet runs in the thread pool.
                 is_nude, score, detected_labels = await asyncio.to_thread(
                     _classify_frame,
                     jpeg,
@@ -503,7 +508,7 @@ async def scan_video(plex_guid: str, config) -> None:
                                     cluster_detected_labels.append(label)
 
             progress = (idx + 1) / total_steps
-            if idx % 30 == 0:  # Update DB every 5 minutes of video
+            if idx % 30 == 0:  # Update DB every ~2.5 min of video at 5 s steps
                 await db.update_scan_job_status(plex_guid, "scanning", progress=progress)
 
         # Flush any trailing cluster at the end of scan.
