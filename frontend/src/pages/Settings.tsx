@@ -86,6 +86,8 @@ export default function SettingsPage() {
   const [savedSync, setSavedSync] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadResult, setUploadResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [downloading, setDownloading] = useState(false)
+  const [downloadResult, setDownloadResult] = useState<{ ok: boolean; message: string } | null>(null)
 
   useEffect(() => {
     Promise.all([
@@ -163,8 +165,8 @@ export default function SettingsPage() {
       const updated = await api.get<SyncStatus>('/api/sync/status').catch(() => null)
       if (updated) setSyncStatus(updated)
       setTimeout(() => setSavedSync(false), 3000)
-    } catch {
-      // ignore
+    } catch (e: any) {
+      setUploadResult({ ok: false, message: e?.message ?? 'Failed to save sync settings' })
     } finally {
       setSavingSync(false)
     }
@@ -182,6 +184,23 @@ export default function SettingsPage() {
       setUploadResult({ ok: false, message: e?.message ?? 'Upload failed' })
     } finally {
       setUploading(false)
+    }
+  }
+
+  const doDownload = async () => {
+    setDownloading(true)
+    setDownloadResult(null)
+    try {
+      const r = await api.get<{ status: string; results: Record<string, any[]>; merge_results: Record<string, any> }>('/api/sync/download-local-library')
+      const fileCount = Object.keys(r.results || {}).length
+      const ok = r.status === 'success' || r.status === 'no_data'
+      setDownloadResult({ ok, message: ok ? `Downloaded/merged ${fileCount} file(s) from GitHub library` : 'Download failed' })
+      const updated = await api.get<SyncStatus>('/api/sync/status').catch(() => null)
+      if (updated) setSyncStatus(updated)
+    } catch (e: any) {
+      setDownloadResult({ ok: false, message: e?.message ?? 'Download failed' })
+    } finally {
+      setDownloading(false)
     }
   }
 
@@ -277,29 +296,22 @@ export default function SettingsPage() {
           <Field label="Scanner Workers" hint="How many titles can be scanned in parallel. Higher values use more CPU, disk, and memory.">
             <input type="number" min="1" max="12" step="1" value={form.scan_workers} onChange={set('scan_workers')} className={inputCls} />
           </Field>
-          <Field label="NudeNet Model" hint="320n is bundled and faster. 640m can be more accurate but needs a downloaded ONNX model path.">
+          <Field label="NudeNet Model" hint="320n is bundled and fastest. 640m is downloaded by Cleanplex automatically and then cached locally.">
             <select value={form.nudenet_model} onChange={set('nudenet_model')} className={inputCls}>
               <option value="320n">320n (default, fast)</option>
               <option value="640m">640m (higher accuracy, slower)</option>
             </select>
           </Field>
-          <Field label="NudeNet 640m Model Path" hint="Required only when model is 640m. Example: C:/models/640m.onnx">
-            <input
-              type="text"
-              value={form.nudenet_model_path}
-              onChange={set('nudenet_model_path')}
-              placeholder=""
-              className={inputCls}
-            />
+          <Field label="Prepare 640m Model" hint="Optional: click once to pre-download 640m now. Otherwise it will auto-download on first 640m scan.">
             <div className="mt-2 flex items-center gap-3">
               <button
                 type="button"
                 onClick={validateModelPath}
-                disabled={validatingModel || form.nudenet_model !== '640m'}
+                disabled={validatingModel}
                 className="px-3 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
               >
                 {validatingModel && <Loader2 size={13} className="animate-spin" />}
-                Validate model path
+                Download/Check 640m model
               </button>
               {modelValidationResult && (
                 <span className={`flex items-center gap-1.5 text-xs ${modelValidationResult.ok ? 'text-green-400' : 'text-red-400'}`}>
@@ -421,9 +433,27 @@ export default function SettingsPage() {
       {/* Segment Library Sync */}
       <section>
         <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Segment Library Sync</h2>
-        <p className="text-xs text-gray-500 mb-4">Share detected segments across multiple Cleanplex instances. Sync is always manual — never automatic.</p>
+        <p className="text-xs text-gray-500 mb-4">Crowdsource segment detections through one shared GitHub repository. Upload and download are always manual.</p>
         <div className="space-y-4">
-          <Field label="Instance Name" hint="A unique name for this Cleanplex instance used to identify the source of segments.">
+          <Field label="GitHub Repository" hint="Shared repo used by all users, format: owner/repo">
+            <input
+              type="text"
+              value={syncForm.github_repo}
+              onChange={e => setSyncForm(f => ({ ...f, github_repo: e.target.value }))}
+              placeholder="owner/repo"
+              className={inputCls}
+            />
+          </Field>
+          <Field label="GitHub Token" hint="Personal access token with contents:read/write on that repository.">
+            <input
+              type="password"
+              value={syncForm.github_token}
+              onChange={e => setSyncForm(f => ({ ...f, github_token: e.target.value }))}
+              placeholder="ghp_..."
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Instance Name" hint="Name attached to your submissions in the crowdsourced dataset.">
             <input
               type="text"
               value={syncForm.instance_name}
@@ -458,7 +488,7 @@ export default function SettingsPage() {
             )}
           </div>
           <div className="pt-2 border-t border-plex-border/50 space-y-3">
-            <p className="text-xs text-gray-500">Manual sync operations — push or pull segment data to/from the shared library.</p>
+            <p className="text-xs text-gray-500">Manual operations for the shared GitHub segment library.</p>
             <div className="flex items-center gap-3 flex-wrap">
               <button
                 type="button"
@@ -467,12 +497,27 @@ export default function SettingsPage() {
                 className="px-4 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
               >
                 {uploading && <Loader2 size={13} className="animate-spin" />}
-                Upload to Library
+                Upload My Segments
+              </button>
+              <button
+                type="button"
+                onClick={doDownload}
+                disabled={downloading || !syncForm.sync_enabled}
+                className="px-4 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
+              >
+                {downloading && <Loader2 size={13} className="animate-spin" />}
+                Download Crowdsourced Segments
               </button>
               {uploadResult && (
                 <span className={`flex items-center gap-1.5 text-xs ${uploadResult.ok ? 'text-green-400' : 'text-red-400'}`}>
                   {uploadResult.ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
                   {uploadResult.message}
+                </span>
+              )}
+              {downloadResult && (
+                <span className={`flex items-center gap-1.5 text-xs ${downloadResult.ok ? 'text-green-400' : 'text-red-400'}`}>
+                  {downloadResult.ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
+                  {downloadResult.message}
                 </span>
               )}
             </div>

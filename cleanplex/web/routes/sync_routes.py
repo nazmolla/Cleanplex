@@ -7,6 +7,7 @@ from ...sync import (
     prepare_segments_for_upload,
     push_segments_to_library,
     fetch_cloud_segments,
+    get_local_file_hashes,
     is_sync_enabled,
     get_sync_config,
     mark_sync_complete,
@@ -104,7 +105,11 @@ async def configure_sync(
     if not instance_name or not instance_name.strip():
         raise HTTPException(status_code=400, detail="instance_name is required")
     
-    # GitHub fields are optional — required only when Phase 2 cloud integration is active
+    if sync_enabled and (not github_repo or not github_token):
+        raise HTTPException(
+            status_code=400,
+            detail="github_repo and github_token are required when sync_enabled=true",
+        )
     
     await upsert_sync_metadata(
         instance_name=instance_name,
@@ -162,7 +167,7 @@ async def upload_segment_library():
                 message="No segments to upload",
             )
         
-        # Push to library (in-memory database for now, would be GitHub in Phase 2)
+        # Push to crowdsourced GitHub library.
         entries_count = await push_segments_to_library(instance_name, upload_data)
         
         # Update last sync time
@@ -174,7 +179,7 @@ async def upload_segment_library():
             status="success",
             files_processed=len(upload_data),
             entries_updated=entries_count,
-            message=f"Uploaded {len(upload_data)} files to segment library",
+            message=f"Uploaded {len(upload_data)} files to GitHub segment library",
         )
     
     except Exception as e:
@@ -262,6 +267,23 @@ async def download_segment_library(
     except Exception as e:
         logger.error(f"Download failed: {e}")
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+
+
+@router.get("/download-local-library", response_model=SyncDownloadResponse)
+async def download_local_library():
+    """
+    Download crowdsourced segments for all local files and merge them.
+
+    This is a convenience endpoint for the UI and remains manual-only.
+    """
+    if not await is_sync_enabled():
+        raise HTTPException(status_code=400, detail="Sync not enabled")
+
+    local_hashes = await get_local_file_hashes()
+    if not local_hashes:
+        return SyncDownloadResponse(status="no_data", results={}, merge_results={})
+
+    return await download_segment_library(file_hashes=",".join(local_hashes))
 
 
 @router.get("/conflicts")

@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import httpx
+
 from .frame_extractor import extract_frame, get_duration_ms
 from .logger import get_logger
 from . import database as db
@@ -22,8 +24,15 @@ logger = get_logger(__name__)
 # Lazy-import NudeNet to avoid slow startup when not scanning
 _nude_detector = None
 _thread_local = threading.local()
+_model_download_lock = threading.Lock()
 
 THUMBNAILS_DIR: Path = Path.home() / ".cleanplex" / "thumbnails"
+MODELS_DIR: Path = Path.home() / ".cleanplex" / "models"
+NUDENET_640_MODEL_FILENAME = "640m.onnx"
+NUDENET_640_DOWNLOAD_URLS = [
+    "https://github.com/notAI-tech/NudeNet/releases/download/v3/640m.onnx",
+    "https://github.com/notAI-tech/NudeNet/releases/latest/download/640m.onnx",
+]
 
 _scan_queue: asyncio.Queue[str] = asyncio.Queue()
 _force_scan_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -132,14 +141,14 @@ def _get_detector(model_name: str = "320n", model_path: str = ""):
     detector = getattr(_thread_local, "nude_detector", None)
     detector_key = getattr(_thread_local, "nude_detector_key", None)
 
-    # 640m is not bundled with NudeNet package by default, so it requires a path.
+    # 640m can be downloaded automatically to local app storage when needed.
     requested_resolution = 640 if model_name_normalized.startswith("640") else 320
     selected_model_path = (model_path or "").strip()
     if requested_resolution == 640 and not selected_model_path:
-        logger.warning(
-            "NudeNet model '640m' selected but no model path configured; falling back to bundled 320n"
-        )
-        requested_resolution = 320
+        selected_model_path = _ensure_local_640m_model()
+        if not selected_model_path:
+            logger.warning("Could not prepare 640m model; falling back to bundled 320n")
+            requested_resolution = 320
 
     if selected_model_path and not os.path.isfile(selected_model_path):
         logger.warning(
@@ -165,6 +174,40 @@ def _get_detector(model_name: str = "320n", model_path: str = ""):
             logger.error("nudenet package not installed. Run: pip install nudenet")
             raise
     return detector
+
+
+def _ensure_local_640m_model() -> str:
+    """Ensure 640m model exists locally and return its path, or empty string on failure."""
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    target = MODELS_DIR / NUDENET_640_MODEL_FILENAME
+    if target.is_file() and target.stat().st_size > 0:
+        return str(target)
+
+    with _model_download_lock:
+        # Another thread may have completed the download while waiting on lock.
+        if target.is_file() and target.stat().st_size > 0:
+            return str(target)
+
+        for url in NUDENET_640_DOWNLOAD_URLS:
+            try:
+                logger.info("Downloading NudeNet 640m model from %s", url)
+                with httpx.Client(timeout=120.0, follow_redirects=True) as client:
+                    with client.stream("GET", url) as resp:
+                        resp.raise_for_status()
+                        with open(target, "wb") as out:
+                            for chunk in resp.iter_bytes():
+                                if chunk:
+                                    out.write(chunk)
+
+                if target.is_file() and target.stat().st_size > 0:
+                    logger.info("Downloaded NudeNet 640m model to %s", target)
+                    return str(target)
+            except Exception as exc:
+                logger.warning("Failed to download NudeNet 640m model from %s: %s", url, exc)
+
+        if target.exists() and target.stat().st_size == 0:
+            target.unlink(missing_ok=True)
+        return ""
 
 
 def _classify_frame(

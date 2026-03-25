@@ -7,10 +7,14 @@ No automatic scheduling or background jobs trigger these functions.
 All sync is completely under user control via API endpoints.
 """
 
+import base64
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from .database import (
     get_local_library_for_sync,
@@ -22,6 +26,73 @@ from .database import (
 from .logger import get_logger
 
 logger = get_logger(__name__)
+
+GITHUB_API_BASE = "https://api.github.com"
+GITHUB_SEGMENTS_DIR = "segments"
+
+
+def _parse_repo_slug(repo: str | None) -> str:
+    value = (repo or "").strip()
+    if value.startswith("https://github.com/"):
+        value = value.replace("https://github.com/", "", 1)
+    value = value.strip("/")
+    return value
+
+
+def _github_headers(token: str | None) -> dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "Cleanplex-Sync",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _segment_blob_path(file_hash: str) -> str:
+    prefix = file_hash[:2] if len(file_hash) >= 2 else "00"
+    return f"{GITHUB_SEGMENTS_DIR}/{prefix}/{file_hash}.json"
+
+
+async def _github_get_json_file(
+    repo_slug: str,
+    path: str,
+    token: str | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    url = f"{GITHUB_API_BASE}/repos/{repo_slug}/contents/{path}"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(url, headers=_github_headers(token))
+    if resp.status_code == 404:
+        return None, None
+    resp.raise_for_status()
+
+    payload = resp.json()
+    encoded = payload.get("content", "")
+    decoded = base64.b64decode(encoded).decode("utf-8") if encoded else "{}"
+    return json.loads(decoded), payload.get("sha")
+
+
+async def _github_put_json_file(
+    repo_slug: str,
+    path: str,
+    token: str,
+    content_obj: dict[str, Any],
+    message: str,
+    sha: str | None = None,
+) -> None:
+    url = f"{GITHUB_API_BASE}/repos/{repo_slug}/contents/{path}"
+    encoded = base64.b64encode(json.dumps(content_obj, indent=2).encode("utf-8")).decode("ascii")
+    body: dict[str, Any] = {
+        "message": message,
+        "content": encoded,
+    }
+    if sha:
+        body["sha"] = sha
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.put(url, headers=_github_headers(token), json=body)
+    resp.raise_for_status()
 
 
 def compute_file_hash(file_path: str | Path) -> str:
@@ -121,11 +192,52 @@ async def push_segments_to_library(
     upload_data: dict[str, dict[str, Any]],
 ) -> int:
     """
-    Store uploaded segments in local library database.
-    Returns: number of entries updated/inserted.
+    Push local segments into shared GitHub repository and mirror locally.
+    Returns number of file entries updated.
     """
+    sync_config = await get_sync_config()
+    repo_slug = _parse_repo_slug((sync_config or {}).get("github_repo"))
+    github_token = ((sync_config or {}).get("github_token") or "").strip()
+
+    if not repo_slug:
+        raise RuntimeError("Sync repository is not configured")
+    if not github_token:
+        raise RuntimeError("GitHub token is required for upload")
+
     count = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+
     for file_hash, data in upload_data.items():
+        path = _segment_blob_path(file_hash)
+        existing_doc, existing_sha = await _github_get_json_file(repo_slug, path, github_token)
+        if not existing_doc:
+            existing_doc = {
+                "file_hash": file_hash,
+                "sources": {},
+                "created_at": now_iso,
+            }
+
+        existing_doc.setdefault("sources", {})
+        existing_doc["sources"][instance_name] = {
+            "file_name": data["file_name"],
+            "file_size": data["file_size"],
+            "duration_ms": data.get("duration_ms", 0),
+            "segments": data["segments"],
+            "titles": data.get("titles", [data["file_name"]]),
+            "updated_at": now_iso,
+        }
+        existing_doc["updated_at"] = now_iso
+
+        await _github_put_json_file(
+            repo_slug=repo_slug,
+            path=path,
+            token=github_token,
+            content_obj=existing_doc,
+            message=f"sync: update segments {file_hash[:12]} from {instance_name}",
+            sha=existing_sha,
+        )
+
+        # Keep local mirror for diagnostics/offline view.
         segments_json = json.dumps(data["segments"], default=str)
         await upsert_segment_library_entry(
             file_hash=file_hash,
@@ -138,7 +250,7 @@ async def push_segments_to_library(
         )
         count += 1
     
-    logger.info(f"Stored {count} segment library entries from {instance_name}")
+    logger.info(f"Uploaded {count} segment entries to GitHub repo {repo_slug}")
     return count
 
 
@@ -156,21 +268,61 @@ async def fetch_cloud_segments(file_hashes: list[str]) -> dict[str, list[dict]]:
     if not file_hashes:
         return {}
     
-    result = {}
+    sync_config = await get_sync_config()
+    repo_slug = _parse_repo_slug((sync_config or {}).get("github_repo"))
+    github_token = ((sync_config or {}).get("github_token") or "").strip()
+
+    if not repo_slug:
+        raise RuntimeError("Sync repository is not configured")
+
+    result: dict[str, list[dict]] = {}
     for file_hash in file_hashes:
-        entries = await get_segment_library_entries_by_hash(file_hash)
-        result[file_hash] = [
-            {
-                "segments": json.loads(entry["segments_json"]),
-                "source_instance": entry["source_instance"],
-                "confidence_level": entry["confidence_level"],
-                "created_at": entry["created_at"],
-            }
-            for entry in entries
-        ]
+        path = _segment_blob_path(file_hash)
+        doc, _ = await _github_get_json_file(repo_slug, path, github_token or None)
+
+        if not doc:
+            # Fall back to local mirror if remote not found.
+            entries = await get_segment_library_entries_by_hash(file_hash)
+            result[file_hash] = [
+                {
+                    "segments": json.loads(entry["segments_json"]),
+                    "source_instance": entry["source_instance"],
+                    "confidence_level": entry["confidence_level"],
+                    "created_at": entry["created_at"],
+                }
+                for entry in entries
+            ]
+            continue
+
+        sources = doc.get("sources", {}) if isinstance(doc, dict) else {}
+        merged_sources: list[dict[str, Any]] = []
+        for source_instance, source_payload in sources.items():
+            if not isinstance(source_payload, dict):
+                continue
+            merged_sources.append(
+                {
+                    "segments": source_payload.get("segments", []),
+                    "source_instance": source_instance,
+                    "confidence_level": "shared",
+                    "created_at": source_payload.get("updated_at") or doc.get("updated_at"),
+                }
+            )
+
+        result[file_hash] = merged_sources
     
     logger.info(f"Fetched cloud segments for {len(file_hashes)} files")
     return result
+
+
+async def get_local_file_hashes() -> list[str]:
+    """Return SHA256 hashes for all locally scanned files."""
+    hashes: list[str] = []
+    local_library = await get_local_library_for_sync()
+    for item in local_library:
+        file_hash = compute_file_hash(item.get("file_path", ""))
+        if file_hash:
+            hashes.append(file_hash)
+    return list(dict.fromkeys(hashes))
 
 
 async def is_sync_enabled() -> bool:

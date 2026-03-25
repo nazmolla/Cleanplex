@@ -1,5 +1,3 @@
-import os
-
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -116,39 +114,31 @@ async def get_detector_labels():
 @router.post("/validate-model-path")
 async def validate_model_path(payload: ValidateModelPathPayload):
     model_name = (payload.nudenet_model or "320n").strip().lower()
-    model_path = (payload.nudenet_model_path or "").strip()
 
-    # 320n is bundled with nudenet package; no path required.
+    # 320n is bundled with nudenet package; no download required.
     if not model_name.startswith("640"):
         return {
             "ok": True,
             "message": "320n uses bundled model; no custom file path required.",
         }
 
-    if not model_path:
-        return {
-            "ok": False,
-            "message": "Please provide a 640m ONNX file path.",
-        }
-
-    if not os.path.isfile(model_path):
-        return {
-            "ok": False,
-            "message": "Model file does not exist at the provided path.",
-        }
-
     try:
-        from nudenet import NudeDetector
+        # Scanner auto-downloads 640m model into app storage on first use.
+        from ... import scanner as scanner_mod
 
-        # Validate by constructing the detector with the selected model path.
-        NudeDetector(model_path=model_path, inference_resolution=640)
+        path = scanner_mod._ensure_local_640m_model()
+        if not path:
+            return {
+                "ok": False,
+                "message": "Could not download 640m model automatically. Check internet access and try again.",
+            }
         return {
             "ok": True,
-            "message": "640m model path is valid and loadable.",
+            "message": "640m model is ready in local app storage.",
         }
     except Exception as exc:
-        logger.warning("NudeNet model validation failed for path '%s': %s", model_path, exc)
+        logger.warning("NudeNet auto-download validation failed: %s", exc)
         return {
             "ok": False,
-            "message": f"Model could not be loaded: {exc}",
+            "message": f"Model could not be prepared: {exc}",
         }
