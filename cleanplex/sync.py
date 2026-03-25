@@ -7,6 +7,7 @@ No automatic scheduling or background jobs trigger these functions.
 All sync is completely under user control via API endpoints.
 """
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -31,6 +32,11 @@ logger = get_logger(__name__)
 GITHUB_API_BASE = "https://api.github.com"
 GITHUB_SEGMENTS_DIR = "segments"
 DEFAULT_SYNC_GITHUB_REPO = "nazmolla/cleanplex-segments"
+
+# In-process file hash cache keyed by (path, size, mtime) — avoids full SHA256
+# re-hashing of unchanged large media files across repeated sync runs.
+# Value: sha256 hex string.
+_hash_cache: dict[tuple[str, int, float], str] = {}
 
 
 def _parse_repo_slug(repo: str | None) -> str:
@@ -61,10 +67,11 @@ async def _github_get_json_file(
     repo_slug: str,
     path: str,
     token: str | None,
+    client: httpx.AsyncClient,
 ) -> tuple[dict[str, Any] | None, str | None]:
+    """Fetch a JSON file from GitHub Contents API. Caller provides shared client."""
     url = f"{GITHUB_API_BASE}/repos/{repo_slug}/contents/{path}"
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(url, headers=_github_headers(token))
+    resp = await client.get(url, headers=_github_headers(token))
     if resp.status_code == 404:
         return None, None
     resp.raise_for_status()
@@ -81,41 +88,41 @@ async def _github_put_json_file(
     token: str,
     content_obj: dict[str, Any],
     message: str,
-    sha: str | None = None,
+    sha: str | None,
+    client: httpx.AsyncClient,
 ) -> None:
+    """Write a JSON file to GitHub Contents API. Caller provides shared client."""
     url = f"{GITHUB_API_BASE}/repos/{repo_slug}/contents/{path}"
     encoded = base64.b64encode(json.dumps(content_obj, indent=2).encode("utf-8")).decode("ascii")
-    body: dict[str, Any] = {
-        "message": message,
-        "content": encoded,
-    }
+    body: dict[str, Any] = {"message": message, "content": encoded}
     if sha:
         body["sha"] = sha
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.put(url, headers=_github_headers(token), json=body)
+    resp = await client.put(url, headers=_github_headers(token), json=body)
     resp.raise_for_status()
 
 
 def compute_file_hash(file_path: str | Path) -> str:
-    """
-    Compute SHA256 hash of a file for unique identification.
-    This is the primary key for cross-instance segment matching.
-    """
+    """Compute SHA256 hash of a file, using a (path, size, mtime) cache to skip
+    re-hashing files that have not changed since the last sync run."""
     file_path = Path(file_path)
-    sha256_hash = hashlib.sha256()
-    
     try:
+        stat = file_path.stat()
+        cache_key = (str(file_path), stat.st_size, stat.st_mtime)
+        if cache_key in _hash_cache:
+            return _hash_cache[cache_key]
+
+        sha256_hash = hashlib.sha256()
         with open(file_path, "rb") as f:
-            # Read in chunks to handle large files efficiently
             for chunk in iter(lambda: f.read(8192), b""):
                 sha256_hash.update(chunk)
-        return sha256_hash.hexdigest()
+        digest = sha256_hash.hexdigest()
+        _hash_cache[cache_key] = digest
+        return digest
     except FileNotFoundError:
-        logger.warning(f"File not found for hashing: {file_path}")
+        logger.warning("File not found for hashing: %s", file_path)
         return ""
-    except Exception as e:
-        logger.error(f"Error computing file hash: {e}")
+    except Exception as exc:
+        logger.error("Error computing file hash: %s", exc)
         return ""
 
 
@@ -193,66 +200,74 @@ async def push_segments_to_library(
     instance_name: str,
     upload_data: dict[str, dict[str, Any]],
 ) -> int:
-    """
-    Push local segments into shared GitHub repository and mirror locally.
-    Returns number of file entries updated.
+    """Push local segments into the shared GitHub repo and mirror locally.
+
+    Uses a single shared AsyncClient per operation and a semaphore to bound
+    concurrent GitHub API calls to 5, staying well within rate limits.
+    Returns the number of file entries updated.
     """
     sync_config = await get_sync_config()
     repo_slug = DEFAULT_SYNC_GITHUB_REPO
-    github_token = (((sync_config or {}).get("github_token") or os.environ.get("CLEANPLEX_SYNC_GITHUB_TOKEN") or "").strip())
+    github_token = (
+        ((sync_config or {}).get("github_token") or os.environ.get("CLEANPLEX_SYNC_GITHUB_TOKEN") or "").strip()
+    )
 
     if not repo_slug:
         raise RuntimeError("Sync repository is not configured")
     if not github_token:
         raise RuntimeError("Upload requires CLEANPLEX_SYNC_GITHUB_TOKEN on the server")
 
-    count = 0
     now_iso = datetime.now(timezone.utc).isoformat()
+    # Semaphore caps concurrent GitHub requests; stays under abuse-detection limits.
+    sem = asyncio.Semaphore(5)
 
-    for file_hash, data in upload_data.items():
-        path = _segment_blob_path(file_hash)
-        existing_doc, existing_sha = await _github_get_json_file(repo_slug, path, github_token)
-        if not existing_doc:
-            existing_doc = {
-                "file_hash": file_hash,
-                "sources": {},
-                "created_at": now_iso,
+    async def _upload_one(file_hash: str, data: dict) -> None:
+        async with sem:
+            path = _segment_blob_path(file_hash)
+            existing_doc, existing_sha = await _github_get_json_file(
+                repo_slug, path, github_token, http_client
+            )
+            if not existing_doc:
+                existing_doc = {"file_hash": file_hash, "sources": {}, "created_at": now_iso}
+
+            existing_doc.setdefault("sources", {})
+            existing_doc["sources"][instance_name] = {
+                "file_name": data["file_name"],
+                "file_size": data["file_size"],
+                "duration_ms": data.get("duration_ms", 0),
+                "segments": data["segments"],
+                "titles": data.get("titles", [data["file_name"]]),
+                "updated_at": now_iso,
             }
+            existing_doc["updated_at"] = now_iso
 
-        existing_doc.setdefault("sources", {})
-        existing_doc["sources"][instance_name] = {
-            "file_name": data["file_name"],
-            "file_size": data["file_size"],
-            "duration_ms": data.get("duration_ms", 0),
-            "segments": data["segments"],
-            "titles": data.get("titles", [data["file_name"]]),
-            "updated_at": now_iso,
-        }
-        existing_doc["updated_at"] = now_iso
+            await _github_put_json_file(
+                repo_slug=repo_slug,
+                path=path,
+                token=github_token,
+                content_obj=existing_doc,
+                message=f"sync: update segments {file_hash[:12]} from {instance_name}",
+                sha=existing_sha,
+                client=http_client,
+            )
 
-        await _github_put_json_file(
-            repo_slug=repo_slug,
-            path=path,
-            token=github_token,
-            content_obj=existing_doc,
-            message=f"sync: update segments {file_hash[:12]} from {instance_name}",
-            sha=existing_sha,
-        )
+            # Keep local mirror for diagnostics/offline view.
+            segments_json = json.dumps(data["segments"], default=str)
+            await upsert_segment_library_entry(
+                file_hash=file_hash,
+                file_name=data["file_name"],
+                file_size=data["file_size"],
+                duration_ms=data.get("duration_ms", 0),
+                segments_json=segments_json,
+                source_instance=instance_name,
+                confidence_level="local",
+            )
 
-        # Keep local mirror for diagnostics/offline view.
-        segments_json = json.dumps(data["segments"], default=str)
-        await upsert_segment_library_entry(
-            file_hash=file_hash,
-            file_name=data["file_name"],
-            file_size=data["file_size"],
-            duration_ms=data.get("duration_ms", 0),
-            segments_json=segments_json,
-            source_instance=instance_name,
-            confidence_level="local",  # Local scans are always "local" confidence
-        )
-        count += 1
-    
-    logger.info(f"Uploaded {count} segment entries to GitHub repo {repo_slug}")
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        await asyncio.gather(*(_upload_one(h, d) for h, d in upload_data.items()))
+
+    count = len(upload_data)
+    logger.info("Uploaded %d segment entries to GitHub repo %s", count, repo_slug)
     return count
 
 
@@ -278,12 +293,14 @@ async def fetch_cloud_segments(file_hashes: list[str]) -> dict[str, list[dict]]:
         raise RuntimeError("Sync repository is not configured")
 
     result: dict[str, list[dict]] = {}
-    for file_hash in file_hashes:
-        path = _segment_blob_path(file_hash)
-        doc, _ = await _github_get_json_file(repo_slug, path, github_token or None)
+    sem = asyncio.Semaphore(5)
+
+    async def _fetch_one(file_hash: str, http_client: httpx.AsyncClient) -> None:
+        async with sem:
+            path = _segment_blob_path(file_hash)
+            doc, _ = await _github_get_json_file(repo_slug, path, github_token or None, http_client)
 
         if not doc:
-            # Fall back to local mirror if remote not found.
             entries = await get_segment_library_entries_by_hash(file_hash)
             result[file_hash] = [
                 {
@@ -294,25 +311,25 @@ async def fetch_cloud_segments(file_hashes: list[str]) -> dict[str, list[dict]]:
                 }
                 for entry in entries
             ]
-            continue
+            return
 
         sources = doc.get("sources", {}) if isinstance(doc, dict) else {}
         merged_sources: list[dict[str, Any]] = []
         for source_instance, source_payload in sources.items():
             if not isinstance(source_payload, dict):
                 continue
-            merged_sources.append(
-                {
-                    "segments": source_payload.get("segments", []),
-                    "source_instance": source_instance,
-                    "confidence_level": "shared",
-                    "created_at": source_payload.get("updated_at") or doc.get("updated_at"),
-                }
-            )
-
+            merged_sources.append({
+                "segments": source_payload.get("segments", []),
+                "source_instance": source_instance,
+                "confidence_level": "shared",
+                "created_at": source_payload.get("updated_at") or doc.get("updated_at"),
+            })
         result[file_hash] = merged_sources
-    
-    logger.info(f"Fetched cloud segments for {len(file_hashes)} files")
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        await asyncio.gather(*(_fetch_one(h, http_client) for h in file_hashes))
+
+    logger.info("Fetched cloud segments for %d files", len(file_hashes))
     return result
 
 

@@ -74,21 +74,17 @@ class SegmentMerger:
         return base_confidence * weight
     
     def _cluster_segments(self) -> list[list[dict]]:
+        """Group segments from all sources into clusters of matching scenes.
+
+        Uses a sort-then-sweep approach: segments sorted by start_ms are compared
+        only against candidates whose start_ms is within timing_tolerance_ms.
+        This reduces complexity from O(n²) to O(n log n) on practical inputs.
         """
-        Group segments from all sources that match each other.
-        Returns list of clusters, where each cluster contains matching segments.
-        """
-        all_segments = []
-        
-        # Add local segments with metadata
+        all_segments: list[dict] = []
+
         for seg in self.local_segments:
-            all_segments.append({
-                **seg,
-                "_source_type": "local",
-                "_source_instance": "local",
-            })
-        
-        # Add cloud segments with metadata
+            all_segments.append({**seg, "_source_type": "local", "_source_instance": "local"})
+
         for source in self.cloud_sources:
             source_instance = source["source_instance"]
             for seg in source["segments"]:
@@ -97,28 +93,32 @@ class SegmentMerger:
                     "_source_type": source["confidence_level"],
                     "_source_instance": source_instance,
                 })
-        
-        # Cluster matching segments
-        clusters = []
-        matched = set()
-        
+
+        # Sort by start_ms so we only need to scan forward a bounded window.
+        all_segments.sort(key=lambda s: s["start_ms"])
+
+        cluster_id = [-1] * len(all_segments)
+        clusters: list[list[dict]] = []
+
         for i, seg1 in enumerate(all_segments):
-            if i in matched:
+            if cluster_id[i] != -1:
                 continue
-            
-            cluster = [seg1]
-            matched.add(i)
-            
-            for j, seg2 in enumerate(all_segments[i + 1:], start=i + 1):
-                if j in matched:
+
+            cid = len(clusters)
+            cluster_id[i] = cid
+            clusters.append([seg1])
+
+            # Only compare against segments whose start is within tolerance — once
+            # we exceed the window we can stop scanning forward.
+            for j in range(i + 1, len(all_segments)):
+                if all_segments[j]["start_ms"] - seg1["start_ms"] > self.timing_tolerance_ms:
+                    break
+                if cluster_id[j] != -1:
                     continue
-                
-                if self._segments_match(seg1, seg2):
-                    cluster.append(seg2)
-                    matched.add(j)
-            
-            clusters.append(cluster)
-        
+                if self._segments_match(seg1, all_segments[j]):
+                    cluster_id[j] = cid
+                    clusters[cid].append(all_segments[j])
+
         return clusters
     
     def _resolve_cluster(self, cluster: list[dict]) -> dict:
