@@ -1,3 +1,4 @@
+import asyncio
 import json
 import mimetypes
 import os
@@ -14,9 +15,16 @@ from ... import database as db
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["segments"])
 
+# Pending debounce tasks keyed by plex_guid — cancelled and replaced on each delete.
+# This ensures bulk deletes trigger at most one Plex metadata write per title.
+_pending_summary_tasks: dict[str, asyncio.Task] = {}
 
-async def _refresh_cleanplex_summary_for_guid(plex_guid: str) -> None:
-    """Best-effort metadata sync: write scan status + segment count into Plex summary."""
+
+async def _do_refresh_summary(plex_guid: str) -> None:
+    """Perform the actual Plex summary metadata update after a short debounce delay."""
+    await asyncio.sleep(2)  # coalesce rapid sequential deletes
+    _pending_summary_tasks.pop(plex_guid, None)
+
     try:
         job = await db.get_scan_job_by_guid(plex_guid)
         if not job:
@@ -26,8 +34,8 @@ async def _refresh_cleanplex_summary_for_guid(plex_guid: str) -> None:
         if not rating_key:
             return
 
-        segments = await db.get_segments_for_guid(plex_guid)
-        segment_count = len(segments)
+        # COUNT query — avoids loading all segment rows just to get the total.
+        segment_count = await db.count_segments_for_guid(plex_guid)
         status = "Scanned" if job.get("status") == "done" else "Pending"
 
         client = plex_mod.get_client()
@@ -38,6 +46,19 @@ async def _refresh_cleanplex_summary_for_guid(plex_guid: str) -> None:
         )
     except Exception as exc:
         logger.debug("Could not refresh Plex summary for guid=%s: %s", plex_guid, exc)
+
+
+def _refresh_cleanplex_summary_for_guid(plex_guid: str) -> None:
+    """Schedule a debounced Plex summary refresh.
+
+    Any pending refresh for the same guid is cancelled before scheduling a new
+    one, so bulk deletes of N segments produce at most one metadata write.
+    """
+    existing = _pending_summary_tasks.pop(plex_guid, None)
+    if existing and not existing.done():
+        existing.cancel()
+    task = asyncio.create_task(_do_refresh_summary(plex_guid))
+    _pending_summary_tasks[plex_guid] = task
 
 
 def _plex_image_proxy_url(path: str) -> str:
@@ -303,7 +324,7 @@ async def delete_segment(segment_id: int):
     if not deleted:
         raise HTTPException(status_code=404, detail="Segment not found")
 
-    await _refresh_cleanplex_summary_for_guid(seg["plex_guid"])
+    _refresh_cleanplex_summary_for_guid(seg["plex_guid"])
 
     return {"ok": True}
 
@@ -312,7 +333,7 @@ async def delete_segment(segment_id: int):
 async def delete_all_segments_for_title(plex_guid: str):
     """Delete all segments for a specific title."""
     deleted = await db.delete_segments_for_guid(plex_guid)
-    await _refresh_cleanplex_summary_for_guid(plex_guid)
+    _refresh_cleanplex_summary_for_guid(plex_guid)
     return {"ok": True, "deleted": deleted}
 
 
