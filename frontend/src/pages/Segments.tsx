@@ -51,6 +51,25 @@ interface EpisodeGroup {
   isExpanded: boolean
 }
 
+interface SeasonGroup {
+  season: string
+  episodes: Title[]
+}
+
+interface ShowGroup {
+  show: string
+  seasons: SeasonGroup[]
+  totalSegments: number
+}
+
+function parseShowInfo(title: string): { show: string; season: string; episode: string } {
+  const parts = title.split(' – ')
+  if (parts.length >= 3) {
+    return { show: parts[0].trim(), season: parts[1].trim(), episode: parts.slice(2).join(' – ').trim() }
+  }
+  return { show: title, season: '', episode: title }
+}
+
 function msToTimecode(ms: number): string {
   const s = Math.floor(ms / 1000)
   const h = Math.floor(s / 3600)
@@ -110,8 +129,42 @@ export default function Segments() {
   const [previewSeg, setPreviewSeg] = useState<Segment | null>(null)
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false)
   const [expandedEpisodes, setExpandedEpisodes] = useState<Set<string>>(new Set())
+  const [expandedShows, setExpandedShows] = useState<Set<string>>(new Set())
+  const [expandedSeasons, setExpandedSeasons] = useState<Set<string>>(new Set())
   const [scannerStatus, setScannerStatus] = useState<ScannerStatus | null>(null)
   const previewVideoRef = useRef<HTMLVideoElement | null>(null)
+
+  const toggleShow = (show: string) => {
+    setExpandedShows(prev => { const n = new Set(prev); n.has(show) ? n.delete(show) : n.add(show); return n })
+  }
+  const toggleSeason = (key: string) => {
+    setExpandedSeasons(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n })
+  }
+
+  // Build Show → Season → Episode hierarchy from the flat titles list.
+  const buildShowGroups = (): ShowGroup[] => {
+    const showMap = new Map<string, Map<string, Title[]>>()
+    for (const t of titles) {
+      const { show, season } = parseShowInfo(t.title)
+      if (!showMap.has(show)) showMap.set(show, new Map())
+      const seasonKey = season || 'Unknown Season'
+      const seasonMap = showMap.get(show)!
+      if (!seasonMap.has(seasonKey)) seasonMap.set(seasonKey, [])
+      seasonMap.get(seasonKey)!.push(t)
+    }
+    return Array.from(showMap.entries())
+      .map(([show, seasonMap]) => {
+        const seasons: SeasonGroup[] = Array.from(seasonMap.entries())
+          .map(([season, episodes]) => ({
+            season,
+            episodes: [...episodes].sort((a, b) => a.title.localeCompare(b.title)),
+          }))
+          .sort((a, b) => a.season.localeCompare(b.season))
+        const totalSegments = seasons.reduce((sum, s) => sum + s.episodes.reduce((e, t) => e + t.segment_count, 0), 0)
+        return { show, seasons, totalSegments }
+      })
+      .sort((a, b) => a.show.localeCompare(b.show))
+  }
 
   // Parse episode info from segment title (e.g., "Show – S01E05 – Title")
   const parseEpisodeKey = (title: string): string => {
@@ -267,9 +320,9 @@ export default function Segments() {
   return (
     <div className="flex gap-4 h-full overflow-hidden">
       {/* Library tree - desktop: side panel; mobile: collapsed above content */}
-      <div className="hidden md:block w-44 flex-shrink-0 overflow-y-auto">
+      <div className="hidden md:flex w-52 flex-shrink-0 flex-col overflow-y-auto">
         <h1 className="text-xl font-bold text-gray-100 mb-3">Segments</h1>
-        <div className="space-y-0.5 pr-2">
+        <div className="space-y-0.5 pr-2 flex-1 overflow-y-auto">
           {libraries.map(lib => (
             <div key={lib.id}>
               <button
@@ -284,12 +337,57 @@ export default function Segments() {
               </button>
 
               {selectedLib?.id === lib.id && (
-                <div className="ml-4 mt-0.5 space-y-0.5">
+                <div className="ml-2 mt-0.5 space-y-0.5">
                   {loadingTitles ? (
                     <div className="text-xs text-gray-600 px-2 py-1">Loading...</div>
                   ) : titles.length === 0 ? (
                     <div className="text-xs text-gray-600 px-2 py-1">No scanned titles</div>
+                  ) : lib.type === 'show' ? (
+                    // TV: Show → Season → Episode hierarchy
+                    buildShowGroups().map(showGroup => (
+                      <div key={showGroup.show}>
+                        <button
+                          onClick={() => toggleShow(showGroup.show)}
+                          className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded text-xs text-left text-gray-300 hover:text-gray-100 hover:bg-white/5 transition-colors"
+                        >
+                          <ChevronDown size={11} className={`flex-shrink-0 transition-transform ${expandedShows.has(showGroup.show) ? '' : '-rotate-90'}`} />
+                          <span className="truncate flex-1 font-medium">{showGroup.show}</span>
+                          <span className="flex-shrink-0 text-gray-600">{showGroup.totalSegments}</span>
+                        </button>
+                        {expandedShows.has(showGroup.show) && showGroup.seasons.map(seasonGroup => {
+                          const seasonKey = `${showGroup.show}__${seasonGroup.season}`
+                          const seasonSegs = seasonGroup.episodes.reduce((s, t) => s + t.segment_count, 0)
+                          return (
+                            <div key={seasonKey} className="ml-3">
+                              <button
+                                onClick={() => toggleSeason(seasonKey)}
+                                className="w-full flex items-center gap-1.5 px-2 py-1 rounded text-xs text-left text-gray-400 hover:text-gray-200 hover:bg-white/5 transition-colors"
+                              >
+                                <ChevronDown size={10} className={`flex-shrink-0 transition-transform ${expandedSeasons.has(seasonKey) ? '' : '-rotate-90'}`} />
+                                <span className="truncate flex-1">{seasonGroup.season}</span>
+                                <span className="flex-shrink-0 text-gray-600 text-xs">{seasonSegs}</span>
+                              </button>
+                              {expandedSeasons.has(seasonKey) && seasonGroup.episodes.map(t => (
+                                <button
+                                  key={t.plex_guid}
+                                  onClick={() => selectTitle(t)}
+                                  className={`w-full flex items-center gap-1.5 px-2 py-1 rounded text-xs text-left ml-2 transition-colors ${
+                                    selectedTitle?.plex_guid === t.plex_guid
+                                      ? 'bg-white/10 text-gray-100'
+                                      : 'text-gray-500 hover:text-gray-200 hover:bg-white/5'
+                                  }`}
+                                >
+                                  <span className="truncate flex-1">{parseShowInfo(t.title).episode}</span>
+                                  <span className="flex-shrink-0 text-gray-600">{t.segment_count}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    ))
                   ) : (
+                    // Movies: flat list
                     titles.map(t => (
                       <button
                         key={t.plex_guid}
@@ -300,7 +398,7 @@ export default function Segments() {
                             : 'text-gray-500 hover:text-gray-200 hover:bg-white/5'
                         }`}
                       >
-                        <span className="truncate flex-1">{t.title.split(' – ')[0]}</span>
+                        <span className="truncate flex-1">{t.title}</span>
                         <span className="flex-shrink-0 text-gray-600">{t.segment_count}</span>
                       </button>
                     ))
@@ -341,9 +439,11 @@ export default function Segments() {
                 className="flex-1 px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200 focus:outline-none focus:border-plex-orange/60"
               >
                 <option value="">Select title…</option>
-                {titles.map(t => (
-                  <option key={t.plex_guid} value={t.plex_guid}>{t.title.split(' – ')[0]} ({t.segment_count})</option>
-                ))}
+                {titles.map(t => {
+                  const { show, season, episode } = parseShowInfo(t.title)
+                  const label = season ? `${show} – ${season} – ${episode}` : t.title
+                  return <option key={t.plex_guid} value={t.plex_guid}>{label} ({t.segment_count})</option>
+                })}
               </select>
             )}
           </div>
