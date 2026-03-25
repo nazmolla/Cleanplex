@@ -134,12 +134,18 @@ async def enqueue(plex_guid: str) -> None:
 
 
 async def enqueue_pending() -> None:
-    """Push all pending scan jobs onto the queue."""
+    """Push all pending scan jobs onto the queue, excluding ignored titles."""
     jobs = await db.get_scan_jobs(status="pending")
+    enqueued = 0
     for job in jobs:
+        # Ignored titles stay pending in the DB but must never enter the queue;
+        # scan_video() enforces this too, but filtering here avoids wasteful dequeues.
+        if job.get("ignored"):
+            continue
         await enqueue(job["plex_guid"])
-    if jobs:
-        logger.info("Queued %d pending scan jobs", len(jobs))
+        enqueued += 1
+    if enqueued:
+        logger.info("Queued %d pending scan jobs (%d ignored skipped)", enqueued, len(jobs) - enqueued)
 
 
 def _get_detector(model_name: str = "320n", model_path: str = ""):
@@ -342,6 +348,21 @@ async def scan_video(plex_guid: str, config) -> None:
     if is_ignored:
         logger.info("Skipping ignored title: %s", job["title"])
         return
+
+    # Enforce scan_ratings: skip titles whose content rating is not in the configured list.
+    # This check must live here (not just in the watcher) because enqueue_pending() re-queues
+    # all pending jobs on startup without re-checking ratings.
+    scan_ratings: set[str] = set(config.scan_ratings) if config.scan_ratings else set()
+    if scan_ratings:
+        job_rating = (job.get("content_rating") or "").strip()
+        if job_rating not in scan_ratings:
+            logger.info(
+                "Skipping %s: content rating '%s' not in scan_ratings %s",
+                job["title"],
+                job_rating,
+                scan_ratings,
+            )
+            return
 
     # Safety check: Don't scan outside window unless force-scanned
     is_force_scan = bool(job.get("force_scan", 0))
@@ -631,11 +652,15 @@ async def scanner_loop(get_config_fn) -> None:
         ]
 
         try:
-            # Run workers until restart or unexpected completion
+            # Run workers until restart or unexpected completion.
+            # timeout=5 ensures _restart_requested is polled promptly even while
+            # all workers are mid-scan (workers never complete normally, so without
+            # a timeout asyncio.wait would block indefinitely).
             while not _restart_requested:
-                done, pending = await asyncio.wait(
+                done, _ = await asyncio.wait(
                     worker_tasks,
                     return_when=asyncio.FIRST_COMPLETED,
+                    timeout=5.0,
                 )
                 if done:
                     # A worker unexpectedly completed; restart the pool
