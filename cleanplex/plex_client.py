@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -403,6 +405,51 @@ class PlexClient:
             return b"", ""
 
         return resp.content, resp.headers.get("content-type", "image/jpeg")
+
+    # ── Cleanplex metadata block ──────────────────────────────────────────────
+
+    def _strip_cleanplex_block(self, summary: str) -> str:
+        pattern = r"\n*\[\[CLEANPLEX\]\].*?\[\[/CLEANPLEX\]\]\n*"
+        return re.sub(pattern, "\n", summary or "", flags=re.S).strip()
+
+    def _build_cleanplex_block(self, status: str, segment_count: int, last_scan: str | None = None) -> str:
+        stamp = last_scan or datetime.now().strftime("%Y-%m-%d %H:%M")
+        return (
+            "[[CLEANPLEX]]\n"
+            "Cleanplex Scan\n"
+            f"Status: {status}\n"
+            f"Segments: {segment_count}\n"
+            f"Last Scan: {stamp}\n"
+            "[[/CLEANPLEX]]"
+        )
+
+    async def update_cleanplex_summary(
+        self,
+        rating_key: str,
+        status: str,
+        segment_count: int,
+        last_scan: str | None = None,
+    ) -> bool:
+        """Insert/update a marker-based Cleanplex block in Plex summary metadata."""
+        try:
+            srv = await asyncio.to_thread(self._get_server)
+            item = await asyncio.to_thread(srv.fetchItem, int(rating_key))
+            current_summary = getattr(item, "summary", "") or ""
+
+            base_summary = self._strip_cleanplex_block(current_summary)
+            cleanplex_block = self._build_cleanplex_block(status, segment_count, last_scan)
+            new_summary = f"{base_summary}\n\n{cleanplex_block}".strip() if base_summary else cleanplex_block
+
+            try:
+                await asyncio.to_thread(item.editSummary, new_summary)
+            except Exception:
+                await asyncio.to_thread(item.edit, summary=new_summary)
+
+            logger.info("Updated Plex summary metadata for rating_key=%s", rating_key)
+            return True
+        except Exception as exc:
+            logger.warning("Failed to update Plex summary metadata for rating_key=%s: %s", rating_key, exc)
+            return False
 
     async def close(self) -> None:
         await self._http.aclose()

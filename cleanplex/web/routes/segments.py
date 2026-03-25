@@ -15,6 +15,31 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["segments"])
 
 
+async def _refresh_cleanplex_summary_for_guid(plex_guid: str) -> None:
+    """Best-effort metadata sync: write scan status + segment count into Plex summary."""
+    try:
+        job = await db.get_scan_job_by_guid(plex_guid)
+        if not job:
+            return
+
+        rating_key = str(job.get("rating_key") or "")
+        if not rating_key:
+            return
+
+        segments = await db.get_segments_for_guid(plex_guid)
+        segment_count = len(segments)
+        status = "Scanned" if job.get("status") == "done" else "Pending"
+
+        client = plex_mod.get_client()
+        await client.update_cleanplex_summary(
+            rating_key=rating_key,
+            status=status,
+            segment_count=segment_count,
+        )
+    except Exception as exc:
+        logger.debug("Could not refresh Plex summary for guid=%s: %s", plex_guid, exc)
+
+
 def _plex_image_proxy_url(path: str) -> str:
     if not path:
         return ""
@@ -270,9 +295,16 @@ async def stream_segment_source(segment_id: int):
 
 @router.delete("/segments/{segment_id}")
 async def delete_segment(segment_id: int):
+    seg = await db.get_segment_by_id(segment_id)
+    if not seg:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
     deleted = await db.delete_segment(segment_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Segment not found")
+
+    await _refresh_cleanplex_summary_for_guid(seg["plex_guid"])
+
     return {"ok": True}
 
 
@@ -280,6 +312,7 @@ async def delete_segment(segment_id: int):
 async def delete_all_segments_for_title(plex_guid: str):
     """Delete all segments for a specific title."""
     deleted = await db.delete_segments_for_guid(plex_guid)
+    await _refresh_cleanplex_summary_for_guid(plex_guid)
     return {"ok": True, "deleted": deleted}
 
 

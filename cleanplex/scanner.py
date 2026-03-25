@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
+import cleanplex.plex_client as plex_mod
 
 from .frame_extractor import extract_frame, get_duration_ms
 from .logger import get_logger
@@ -329,6 +330,7 @@ async def scan_video(plex_guid: str, config) -> None:
 
     file_path = job["file_path"]
     title = job["title"]
+    rating_key = str(job.get("rating_key") or "")
 
     if not os.path.isfile(file_path):
         logger.error("Video file not found: %s", file_path)
@@ -476,6 +478,18 @@ async def scan_video(plex_guid: str, config) -> None:
         await _flush_cluster()
 
         await db.update_scan_job_status(plex_guid, "done", progress=1.0)
+
+        if rating_key:
+            try:
+                client = plex_mod.get_client()
+                await client.update_cleanplex_summary(
+                    rating_key=rating_key,
+                    status="Scanned",
+                    segment_count=segments_inserted,
+                )
+            except Exception as exc:
+                logger.debug("Could not update Plex summary metadata for %s: %s", plex_guid, exc)
+
         logger.info("Scan complete: %s — found %d segment(s)", title, segments_inserted)
 
     except Exception as exc:
