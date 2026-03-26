@@ -295,11 +295,11 @@ export default function Library() {
           <p className="text-xs text-gray-600 px-1">No segments found</p>
         ) : segs.map(seg => (
           <div key={seg.id} className="flex gap-2 bg-plex-darker border border-plex-border rounded-lg overflow-hidden">
-            <div className="w-24 flex-shrink-0 bg-black relative">
+            <div className="w-40 flex-shrink-0 bg-black relative">
               {seg.has_thumbnail ? (
-                <img src={seg.thumbnail_url} alt="Flagged frame" className="w-full h-full object-cover" style={{ minHeight: '60px', maxHeight: '90px' }} />
+                <img src={seg.thumbnail_url} alt="Flagged frame" className="w-full h-full object-cover" style={{ minHeight: '90px', maxHeight: '135px' }} />
               ) : (
-                <div className="w-full h-16 flex items-center justify-center text-gray-700"><AlertTriangle size={16} /></div>
+                <div className="w-full h-24 flex items-center justify-center text-gray-700"><AlertTriangle size={20} /></div>
               )}
               <div className="absolute bottom-0.5 left-0.5 bg-black/70 text-xs text-gray-300 px-1 py-0.5 rounded text-[10px]">
                 {Math.round(seg.confidence * 100)}%
@@ -835,11 +835,11 @@ export default function Library() {
                           <img
                             src={group.poster_url}
                             alt={`${group.show} poster`}
-                            className="w-10 h-14 object-cover rounded bg-plex-border flex-shrink-0"
+                            className="w-16 h-24 object-cover rounded bg-plex-border flex-shrink-0"
                             onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
                           />
                         ) : (
-                          <div className="w-10 h-14 bg-plex-border rounded flex-shrink-0" />
+                          <div className="w-16 h-24 bg-plex-border rounded flex-shrink-0" />
                         )}
                         <button
                           onClick={() => toggleShowExpanded(group.show_key)}
@@ -1017,11 +1017,11 @@ export default function Library() {
                         <img
                           src={title.thumb_url}
                           alt=""
-                          className="w-10 h-14 object-cover rounded bg-plex-border flex-shrink-0"
+                          className="w-16 h-24 object-cover rounded bg-plex-border flex-shrink-0"
                           onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
                         />
                       ) : (
-                        <div className="w-10 h-14 bg-plex-border rounded flex-shrink-0" />
+                        <div className="w-16 h-24 bg-plex-border rounded flex-shrink-0" />
                       )}
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-gray-100 truncate">
