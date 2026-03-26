@@ -170,15 +170,19 @@ export default function Library() {
   const [jumpingSegs, setJumpingSegs] = useState<Record<number, boolean>>({})
   const [previewSeg, setPreviewSeg] = useState<Segment | null>(null)
   const [machineId, setMachineId] = useState('')
+  const [plexBaseUrl, setPlexBaseUrl] = useState('')
 
   useEffect(() => {
     api.get<{ libraries: Library[] }>('/api/libraries').then(d => setLibraries(d.libraries))
   }, [])
 
-  // Fetch Plex server machine identifier for building web deep links.
+  // Fetch Plex server machine identifier and base URL for building web deep links.
   useEffect(() => {
     api.get<{ machine_identifier: string }>('/api/settings/plex-server-id')
       .then(d => setMachineId(d.machine_identifier))
+      .catch(() => {})
+    api.get<Record<string, string>>('/api/settings')
+      .then(d => setPlexBaseUrl((d.plex_url || '').replace(/\/$/, '')))
       .catch(() => {})
   }, [])
 
@@ -233,8 +237,8 @@ export default function Library() {
   }, [])
 
   const plexWebUrl = (ratingKey: string) =>
-    machineId && ratingKey
-      ? `https://app.plex.tv/desktop/#!/server/${machineId}/details?key=%2Flibrary%2Fmetadata%2F${ratingKey}`
+    machineId && ratingKey && plexBaseUrl
+      ? `${plexBaseUrl}/web/index.html#!/server/${machineId}/details?key=%2Flibrary%2Fmetadata%2F${ratingKey}`
       : ''
 
   const toggleSegments = async (guid: string) => {
