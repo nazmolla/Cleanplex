@@ -157,6 +157,14 @@ class ToggleIgnoredRequest(BaseModel):
     ignored: bool
 
 
+@router.post("/restart-scanner")
+async def restart_scanner():
+    """Trigger a clean scanner pool restart. The pool will pick up current config
+    and re-order the queue within ~10 seconds."""
+    scan_mod.request_scanner_restart()
+    return {"ok": True}
+
+
 @router.post("/reorder-queue")
 async def reorder_queue():
     """Drain and re-enqueue all pending jobs in priority order (movies newest-first,

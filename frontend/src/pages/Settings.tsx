@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
-import { CheckCircle2, XCircle, Loader2, Eye, EyeOff } from 'lucide-react'
+import { CheckCircle2, XCircle, Loader2, Eye, EyeOff, RotateCcw } from 'lucide-react'
 
 interface Settings {
   plex_url: string
@@ -88,6 +88,8 @@ export default function SettingsPage() {
   const [uploadResult, setUploadResult] = useState<{ ok: boolean; message: string } | null>(null)
   const [downloading, setDownloading] = useState(false)
   const [downloadResult, setDownloadResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [restarting, setRestarting] = useState(false)
+  const [restarted, setRestarted] = useState(false)
 
   useEffect(() => {
     Promise.all([
@@ -255,6 +257,18 @@ export default function SettingsPage() {
       setModelValidationResult({ ok: false, message: 'Validation request failed' })
     } finally {
       setValidatingModel(false)
+    }
+  }
+
+  const restartScanner = async () => {
+    setRestarting(true)
+    setRestarted(false)
+    try {
+      await api.post('/api/scan/restart-scanner')
+      setRestarted(true)
+      setTimeout(() => setRestarted(false), 5000)
+    } finally {
+      setRestarting(false)
     }
   }
 
@@ -557,7 +571,7 @@ export default function SettingsPage() {
       </section>
 
       {/* Save */}
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <button
           onClick={save}
           disabled={saving}
@@ -569,6 +583,20 @@ export default function SettingsPage() {
         {saved && (
           <span className="flex items-center gap-1.5 text-sm text-green-400">
             <CheckCircle2 size={15} /> Saved
+          </span>
+        )}
+        <button
+          onClick={restartScanner}
+          disabled={restarting}
+          className="px-4 py-2.5 bg-plex-card border border-plex-border text-sm rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-50 flex items-center gap-2"
+          title="Restart the scanner pool — picks up config changes and reorders the queue"
+        >
+          <RotateCcw size={14} className={restarting ? 'animate-spin' : ''} />
+          Restart Scanner
+        </button>
+        {restarted && (
+          <span className="flex items-center gap-1.5 text-sm text-green-400">
+            <CheckCircle2 size={15} /> Restarting — queue will reorder within ~10s
           </span>
         )}
       </div>
