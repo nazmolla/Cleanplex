@@ -15,7 +15,10 @@ check() {
   local url="$2"
   local expect="${3:-200}"
   local status
-  status=$(curl -sf -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+  # Use -s only (not -f) so curl doesn't exit non-zero on HTTP errors —
+  # that would cause %{http_code} and the fallback echo to both append to status.
+  status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url" 2>/dev/null)
+  [[ -z "$status" ]] && status="000"
   if [[ "$status" == "$expect" ]]; then
     echo "  PASS  $desc ($status)"
     ((PASS++)) || true
