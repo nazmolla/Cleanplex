@@ -24,6 +24,16 @@ frontend/dist/
 
 # Local runtime/log artifacts
 cleanplex.log
+cleanplex*.log
+*.log
+.coverage
+
+# One-off scripts
+backfill_*.py
+test_import.py
+test_sync.py
+ping_test.py
+_create_*.ps1
 
 # Generated web assets served by backend
 cleanplex/web/static/
