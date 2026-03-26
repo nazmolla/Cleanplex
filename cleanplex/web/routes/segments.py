@@ -97,31 +97,47 @@ async def sync_library(library_id: str):
         logger.info(f"Syncing library {library_id}: found {len(items)} items from Plex")
         
         scan_ratings = set(json.loads(await db.get_setting("scan_ratings", "[]")))
+        file_items = [i for i in items if i.file_path]
+        existing_guids = await db.get_existing_guids([i.plex_guid for i in file_items])
+
+        # Refresh mutable Plex metadata for all existing titles in one transaction
+        # so that manual rating changes in Plex are reflected after sync.
+        await db.refresh_scan_job_metadata_batch([
+            (i.plex_guid, i.title, i.file_path, i.rating_key, i.content_rating, i.year)
+            for i in file_items if i.plex_guid in existing_guids
+        ])
+
+        # Remove DB entries for titles Plex no longer reports in this library
+        # (e.g. deleted files or removed duplicates).
+        plex_guids = [i.plex_guid for i in file_items]
+        removed = await db.delete_scan_jobs_not_in(library_id, plex_guids)
+        if removed:
+            logger.info(f"Library {library_id} sync: removed {removed} stale titles")
+
         added = 0
-        for item in items:
-            if item.file_path:
-                if scan_ratings:
-                    # Filter strictly: "" = unrated, only included when the
-                    # Unrated checkbox is ticked (saves "" in scan_ratings).
-                    if (item.content_rating or "") not in scan_ratings:
-                        continue
-                existing = await db.get_scan_job_by_guid(item.plex_guid)
-                if not existing:
-                    await db.upsert_scan_job(
-                        plex_guid=item.plex_guid,
-                        title=item.title,
-                        file_path=item.file_path,
-                        rating_key=item.rating_key,
-                        library_id=item.library_id,
-                        library_title=item.library_title,
-                        content_rating=item.content_rating,
-                        media_type=item.media_type,
-                        year=item.year,
-                    )
-                    added += 1
-        
+        for item in file_items:
+            if item.plex_guid in existing_guids:
+                continue
+            if scan_ratings:
+                # Filter strictly: "" = unrated, only included when the
+                # Unrated checkbox is ticked (saves "" in scan_ratings).
+                if (item.content_rating or "") not in scan_ratings:
+                    continue
+            await db.upsert_scan_job(
+                plex_guid=item.plex_guid,
+                title=item.title,
+                file_path=item.file_path,
+                rating_key=item.rating_key,
+                library_id=item.library_id,
+                library_title=item.library_title,
+                content_rating=item.content_rating,
+                media_type=item.media_type,
+                year=item.year,
+            )
+            added += 1
+
         logger.info(f"Library {library_id} synced: {added} new titles added")
-        return {"ok": True, "synced": len(items), "new": added}
+        return {"ok": True, "synced": len(items), "new": added, "removed": removed}
     except RuntimeError as e:
         logger.error(f"Plex client error during library sync: {e}")
         return {"ok": False, "error": str(e)}
@@ -149,13 +165,15 @@ async def get_titles_in_library(library_id: str):
 
     result = []
     # Cache resolved show metadata by show name to avoid repeated Plex API calls.
-    # Value: (show_guid, show_title, show_poster_url)
-    show_meta_by_name: dict[str, tuple[str, str, str]] = {}
+    # Value: (show_guid, show_title, show_poster_url, show_rating_key, season_rating_key)
+    show_meta_by_name: dict[str, tuple[str, str, str, str, str]] = {}
     for job in jobs:
         thumb_url = ""
         poster_url = ""
         show_guid = ""
         show_title = ""
+        show_rating_key = ""
+        season_rating_key = ""
         if client and job.get("rating_key"):
             rating_key = job["rating_key"]
             thumb_url = _plex_image_proxy_url(f"/library/metadata/{rating_key}/thumb")
@@ -165,14 +183,16 @@ async def get_titles_in_library(library_id: str):
                 # which matches how Plex itself loads show posters.
                 parsed_show_name = (job.get("title", "").split(" \u2013 ")[0] or "").strip()
                 if parsed_show_name and parsed_show_name in show_meta_by_name:
-                    show_guid, show_title, poster_url = show_meta_by_name[parsed_show_name]
+                    show_guid, show_title, poster_url, show_rating_key, season_rating_key = show_meta_by_name[parsed_show_name]
                 else:
-                    resolved_show_guid, resolved_show_title, show_thumb_path = await client.get_episode_show_art(rating_key)
+                    resolved_show_guid, resolved_show_title, show_thumb_path, resolved_show_rk, resolved_season_rk = await client.get_episode_show_art(rating_key)
                     show_guid = resolved_show_guid
                     show_title = resolved_show_title or parsed_show_name
                     poster_url = _plex_image_proxy_url(show_thumb_path) if show_thumb_path else ""
+                    show_rating_key = resolved_show_rk
+                    season_rating_key = resolved_season_rk
                     if parsed_show_name:
-                        show_meta_by_name[parsed_show_name] = (show_guid, show_title, poster_url)
+                        show_meta_by_name[parsed_show_name] = (show_guid, show_title, poster_url, show_rating_key, season_rating_key)
             else:
                 poster_url = thumb_url
         result.append({
@@ -186,6 +206,8 @@ async def get_titles_in_library(library_id: str):
             "poster_url": poster_url,
             "show_guid": show_guid,
             "show_title": show_title,
+            "show_rating_key": show_rating_key,
+            "season_rating_key": season_rating_key,
             "segment_count": seg_counts.get(job["plex_guid"], 0),
             "content_rating": job.get("content_rating", ""),
             "media_type": job.get("media_type", "movie"),

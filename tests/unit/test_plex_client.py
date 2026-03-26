@@ -117,14 +117,14 @@ async def test_get_episode_show_art_populates_cache_on_first_call():
     with patch("cleanplex.plex_client.asyncio.to_thread", side_effect=fake_to_thread):
         result = await c.get_episode_show_art("200")
 
-    assert result == ("show-guid", "The Show", "/thumb/show")
+    assert result[:3] == ("show-guid", "The Show", "/thumb/show")
     assert "200" in c._show_art_cache
 
 
 async def test_get_episode_show_art_ttl_expiry():
     c = PlexClient("http://plex:32400", "t")
     # Manually inject a stale cache entry
-    c._show_art_cache["200"] = (time.monotonic() - (_SHOW_ART_CACHE_TTL_S + 1), ("old", "old", "old"))
+    c._show_art_cache["200"] = (time.monotonic() - (_SHOW_ART_CACHE_TTL_S + 1), ("old", "old", "old", "", ""))
 
     mock_item = MagicMock()
     mock_item.grandparentGuid = "fresh-guid"
@@ -144,7 +144,7 @@ async def test_get_episode_show_art_ttl_expiry():
                 pass
 
     # Re-inject with expired TTL and verify cache miss by patching _get_server
-    c._show_art_cache["300"] = (time.monotonic() - (_SHOW_ART_CACHE_TTL_S + 10), ("stale", "stale", "stale"))
+    c._show_art_cache["300"] = (time.monotonic() - (_SHOW_ART_CACHE_TTL_S + 10), ("stale", "stale", "stale", "", ""))
 
     fresh_item = MagicMock()
     fresh_item.grandparentGuid = "fresh"
@@ -156,7 +156,7 @@ async def test_get_episode_show_art_ttl_expiry():
             c._get_server() if "fetchItem" not in str(f) and not a else fresh_item
         )
         # The key assertion: an expired cache entry must be recomputed
-        assert c._show_art_cache["300"][1] == ("stale", "stale", "stale")
+        assert c._show_art_cache["300"][1] == ("stale", "stale", "stale", "", "")
 
 
 async def test_get_episode_show_art_returns_empty_on_exception():
@@ -165,7 +165,7 @@ async def test_get_episode_show_art_returns_empty_on_exception():
     with patch("cleanplex.plex_client.asyncio.to_thread", side_effect=Exception("connection error")):
         result = await c.get_episode_show_art("bad-key")
 
-    assert result == ("", "", "")
+    assert result == ("", "", "", "", "")
 
 
 # ── fetch_image ────────────────────────────────────────────────────────────────

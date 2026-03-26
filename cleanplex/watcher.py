@@ -79,7 +79,7 @@ async def library_watcher_loop(get_config_fn, get_client_fn) -> None:
                 for item in items:
                     if not item.file_path:
                         continue
-                    if scan_ratings and item.content_rating not in scan_ratings:
+                    if scan_ratings and (item.content_rating or "") not in scan_ratings:
                         continue
                     existing = await db.get_scan_job_by_guid(item.plex_guid)
                     if existing is None:

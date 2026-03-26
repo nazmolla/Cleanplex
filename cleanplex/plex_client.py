@@ -77,8 +77,8 @@ class PlexClient:
         self.token = token
         self._server: PlexServer | None = None
         self._http = httpx.AsyncClient(timeout=10)
-        # {rating_key: (monotonic_timestamp, (show_guid, show_title, show_thumb))}
-        self._show_art_cache: dict[str, tuple[float, tuple[str, str, str]]] = {}
+        # {rating_key: (monotonic_timestamp, (show_guid, show_title, show_thumb, show_rating_key, season_rating_key))}
+        self._show_art_cache: dict[str, tuple[float, tuple[str, str, str, str, str]]] = {}
 
     def _get_server(self) -> PlexServer:
         if self._server is None:
@@ -96,6 +96,15 @@ class PlexClient:
             return True, srv.friendlyName
         except Exception as exc:
             return False, str(exc)
+
+    async def get_machine_identifier(self) -> str:
+        """Return the Plex server machine identifier, used to build web deep links."""
+        try:
+            srv = await asyncio.to_thread(self._get_server)
+            return str(srv.machineIdentifier)
+        except Exception as exc:
+            logger.debug("Failed to get machine identifier: %s", exc)
+            return ""
 
     # ── Sessions ──────────────────────────────────────────────────────────────
 
@@ -386,8 +395,8 @@ class PlexClient:
             return ""
         return f"{self.url}{thumb_path}?X-Plex-Token={self.token}"
 
-    async def get_episode_show_art(self, rating_key: str) -> tuple[str, str, str]:
-        """Return (show_guid, show_title, show_thumb_path) for an episode rating key.
+    async def get_episode_show_art(self, rating_key: str) -> tuple[str, str, str, str, str]:
+        """Return (show_guid, show_title, show_thumb_path, show_rating_key, season_rating_key) for an episode rating key.
 
         Results are cached per rating_key with a TTL of _SHOW_ART_CACHE_TTL_S seconds
         to avoid redundant Plex API calls when listing large TV libraries.
@@ -403,12 +412,14 @@ class PlexClient:
             show_guid = getattr(item, "grandparentGuid", "") or ""
             show_title = getattr(item, "grandparentTitle", "") or ""
             show_thumb = getattr(item, "grandparentThumb", "") or ""
-            result = (show_guid, show_title, show_thumb)
+            show_rating_key = str(getattr(item, "grandparentRatingKey", "") or "")
+            season_rating_key = str(getattr(item, "parentRatingKey", "") or "")
+            result = (show_guid, show_title, show_thumb, show_rating_key, season_rating_key)
             self._show_art_cache[rating_key] = (now, result)
             return result
         except Exception as exc:
             logger.debug("Failed to resolve show art for rating_key %s: %s", rating_key, exc)
-            return "", "", ""
+            return "", "", "", "", ""
 
     async def fetch_image(self, image_path: str) -> tuple[bytes, str]:
         """Fetch an image from Plex and return (bytes, content_type)."""

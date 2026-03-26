@@ -367,6 +367,52 @@ async def upsert_scan_job(
         await conn.commit()
 
 
+async def get_existing_guids(guids: list[str]) -> set[str]:
+    """Return the subset of guids that already exist as scan jobs (single query)."""
+    if not guids:
+        return set()
+    placeholders = ",".join("?" * len(guids))
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            f"SELECT plex_guid FROM scan_jobs WHERE plex_guid IN ({placeholders})", guids
+        )
+        return {row["plex_guid"] for row in rows}
+
+
+async def refresh_scan_job_metadata_batch(
+    items: list[tuple[str, str, str, str, str, int | None]],
+) -> None:
+    """Update mutable Plex metadata for multiple existing scan jobs in a single transaction.
+
+    Each item is (plex_guid, title, file_path, rating_key, content_rating, year).
+    Does not touch scan status or progress.
+    """
+    if not items:
+        return
+    async with get_connection() as conn:
+        await conn.executemany(
+            "UPDATE scan_jobs SET title=?, file_path=?, rating_key=?, content_rating=?, year=?"
+            " WHERE plex_guid=?",
+            [(title, file_path, rating_key, content_rating, year, plex_guid)
+             for plex_guid, title, file_path, rating_key, content_rating, year in items],
+        )
+        await conn.commit()
+
+
+async def delete_scan_jobs_not_in(library_id: str, keep_guids: list[str]) -> int:
+    """Delete scan jobs for a library whose plex_guid is not in keep_guids. Returns deleted count."""
+    if not keep_guids:
+        return 0
+    placeholders = ",".join("?" * len(keep_guids))
+    async with get_connection() as conn:
+        cursor = await conn.execute(
+            f"DELETE FROM scan_jobs WHERE library_id=? AND plex_guid NOT IN ({placeholders})",
+            [library_id, *keep_guids],
+        )
+        await conn.commit()
+        return cursor.rowcount
+
+
 async def get_scan_jobs(status: str | None = None) -> list[dict]:
     async with get_connection() as conn:
         if status:

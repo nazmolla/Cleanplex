@@ -65,6 +65,20 @@ async def get_settings():
     return await db.get_all_settings()
 
 
+@router.get("/plex-server-id")
+async def get_plex_server_id():
+    """Return the Plex server machine identifier for constructing web deep links."""
+    try:
+        client = plex_mod.get_client()
+        machine_id = await client.get_machine_identifier()
+        return {"machine_identifier": machine_id}
+    except RuntimeError:
+        return {"machine_identifier": ""}
+    except Exception as exc:
+        logger.warning("Failed to get machine identifier: %s", exc)
+        return {"machine_identifier": ""}
+
+
 @router.put("")
 async def update_settings(payload: SettingsPayload):
     data = {k: v for k, v in payload.model_dump().items() if v is not None}
