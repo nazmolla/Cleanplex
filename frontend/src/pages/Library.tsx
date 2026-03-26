@@ -299,12 +299,13 @@ export default function Library() {
         ) : segs.length === 0 ? (
           <p className="text-xs text-gray-600 px-1">No segments found</p>
         ) : segs.map(seg => (
-          <div key={seg.id} className="flex gap-2 bg-plex-darker border border-plex-border rounded-lg overflow-hidden">
-            <div className="w-40 flex-shrink-0 bg-black relative">
+          <div key={seg.id} className="flex flex-col sm:flex-row gap-0 bg-plex-darker border border-plex-border rounded-lg overflow-hidden">
+            {/* Thumbnail: full-width on mobile, fixed sidebar on desktop */}
+            <div className="w-full sm:w-40 sm:flex-shrink-0 bg-black relative">
               {seg.has_thumbnail ? (
-                <img src={seg.thumbnail_url} alt="Flagged frame" className="w-full h-full object-cover" style={{ minHeight: '90px', maxHeight: '135px' }} />
+                <img src={seg.thumbnail_url} alt="Flagged frame" className="w-full object-cover" style={{ height: '140px' }} />
               ) : (
-                <div className="w-full h-24 flex items-center justify-center text-gray-700"><AlertTriangle size={20} /></div>
+                <div className="w-full flex items-center justify-center text-gray-700" style={{ height: '140px' }}><AlertTriangle size={20} /></div>
               )}
               <div className="absolute bottom-0.5 left-0.5 bg-black/70 text-xs text-gray-300 px-1 py-0.5 rounded text-[10px]">
                 {Math.round(seg.confidence * 100)}%
@@ -324,25 +325,25 @@ export default function Library() {
                 <button
                   onClick={() => setPreviewSeg(seg)}
                   title="Preview segment video"
-                  className="p-1.5 text-gray-600 hover:text-green-400 hover:bg-green-400/10 rounded transition-colors"
+                  className="p-2 text-gray-600 hover:text-green-400 hover:bg-green-400/10 rounded transition-colors"
                 >
-                  <Play size={13} />
+                  <Play size={15} />
                 </button>
                 <button
                   onClick={() => jumpToSegmentInline(seg.id)}
                   disabled={jumpingSegs[seg.id]}
                   title="Jump active Plex playback to this segment"
-                  className="p-1.5 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors disabled:opacity-40"
+                  className="p-2 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors disabled:opacity-40"
                 >
-                  <SkipForward size={13} />
+                  <SkipForward size={15} />
                 </button>
                 <button
                   onClick={() => deleteSegmentInline(seg.id, guid)}
                   disabled={deletingSegs[seg.id]}
                   title="Remove this segment"
-                  className="p-1.5 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-40"
+                  className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-40"
                 >
-                  <Trash2 size={13} />
+                  <Trash2 size={15} />
                 </button>
               </div>
             </div>
@@ -1122,8 +1123,8 @@ export default function Library() {
       </div>
 
       {previewSeg && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setPreviewSeg(null)}>
-          <div className="w-full max-w-4xl bg-plex-card border border-plex-border rounded-xl overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 bg-black/90 flex items-end sm:items-center justify-center sm:p-4" onClick={() => setPreviewSeg(null)}>
+          <div className="w-full sm:max-w-4xl bg-plex-card sm:border border-t border-plex-border sm:rounded-xl overflow-hidden" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-plex-border">
               <div>
                 <h3 className="text-sm font-semibold text-gray-100">Segment Preview</h3>
@@ -1138,12 +1139,12 @@ export default function Library() {
                 Close
               </button>
             </div>
-            <div className="p-4">
+            <div className="p-3 sm:p-4">
               <video
                 key={previewSeg.id}
                 controls
-                autoPlay
-                className="w-full rounded-lg bg-black max-h-[70vh]"
+                playsInline
+                className="w-full rounded-lg bg-black max-h-[50vh] sm:max-h-[70vh]"
                 src={`/api/segments/${previewSeg.id}/stream`}
                 onLoadedMetadata={e => { e.currentTarget.currentTime = previewSeg.start_ms / 1000 }}
                 onTimeUpdate={e => {
@@ -1152,7 +1153,7 @@ export default function Library() {
                 }}
               />
               <p className="text-xs text-gray-500 mt-2">
-                Playback uses your browser codecs. If this file does not play, use the jump button to seek in Plex instead.
+                Playback uses your browser codecs. If the file does not play, use the jump button to seek in Plex instead.
               </p>
             </div>
           </div>
