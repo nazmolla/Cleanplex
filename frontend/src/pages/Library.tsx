@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { api } from '../api/client'
-import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward } from 'lucide-react'
+import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play } from 'lucide-react'
 
 interface Library {
   id: string
@@ -57,7 +57,7 @@ interface ScannerStatus {
 const STATUS_TABS = ['all', 'pending', 'scanning', 'done', 'failed'] as const
 type StatusTab = typeof STATUS_TABS[number]
 
-const SORT_OPTIONS = ['title', 'date-added', 'year', 'year-release'] as const
+const SORT_OPTIONS = ['title', 'date-added', 'year', 'year-release', 'segments'] as const
 type SortOption = typeof SORT_OPTIONS[number]
 
 interface ParsedEpisodeTitle {
@@ -168,6 +168,7 @@ export default function Library() {
   const [loadingSegments, setLoadingSegments] = useState<Set<string>>(new Set())
   const [deletingSegs, setDeletingSegs] = useState<Record<number, boolean>>({})
   const [jumpingSegs, setJumpingSegs] = useState<Record<number, boolean>>({})
+  const [previewSeg, setPreviewSeg] = useState<Segment | null>(null)
   const [machineId, setMachineId] = useState('')
 
   useEffect(() => {
@@ -316,6 +317,13 @@ export default function Library() {
                 {renderLabels(seg.labels)}
               </div>
               <div className="flex items-center gap-1 flex-shrink-0">
+                <button
+                  onClick={() => setPreviewSeg(seg)}
+                  title="Preview segment video"
+                  className="p-1.5 text-gray-600 hover:text-green-400 hover:bg-green-400/10 rounded transition-colors"
+                >
+                  <Play size={13} />
+                </button>
                 <button
                   onClick={() => jumpToSegmentInline(seg.id)}
                   disabled={jumpingSegs[seg.id]}
@@ -506,6 +514,10 @@ export default function Library() {
       case 'year-release':
         aVal = a.year ?? 0
         bVal = b.year ?? 0
+        break
+      case 'segments':
+        aVal = a.segment_count
+        bVal = b.segment_count
         break
       default:
         aVal = a.title.toLowerCase()
@@ -749,6 +761,7 @@ export default function Library() {
                 <option value="date-added">Date Added</option>
                 <option value="title">Alphabetical</option>
                 <option value="year">Release Year</option>
+                <option value="segments">Segments</option>
               </select>
               <button
                 onClick={() => setSortDesc(!sortDesc)}
@@ -1103,6 +1116,44 @@ export default function Library() {
           </>
         )}
       </div>
+
+      {previewSeg && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setPreviewSeg(null)}>
+          <div className="w-full max-w-4xl bg-plex-card border border-plex-border rounded-xl overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-plex-border">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-100">Segment Preview</h3>
+                <p className="text-xs text-gray-500">
+                  {msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)}
+                </p>
+              </div>
+              <button
+                onClick={() => setPreviewSeg(null)}
+                className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+            <div className="p-4">
+              <video
+                key={previewSeg.id}
+                controls
+                autoPlay
+                className="w-full rounded-lg bg-black max-h-[70vh]"
+                src={`/api/segments/${previewSeg.id}/stream`}
+                onLoadedMetadata={e => { e.currentTarget.currentTime = previewSeg.start_ms / 1000 }}
+                onTimeUpdate={e => {
+                  const el = e.currentTarget
+                  if (el.currentTime >= previewSeg.end_ms / 1000) el.pause()
+                }}
+              />
+              <p className="text-xs text-gray-500 mt-2">
+                Playback uses your browser codecs. If this file does not play, use the jump button to seek in Plex instead.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
