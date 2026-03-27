@@ -835,7 +835,7 @@ export default function Library() {
             </div>
 
             {/* Title list */}
-            <div className="flex-1 min-h-0 overflow-y-auto pr-1 pb-6">
+            <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pr-1 pb-6">
             {loadingTitles ? (
               <div className="text-gray-500 text-sm">Loading...</div>
             ) : filtered.length === 0 ? (
