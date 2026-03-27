@@ -2,6 +2,7 @@ import asyncio
 import json
 import mimetypes
 import os
+import time
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException
@@ -18,6 +19,16 @@ router = APIRouter(prefix="/api", tags=["segments"])
 # Pending debounce tasks keyed by plex_guid — cancelled and replaced on each delete.
 # This ensures bulk deletes trigger at most one Plex metadata write per title.
 _pending_summary_tasks: dict[str, asyncio.Task] = {}
+
+# scan_labels changes only when the user edits Settings, so a 30-second TTL avoids
+# opening a second aiosqlite connection on every segment-panel expand.
+_scan_labels_cache: tuple[float, str] | None = None  # (monotonic_time, raw_json_str)
+_SCAN_LABELS_CACHE_TTL = 30.0
+
+
+def _invalidate_scan_labels_cache() -> None:
+    global _scan_labels_cache
+    _scan_labels_cache = None
 
 
 async def _do_refresh_summary(plex_guid: str) -> None:
@@ -238,8 +249,19 @@ async def get_plex_image(path: str):
 @router.get("/titles/{plex_guid:path}/segments")
 async def get_segments_for_title(plex_guid: str):
     """Return all segments for a specific title with all detected labels."""
-    segments = await db.get_segments_for_guid(plex_guid)
-    scan_labels_raw = json.loads(await db.get_setting("scan_labels", "[]"))
+    global _scan_labels_cache
+    now = time.monotonic()
+    if _scan_labels_cache and now - _scan_labels_cache[0] < _SCAN_LABELS_CACHE_TTL:
+        # Cache hit: fetch segments only — single DB connection open.
+        segments = await db.get_segments_for_guid(plex_guid)
+        scan_labels_raw_str = _scan_labels_cache[1]
+    else:
+        # Cache miss: fetch segments + setting together in one connection open.
+        segments, scan_labels_raw_str = await db.get_segments_for_guid_with_setting(
+            plex_guid, "scan_labels", "[]"
+        )
+        _scan_labels_cache = (now, scan_labels_raw_str)
+    scan_labels_raw = json.loads(scan_labels_raw_str)
     enabled_labels = set(scan_labels_raw) if isinstance(scan_labels_raw, list) else set()
     result = []
     for seg in segments:

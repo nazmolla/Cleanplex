@@ -5,6 +5,7 @@ from ...logger import get_logger
 from ... import database as db
 import cleanplex.plex_client as plex_mod
 from ... import scanner as scan_mod
+from .segments import _invalidate_scan_labels_cache
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -92,7 +93,11 @@ async def update_settings(payload: SettingsPayload):
             logger.info("Scan workers changing from %s to %s", current_workers, data["scan_workers"])
     
     await db.update_settings(data)
-    
+
+    # Invalidate scan_labels cache so the next segment expand reflects the new value.
+    if "scan_labels" in data:
+        _invalidate_scan_labels_cache()
+
     # Reinitialise client if connection details changed
     if "plex_url" in data or "plex_token" in data:
         settings = await db.get_all_settings()

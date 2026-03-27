@@ -263,6 +263,25 @@ async def get_segments_for_guid(plex_guid: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def get_segments_for_guid_with_setting(
+    plex_guid: str, setting_key: str, setting_default: str
+) -> tuple[list[dict], str]:
+    """Return segments for a guid and a setting value in a single connection.
+
+    Avoids the cost of opening two aiosqlite connections sequentially when
+    both pieces of data are needed together (e.g. segments + scan_labels).
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT * FROM segments WHERE plex_guid=? ORDER BY start_ms", (plex_guid,)
+        )
+        row = await (
+            await conn.execute("SELECT value FROM settings WHERE key=?", (setting_key,))
+        ).fetchone()
+        setting_val = row["value"] if row else setting_default
+        return [dict(r) for r in rows], setting_val
+
+
 async def get_segments_by_rating_key(rating_key: str) -> list[dict]:
     """Look up segments by scan_jobs.rating_key — fallback when session GUID differs from stored GUID."""
     async with get_connection() as conn:
