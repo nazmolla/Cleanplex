@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
-import { Monitor, SkipForward, Clock, Wifi, WifiOff } from 'lucide-react'
+import { Monitor, SkipForward, Clock, Wifi, WifiOff, ChevronDown, ChevronRight, Film, Tv, Zap } from 'lucide-react'
 
 interface Session {
   session_key: string
@@ -23,6 +23,15 @@ interface SkipEvent {
   client: string
 }
 
+interface QueueItem {
+  position: number
+  guid: string
+  title: string
+  media_type: string
+  content_rating: string
+  force: boolean
+}
+
 interface ScannerStatus {
   queue_size: number
   current_scan: string | null
@@ -35,6 +44,7 @@ interface ScannerStatus {
   workers_active: number
   workers_idle: number
   paused: boolean
+  queue_items: QueueItem[]
 }
 
 function msToTime(ms: number): string {
@@ -53,6 +63,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [skipLoadingKey, setSkipLoadingKey] = useState<string | null>(null)
   const [skipScanLoadingGuid, setSkipScanLoadingGuid] = useState<string | null>(null)
+  const [queueExpanded, setQueueExpanded] = useState(false)
 
   // refresh is called ad-hoc by skipNow/skipCurrentScan — reuses the same fetch logic
   // without a signal since it's a one-shot, user-triggered call.
@@ -192,6 +203,52 @@ export default function Dashboard() {
             </div>
           )}
         </div>
+      )}
+
+      {/* Scan queue */}
+      {scanner && scanner.queue_size > 0 && (
+        <section>
+          <button
+            className="w-full flex items-center justify-between text-lg font-semibold text-gray-200 mb-3 hover:text-white transition-colors"
+            onClick={() => setQueueExpanded(e => !e)}
+          >
+            <span className="flex items-center gap-2">
+              <Clock size={18} className="text-plex-orange" />
+              Scan Queue
+              <span className="text-sm font-normal text-gray-500">
+                ({scanner.queue_size} pending
+                {scanner.queue_items.some(i => i.force) && (
+                  <span className="text-plex-orange"> · {scanner.queue_items.filter(i => i.force).length} forced</span>
+                )}
+                )
+              </span>
+            </span>
+            {queueExpanded ? <ChevronDown size={16} className="text-gray-500" /> : <ChevronRight size={16} className="text-gray-500" />}
+          </button>
+          {queueExpanded && (
+            <div className="bg-plex-card border border-plex-border rounded-xl overflow-hidden">
+              <div className="divide-y divide-plex-border max-h-96 overflow-y-auto">
+                {scanner.queue_items.map(item => (
+                  <div key={item.guid} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+                    <span className="text-gray-600 w-8 text-right flex-shrink-0 tabular-nums">
+                      {item.position}
+                    </span>
+                    {item.force
+                      ? <Zap size={13} className="text-plex-orange flex-shrink-0" />
+                      : item.media_type === 'episode'
+                        ? <Tv size={13} className="text-gray-600 flex-shrink-0" />
+                        : <Film size={13} className="text-gray-600 flex-shrink-0" />
+                    }
+                    <span className="flex-1 text-gray-300 truncate">{item.title}</span>
+                    {item.content_rating && (
+                      <span className="text-xs text-gray-600 flex-shrink-0">{item.content_rating}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
       )}
 
       {/* Active sessions */}

@@ -57,7 +57,7 @@ interface ScannerStatus {
 const STATUS_TABS = ['all', 'pending', 'scanning', 'done', 'failed'] as const
 type StatusTab = typeof STATUS_TABS[number]
 
-const SORT_OPTIONS = ['title', 'date-added', 'year', 'year-release', 'segments'] as const
+const SORT_OPTIONS = ['title', 'date-added', 'year', 'year-release', 'segments', 'scanned'] as const
 type SortOption = typeof SORT_OPTIONS[number]
 
 interface ParsedEpisodeTitle {
@@ -167,6 +167,7 @@ export default function Library() {
   const [loadedSegments, setLoadedSegments] = useState<Record<string, Segment[]>>({})
   const [loadingSegments, setLoadingSegments] = useState<Set<string>>(new Set())
   const [deletingSegs, setDeletingSegs] = useState<Record<number, boolean>>({})
+  const [deletingAllSegs, setDeletingAllSegs] = useState<Record<string, boolean>>({})
   const [jumpingSegs, setJumpingSegs] = useState<Record<number, boolean>>({})
   const [previewSeg, setPreviewSeg] = useState<Segment | null>(null)
   const [machineId, setMachineId] = useState('')
@@ -262,6 +263,33 @@ export default function Library() {
     }
   }
 
+  const deleteAllTitleSegs = async (guid: string) => {
+    setDeletingAllSegs(d => ({ ...d, [guid]: true }))
+    try {
+      await api.delete(`/api/titles/${encodeURIComponent(guid)}/segments`)
+      setLoadedSegments(prev => ({ ...prev, [guid]: [] }))
+      setTitles(prev => prev.map(t => t.plex_guid === guid ? { ...t, segment_count: 0 } : t))
+    } finally {
+      setDeletingAllSegs(d => ({ ...d, [guid]: false }))
+    }
+  }
+
+  const deleteAllShowSegs = async (showKey: string, guids: string[]) => {
+    setDeletingAllSegs(d => ({ ...d, [showKey]: true }))
+    try {
+      await Promise.all(guids.map(guid => api.delete(`/api/titles/${encodeURIComponent(guid)}/segments`)))
+      setLoadedSegments(prev => {
+        const next = { ...prev }
+        for (const guid of guids) next[guid] = []
+        return next
+      })
+      const guidSet = new Set(guids)
+      setTitles(prev => prev.map(t => guidSet.has(t.plex_guid) ? { ...t, segment_count: 0 } : t))
+    } finally {
+      setDeletingAllSegs(d => ({ ...d, [showKey]: false }))
+    }
+  }
+
   const deleteSegmentInline = async (segId: number, guid: string) => {
     setDeletingSegs(d => ({ ...d, [segId]: true }))
     try {
@@ -303,7 +331,7 @@ export default function Library() {
             {/* Thumbnail: full-width on mobile, fixed sidebar on desktop */}
             <div className="w-full sm:w-40 sm:flex-shrink-0 bg-black relative">
               {seg.has_thumbnail ? (
-                <img src={seg.thumbnail_url} alt="Flagged frame" className="w-full object-cover" style={{ height: '140px' }} />
+                <img src={seg.thumbnail_url} alt="Flagged frame" loading="lazy" className="w-full object-cover" style={{ height: '140px' }} />
               ) : (
                 <div className="w-full flex items-center justify-center text-gray-700" style={{ height: '140px' }}><AlertTriangle size={20} /></div>
               )}
@@ -524,6 +552,11 @@ export default function Library() {
         aVal = a.segment_count
         bVal = b.segment_count
         break
+      case 'scanned':
+        // Titles never scanned sort to the end regardless of direction.
+        aVal = a.finished_at ? new Date(a.finished_at).getTime() : (sortDesc ? -Infinity : Infinity)
+        bVal = b.finished_at ? new Date(b.finished_at).getTime() : (sortDesc ? -Infinity : Infinity)
+        break
       default:
         aVal = a.title.toLowerCase()
         bVal = b.title.toLowerCase()
@@ -574,7 +607,26 @@ export default function Library() {
           poster_url: explicitPoster,
         }
       })
-      .sort((a, b) => a.show.localeCompare(b.show))
+      .sort((a, b) => {
+        // Sort shows by the same criterion as individual titles where applicable.
+        if (sortBy === 'scanned') {
+          const aMax = Math.max(...a.episodes.map(ep => ep.finished_at ? new Date(ep.finished_at).getTime() : 0))
+          const bMax = Math.max(...b.episodes.map(ep => ep.finished_at ? new Date(ep.finished_at).getTime() : 0))
+          return sortDesc ? bMax - aMax : aMax - bMax
+        }
+        if (sortBy === 'segments') {
+          const aSegs = a.episodes.reduce((sum, ep) => sum + ep.segment_count, 0)
+          const bSegs = b.episodes.reduce((sum, ep) => sum + ep.segment_count, 0)
+          return sortDesc ? bSegs - aSegs : aSegs - bSegs
+        }
+        if (sortBy === 'date-added') {
+          const aMax = Math.max(...a.episodes.map(ep => parseInt(ep.rating_key, 10) || 0))
+          const bMax = Math.max(...b.episodes.map(ep => parseInt(ep.rating_key, 10) || 0))
+          return sortDesc ? bMax - aMax : aMax - bMax
+        }
+        // title / year / year-release: alphabetical by show name
+        return a.show.localeCompare(b.show)
+      })
   })()
 
   const filteredGuids = filtered.map(t => t.plex_guid)
@@ -764,6 +816,7 @@ export default function Library() {
                 className="px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 focus:outline-none focus:border-plex-orange/50"
               >
                 <option value="date-added">Date Added</option>
+                <option value="scanned">Scanned Date</option>
                 <option value="title">Alphabetical</option>
                 <option value="year">Release Year</option>
                 <option value="segments">Segments</option>
@@ -846,6 +899,7 @@ export default function Library() {
                   const allIgnored = group.episodes.length > 0 && group.episodes.every(ep => ep.ignored)
                   const someIgnored = group.episodes.some(ep => ep.ignored)
                   const showOpen = expandedShows.has(group.show_key)
+                  const showSegCount = group.episodes.reduce((sum, ep) => sum + ep.segment_count, 0)
                   return (
                     <div key={group.show_key} className="bg-plex-card border border-plex-border rounded-xl p-3">
                       <div className="flex items-center gap-2">
@@ -853,6 +907,7 @@ export default function Library() {
                           <img
                             src={group.poster_url}
                             alt={`${group.show} poster`}
+                            loading="lazy"
                             className="w-16 h-24 object-cover rounded bg-plex-border flex-shrink-0"
                             onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
                           />
@@ -870,6 +925,11 @@ export default function Library() {
                           <p className="text-sm font-semibold text-gray-100 truncate">{group.show}</p>
                           <p className="text-xs text-gray-500">
                             {group.seasons.length} season{group.seasons.length !== 1 ? 's' : ''} • {group.episodes.length} episode{group.episodes.length !== 1 ? 's' : ''}
+                            {showSegCount > 0 && (
+                              <span className="ml-2 text-red-400 bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded text-xs font-medium">
+                                {showSegCount} segment{showSegCount !== 1 ? 's' : ''}
+                              </span>
+                            )}
                           </p>
                         </div>
                         {allIgnored ? (
@@ -881,6 +941,16 @@ export default function Library() {
                           <a href={plexWebUrl(group.episodes[0]?.show_rating_key || '')} target="_blank" rel="noopener noreferrer" title="Open show in Plex" className="p-1.5 text-gray-500 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors">
                             <ExternalLink size={13} />
                           </a>
+                        )}
+                        {showSegCount > 0 && (
+                          <button
+                            onClick={() => deleteAllShowSegs(group.show_key, group.episodes.map(ep => ep.plex_guid))}
+                            disabled={deletingAllSegs[group.show_key]}
+                            className="px-2 py-1 text-xs bg-red-500/20 border border-red-500/30 rounded text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-40 flex items-center gap-1"
+                            title="Delete all segments for this show"
+                          >
+                            <Trash2 size={11} /> {deletingAllSegs[group.show_key] ? 'Deleting…' : 'Delete All'}
+                          </button>
                         )}
                         <button
                           onClick={() => setIgnoredForGuids(group.episodes.map(ep => ep.plex_guid), true, group.show)}
@@ -903,6 +973,7 @@ export default function Library() {
                           {group.seasons.map(season => {
                             const seasonKey = `${group.show_key}__${season.season}`
                             const seasonOpen = expandedSeasons.has(seasonKey)
+                            const seasonSegCount = season.episodes.reduce((sum, ep) => sum + ep.segment_count, 0)
                             return (
                               <div key={seasonKey} className="border border-plex-border rounded-lg p-2">
                                 <button
@@ -911,8 +982,13 @@ export default function Library() {
                                 >
                                   <ChevronRight size={13} className={seasonOpen ? 'rotate-90 transition-transform text-gray-400' : 'transition-transform text-gray-400'} />
                                   <span className="text-xs text-gray-300 font-medium">{season.season}</span>
-                                  <span className="text-xs text-gray-500 ml-auto">
+                                  <span className="text-xs text-gray-500 ml-auto flex items-center gap-2">
                                     {season.episodes.length} episode{season.episodes.length !== 1 ? 's' : ''}
+                                    {seasonSegCount > 0 && (
+                                      <span className="text-red-400 bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded text-xs font-medium">
+                                        {seasonSegCount} seg{seasonSegCount !== 1 ? 's' : ''}
+                                      </span>
+                                    )}
                                   </span>
                                   {machineId && plexWebUrl(season.episodes[0]?.season_rating_key || '') && (
                                     <a href={plexWebUrl(season.episodes[0]?.season_rating_key || '')} target="_blank" rel="noopener noreferrer" title="Open season in Plex" onClick={e => e.stopPropagation()} className="p-1 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors flex-shrink-0">
@@ -941,6 +1017,17 @@ export default function Library() {
                                               onChange={() => toggleSelected(title.plex_guid)}
                                               className="w-4 h-4 accent-plex-orange flex-shrink-0 mt-1"
                                             />
+                                            {title.thumb_url ? (
+                                              <img
+                                                src={title.thumb_url}
+                                                alt=""
+                                                loading="lazy"
+                                                className="w-20 h-12 object-cover rounded bg-plex-border flex-shrink-0"
+                                                onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+                                              />
+                                            ) : (
+                                              <div className="w-20 h-12 bg-plex-border/50 rounded flex-shrink-0" />
+                                            )}
                                             <div className="flex-1 min-w-0">
                                               <p className="text-sm text-gray-100 truncate">
                                                 {parsed.episode}
@@ -961,6 +1048,16 @@ export default function Library() {
                                                   >
                                                     {expandedSegments.has(title.plex_guid) ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
                                                     {title.segment_count}
+                                                  </button>
+                                                )}
+                                                {title.segment_count > 0 && (
+                                                  <button
+                                                    onClick={() => deleteAllTitleSegs(title.plex_guid)}
+                                                    disabled={deletingAllSegs[title.plex_guid]}
+                                                    title="Delete all segments for this episode"
+                                                    className="p-1.5 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-40"
+                                                  >
+                                                    <Trash2 size={13} />
                                                   </button>
                                                 )}
                                                 {machineId && plexWebUrl(title.rating_key) && (
@@ -1035,6 +1132,7 @@ export default function Library() {
                         <img
                           src={title.thumb_url}
                           alt=""
+                          loading="lazy"
                           className="w-16 h-24 object-cover rounded bg-plex-border flex-shrink-0"
                           onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
                         />
@@ -1067,6 +1165,16 @@ export default function Library() {
                             >
                               {expandedSegments.has(title.plex_guid) ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
                               {title.segment_count}
+                            </button>
+                          )}
+                          {title.segment_count > 0 && (
+                            <button
+                              onClick={() => deleteAllTitleSegs(title.plex_guid)}
+                              disabled={deletingAllSegs[title.plex_guid]}
+                              title="Delete all segments for this title"
+                              className="p-1.5 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-40"
+                            >
+                              <Trash2 size={14} />
                             </button>
                           )}
                           {machineId && plexWebUrl(title.rating_key) && (

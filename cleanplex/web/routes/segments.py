@@ -1,8 +1,10 @@
 import asyncio
+import hashlib
 import json
 import mimetypes
 import os
 import time
+from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException
@@ -24,6 +26,18 @@ _pending_summary_tasks: dict[str, asyncio.Task] = {}
 # opening a second aiosqlite connection on every segment-panel expand.
 _scan_labels_cache: tuple[float, str] | None = None  # (monotonic_time, raw_json_str)
 _SCAN_LABELS_CACHE_TTL = 30.0
+
+# Plex artwork proxy cache — keyed by image path, value is (monotonic_time, bytes, content_type).
+# Artwork rarely changes; 1-hour TTL avoids repeated outbound Plex HTTP calls.
+# Capped at 300 entries to bound memory; oldest entry is evicted on overflow.
+_plex_image_cache: dict[str, tuple[float, bytes, str]] = {}
+_PLEX_IMAGE_CACHE_TTL = 3600.0
+_PLEX_IMAGE_CACHE_MAX = 300
+
+# Disk-based poster cache: persists across server restarts and survives process memory limits.
+# Files are stored under ~/.cleanplex/posters/ and refreshed when older than 7 days.
+_POSTERS_DIR = Path.home() / ".cleanplex" / "posters"
+_POSTER_DISK_TTL = 7 * 24 * 3600.0  # 7 days
 
 
 def _invalidate_scan_labels_cache() -> None:
@@ -106,15 +120,16 @@ async def sync_library(library_id: str):
         client = plex_mod.get_client()
         items = await client.get_library_items(library_id)
         logger.info(f"Syncing library {library_id}: found {len(items)} items from Plex")
-        
-        scan_ratings = set(json.loads(await db.get_setting("scan_ratings", "[]")))
+
+        # Sync all titles regardless of scan_ratings — the scanner applies that
+        # filter when deciding what to scan, not at discovery time.
         file_items = [i for i in items if i.file_path]
         existing_guids = await db.get_existing_guids([i.plex_guid for i in file_items])
 
         # Refresh mutable Plex metadata for all existing titles in one transaction
         # so that manual rating changes in Plex are reflected after sync.
         await db.refresh_scan_job_metadata_batch([
-            (i.plex_guid, i.title, i.file_path, i.rating_key, i.content_rating, i.year)
+            (i.plex_guid, i.title, i.file_path, i.rating_key, i.content_rating, i.year, i.show_guid, i.show_rating_key)
             for i in file_items if i.plex_guid in existing_guids
         ])
 
@@ -129,11 +144,6 @@ async def sync_library(library_id: str):
         for item in file_items:
             if item.plex_guid in existing_guids:
                 continue
-            if scan_ratings:
-                # Filter strictly: "" = unrated, only included when the
-                # Unrated checkbox is ticked (saves "" in scan_ratings).
-                if (item.content_rating or "") not in scan_ratings:
-                    continue
             await db.upsert_scan_job(
                 plex_guid=item.plex_guid,
                 title=item.title,
@@ -144,6 +154,8 @@ async def sync_library(library_id: str):
                 content_rating=item.content_rating,
                 media_type=item.media_type,
                 year=item.year,
+                show_guid=item.show_guid,
+                show_rating_key=item.show_rating_key,
             )
             added += 1
 
@@ -156,56 +168,61 @@ async def sync_library(library_id: str):
 
 @router.get("/libraries/{library_id}/titles")
 async def get_titles_in_library(library_id: str):
-    """Return all scan jobs (titles) for a given library, with Plex poster URLs."""
+    """Return all scan jobs (titles) for a given library, with Plex poster URLs.
+
+    Poster URLs are built from show_rating_key stored in the DB — no Plex API call
+    is needed per episode. Falls back to get_episode_show_art for rows that predate
+    the show_rating_key column (e.g. episodes synced before this change).
+    """
     jobs = await db.get_scan_jobs_by_library(library_id)
     seg_counts = await db.get_segment_counts_for_library(library_id)
 
-    # Apply scan_ratings filter to the library view so it matches what the
-    # scanner will actually process.
-    scan_ratings_raw = json.loads(await db.get_setting("scan_ratings", "[]"))
-    scan_ratings: set[str] = set(scan_ratings_raw)
-    if scan_ratings:
-        # Filter strictly by the ratings the user configured.
-        # "" (empty) = Plex left the title unrated; it only shows when the
-        # "Unrated" checkbox is ticked, which stores "" in scan_ratings.
-        jobs = [j for j in jobs if (j.get("content_rating") or "") in scan_ratings]
     try:
         client = plex_mod.get_client()
     except RuntimeError:
         client = None
 
     result = []
-    # Cache resolved show metadata by show name to avoid repeated Plex API calls.
-    # Value: (show_guid, show_title, show_poster_url, show_rating_key, season_rating_key)
-    show_meta_by_name: dict[str, tuple[str, str, str, str, str]] = {}
+    # Fallback cache for episodes whose show_rating_key is not yet in the DB.
+    # Keyed by parsed show name; value: (show_guid, show_title, poster_url, show_rating_key, season_rating_key)
+    show_meta_fallback: dict[str, tuple[str, str, str, str, str]] = {}
+
     for job in jobs:
         thumb_url = ""
         poster_url = ""
-        show_guid = ""
+        show_guid = job.get("show_guid") or ""
         show_title = ""
-        show_rating_key = ""
+        show_rating_key = job.get("show_rating_key") or ""
         season_rating_key = ""
+
         if client and job.get("rating_key"):
             rating_key = job["rating_key"]
             thumb_url = _plex_image_proxy_url(f"/library/metadata/{rating_key}/thumb")
+
             if job.get("media_type") == "episode":
-                # Resolve true show-level poster path from episode metadata.
-                # Example resolved path from Plex: /library/metadata/<showKey>/thumb/<version>
-                # which matches how Plex itself loads show posters.
-                parsed_show_name = (job.get("title", "").split(" \u2013 ")[0] or "").strip()
-                if parsed_show_name and parsed_show_name in show_meta_by_name:
-                    show_guid, show_title, poster_url, show_rating_key, season_rating_key = show_meta_by_name[parsed_show_name]
+                parsed_show_name = (job.get("title", "").split("\u2013")[0].strip())
+
+                if show_rating_key:
+                    # Fast path: build poster URL directly from DB data — zero Plex API calls.
+                    poster_url = _plex_image_proxy_url(f"/library/metadata/{show_rating_key}/thumb")
+                    show_title = parsed_show_name
                 else:
-                    resolved_show_guid, resolved_show_title, show_thumb_path, resolved_show_rk, resolved_season_rk = await client.get_episode_show_art(rating_key)
-                    show_guid = resolved_show_guid
-                    show_title = resolved_show_title or parsed_show_name
-                    poster_url = _plex_image_proxy_url(show_thumb_path) if show_thumb_path else ""
-                    show_rating_key = resolved_show_rk
-                    season_rating_key = resolved_season_rk
-                    if parsed_show_name:
-                        show_meta_by_name[parsed_show_name] = (show_guid, show_title, poster_url, show_rating_key, season_rating_key)
+                    # Slow fallback: Plex API call for old rows missing show_rating_key.
+                    # Once these rows are re-synced from Plex the fast path takes over.
+                    if parsed_show_name and parsed_show_name in show_meta_fallback:
+                        show_guid, show_title, poster_url, show_rating_key, season_rating_key = show_meta_fallback[parsed_show_name]
+                    else:
+                        resolved = await client.get_episode_show_art(rating_key)
+                        show_guid = resolved[0] or show_guid
+                        show_title = resolved[1] or parsed_show_name
+                        poster_url = _plex_image_proxy_url(resolved[2]) if resolved[2] else ""
+                        show_rating_key = resolved[3]
+                        season_rating_key = resolved[4]
+                        if parsed_show_name and (show_guid or poster_url):
+                            show_meta_fallback[parsed_show_name] = (show_guid, show_title, poster_url, show_rating_key, season_rating_key)
             else:
                 poster_url = thumb_url
+
         result.append({
             "plex_guid": job["plex_guid"],
             "rating_key": job.get("rating_key", ""),
@@ -228,12 +245,54 @@ async def get_titles_in_library(library_id: str):
     return {"titles": result}
 
 
+def _poster_disk_path(image_path: str) -> Path:
+    """Return the disk cache path for a Plex image path, keyed by MD5 of the path string."""
+    key = hashlib.md5(image_path.encode()).hexdigest()
+    return _POSTERS_DIR / key
+
+
 @router.get("/plex-image")
 async def get_plex_image(path: str):
-    """Proxy Plex images through Cleanplex so artwork loads from remote clients."""
+    """Proxy Plex images through Cleanplex so artwork loads from remote clients.
+
+    Cache hierarchy:
+    1. In-memory cache (1-hour TTL) — fastest, avoids disk reads on repeated requests.
+    2. Disk cache under ~/.cleanplex/posters/ (7-day TTL) — survives server restarts.
+    3. Plex API fetch — writes to both disk and memory caches on miss.
+    """
     if not path:
         raise HTTPException(status_code=400, detail="Missing image path")
 
+    now = time.monotonic()
+
+    # 1. In-memory cache hit
+    cached = _plex_image_cache.get(path)
+    if cached and now - cached[0] < _PLEX_IMAGE_CACHE_TTL:
+        return Response(
+            content=cached[1],
+            media_type=cached[2] or "image/jpeg",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+
+    # 2. Disk cache hit — file exists and is younger than 7 days
+    disk_path = _poster_disk_path(path)
+    if disk_path.exists():
+        age = time.time() - disk_path.stat().st_mtime
+        if age < _POSTER_DISK_TTL:
+            content = disk_path.read_bytes()
+            content_type = "image/jpeg"
+            # Warm the in-memory cache from disk so subsequent requests skip disk I/O.
+            if len(_plex_image_cache) >= _PLEX_IMAGE_CACHE_MAX:
+                oldest = min(_plex_image_cache, key=lambda k: _plex_image_cache[k][0])
+                del _plex_image_cache[oldest]
+            _plex_image_cache[path] = (now, content, content_type)
+            return Response(
+                content=content,
+                media_type=content_type,
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
+
+    # 3. Fetch from Plex — cache result to both disk and memory
     try:
         client = plex_mod.get_client()
     except RuntimeError:
@@ -243,7 +302,82 @@ async def get_plex_image(path: str):
     if not content:
         raise HTTPException(status_code=404, detail="Image not available")
 
-    return Response(content=content, media_type=content_type or "image/jpeg")
+    # Write to disk (best-effort — never fail the request on write errors).
+    try:
+        _POSTERS_DIR.mkdir(parents=True, exist_ok=True)
+        disk_path.write_bytes(content)
+    except Exception as exc:
+        logger.debug("Failed to write poster cache to disk for %s: %s", path, exc)
+
+    # Evict oldest entry when memory cache is full.
+    if len(_plex_image_cache) >= _PLEX_IMAGE_CACHE_MAX:
+        oldest = min(_plex_image_cache, key=lambda k: _plex_image_cache[k][0])
+        del _plex_image_cache[oldest]
+    _plex_image_cache[path] = (now, content, content_type)
+
+    return Response(
+        content=content,
+        media_type=content_type or "image/jpeg",
+        # Plex artwork is stable; let browsers cache for 1 hour before revalidating.
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+@router.post("/titles/segments/batch")
+async def get_segments_batch(data: dict):
+    """Return segments for a list of plex_guids in a single DB query.
+
+    Accepts {"guids": ["guid1", "guid2", ...]} and applies the same
+    label-filtering logic as the single-title endpoint.
+    """
+    guids: list[str] = data.get("guids", [])
+    if not guids:
+        return {"segments": []}
+
+    global _scan_labels_cache
+    now = time.monotonic()
+    if _scan_labels_cache and now - _scan_labels_cache[0] < _SCAN_LABELS_CACHE_TTL:
+        segments = await db.get_segments_for_guids(guids)
+        scan_labels_raw_str = _scan_labels_cache[1]
+    else:
+        # Fetch segments + setting in one connection.
+        async with db.get_connection() as conn:
+            placeholders = ",".join("?" * len(guids))
+            rows = await conn.execute_fetchall(
+                f"SELECT * FROM segments WHERE plex_guid IN ({placeholders}) ORDER BY plex_guid, start_ms",
+                guids,
+            )
+            segments = [dict(r) for r in rows]
+            row = await (await conn.execute("SELECT value FROM settings WHERE key=?", ("scan_labels",))).fetchone()
+            scan_labels_raw_str = row["value"] if row else "[]"
+        _scan_labels_cache = (now, scan_labels_raw_str)
+
+    scan_labels_raw = json.loads(scan_labels_raw_str)
+    enabled_labels = set(scan_labels_raw) if isinstance(scan_labels_raw, list) else set()
+    result = []
+    for seg in segments:
+        labels = seg.get("labels", "") or ""
+        if enabled_labels and labels:
+            filtered = [l.strip() for l in labels.split(",") if l.strip() in enabled_labels]
+            labels = ",".join(filtered)
+        result.append({
+            "id": seg["id"],
+            "plex_guid": seg["plex_guid"],
+            "title": seg["title"],
+            "start_ms": seg["start_ms"],
+            "end_ms": seg["end_ms"],
+            "confidence": seg["confidence"],
+            "has_thumbnail": bool(seg.get("thumbnail_path")),
+            "thumbnail_url": f"/api/thumbnails/{seg['id']}" if seg.get("thumbnail_path") else "",
+            "created_at": seg["created_at"],
+            "labels": labels,
+        })
+    return Response(
+        content=json.dumps({"segments": result}),
+        media_type="application/json",
+        # Short browser cache so toggling the same panel within 30 s skips the round-trip.
+        headers={"Cache-Control": "private, max-age=30"},
+    )
 
 
 @router.get("/titles/{plex_guid:path}/segments")
@@ -281,7 +415,12 @@ async def get_segments_for_title(plex_guid: str):
             "created_at": seg["created_at"],
             "labels": labels,
         })
-    return {"segments": result}
+    return Response(
+        content=json.dumps({"segments": result}),
+        media_type="application/json",
+        # Short browser cache so toggling the same panel within 30 s skips the round-trip.
+        headers={"Cache-Control": "private, max-age=30"},
+    )
 
 
 @router.post("/segments/{segment_id}/jump")

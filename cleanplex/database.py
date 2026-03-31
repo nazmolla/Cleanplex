@@ -175,6 +175,9 @@ async def init_db() -> None:
             # show_guid stores the Plex grandparentGuid for episodes so the
             # scan queue can group all episodes of a show together.
             "ALTER TABLE scan_jobs ADD COLUMN show_guid TEXT DEFAULT ''",
+            # show_rating_key stores the grandparentRatingKey so the library view
+            # can build show poster URLs from DB without any Plex API call.
+            "ALTER TABLE scan_jobs ADD COLUMN show_rating_key TEXT DEFAULT ''",
         ]
         for stmt in migrations:
             try:
@@ -259,6 +262,19 @@ async def get_segments_for_guid(plex_guid: str) -> list[dict]:
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
             "SELECT * FROM segments WHERE plex_guid=? ORDER BY start_ms", (plex_guid,)
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_segments_for_guids(plex_guids: list[str]) -> list[dict]:
+    """Return all segments for multiple guids in a single query, ordered by plex_guid, start_ms."""
+    if not plex_guids:
+        return []
+    async with get_connection() as conn:
+        placeholders = ",".join("?" * len(plex_guids))
+        rows = await conn.execute_fetchall(
+            f"SELECT * FROM segments WHERE plex_guid IN ({placeholders}) ORDER BY plex_guid, start_ms",
+            plex_guids,
         )
         return [dict(r) for r in rows]
 
@@ -362,6 +378,89 @@ async def get_segments_grouped_by_title() -> list[dict]:
         return [dict(r) for r in rows]
 
 
+# ── Analytics ─────────────────────────────────────────────────────────────────
+
+async def get_segment_counts_by_label() -> list[dict]:
+    """Return {label, count} for every label token found in segments.labels.
+
+    Labels are stored comma-separated; this uses a recursive CTE to split them
+    without requiring any SQLite extension.
+    """
+    async with get_connection() as conn:
+        # Pull all non-empty labels columns in one pass, then split in Python.
+        # SQLite has no native string-split; Python is cleaner and fast enough
+        # since the full labels column is small text.
+        rows = await conn.execute_fetchall(
+            "SELECT labels FROM segments WHERE labels IS NOT NULL AND labels != ''"
+        )
+    counts: dict[str, int] = {}
+    for row in rows:
+        for token in row["labels"].split(","):
+            token = token.strip()
+            if token:
+                counts[token] = counts.get(token, 0) + 1
+    return [{"label": k, "count": v} for k, v in sorted(counts.items(), key=lambda x: -x[1])]
+
+
+async def get_segment_counts_by_rating_for_label(label: str) -> list[dict]:
+    """Return {content_rating, count} for segments containing the given label."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            """
+            SELECT j.content_rating, COUNT(*) as count
+            FROM segments s
+            JOIN scan_jobs j ON j.plex_guid = s.plex_guid
+            WHERE (',' || s.labels || ',') LIKE ?
+            GROUP BY j.content_rating
+            ORDER BY count DESC
+            """,
+            (f"%,{label},%",),
+        )
+    return [{"content_rating": row["content_rating"] or "Unrated", "count": row["count"]} for row in rows]
+
+
+async def get_segments_for_labels(
+    labels: list[str],
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    """Return segments (with scan_job metadata) that contain any of the given labels."""
+    if not labels:
+        return []
+    async with get_connection() as conn:
+        # Build OR conditions: one LIKE per label token.
+        conditions = " OR ".join(["(',' || s.labels || ',') LIKE ?"] * len(labels))
+        params = [f"%,{lbl},%" for lbl in labels] + [limit, offset]
+        rows = await conn.execute_fetchall(
+            f"""
+            SELECT s.id, s.plex_guid, s.title, s.start_ms, s.end_ms,
+                   s.confidence, s.labels, s.thumbnail_path,
+                   j.content_rating, j.media_type, j.rating_key,
+                   j.show_rating_key
+            FROM segments s
+            JOIN scan_jobs j ON j.plex_guid = s.plex_guid
+            WHERE {conditions}
+            ORDER BY s.confidence DESC
+            LIMIT ? OFFSET ?
+            """,
+            params,
+        )
+        return [dict(r) for r in rows]
+
+
+async def count_segments_for_labels(labels: list[str]) -> int:
+    """Return total count of segments matching any of the given labels."""
+    if not labels:
+        return 0
+    async with get_connection() as conn:
+        conditions = " OR ".join(["(',' || labels || ',') LIKE ?"] * len(labels))
+        params = [f"%,{lbl},%" for lbl in labels]
+        row = await (await conn.execute(
+            f"SELECT COUNT(*) FROM segments WHERE {conditions}", params
+        )).fetchone()
+        return row[0] if row else 0
+
+
 # ── Scan Jobs ─────────────────────────────────────────────────────────────────
 
 async def upsert_scan_job(
@@ -375,13 +474,14 @@ async def upsert_scan_job(
     media_type: str = "movie",
     year: int | None = None,
     show_guid: str = "",
+    show_rating_key: str = "",
 ) -> None:
     async with get_connection() as conn:
         await conn.execute(
             "INSERT OR IGNORE INTO scan_jobs"
-            "(plex_guid, title, file_path, rating_key, library_id, library_title, content_rating, media_type, year, show_guid) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (plex_guid, title, file_path, rating_key, library_id, library_title, content_rating, media_type, year, show_guid),
+            "(plex_guid, title, file_path, rating_key, library_id, library_title, content_rating, media_type, year, show_guid, show_rating_key) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (plex_guid, title, file_path, rating_key, library_id, library_title, content_rating, media_type, year, show_guid, show_rating_key),
         )
         await conn.commit()
 
@@ -399,21 +499,25 @@ async def get_existing_guids(guids: list[str]) -> set[str]:
 
 
 async def refresh_scan_job_metadata_batch(
-    items: list[tuple[str, str, str, str, str, int | None]],
+    items: list[tuple[str, str, str, str, str, int | None, str, str]],
 ) -> None:
     """Update mutable Plex metadata for multiple existing scan jobs in a single transaction.
 
-    Each item is (plex_guid, title, file_path, rating_key, content_rating, year).
+    Each item is (plex_guid, title, file_path, rating_key, content_rating, year, show_guid, show_rating_key).
     Does not touch scan status or progress.
     """
     if not items:
         return
     async with get_connection() as conn:
         await conn.executemany(
-            "UPDATE scan_jobs SET title=?, file_path=?, rating_key=?, content_rating=?, year=?"
+            "UPDATE scan_jobs SET title=?, file_path=?, rating_key=?, content_rating=?, year=?,"
+            # Backfill show_guid/show_rating_key from Plex for episodes synced before these columns existed.
+            " show_guid=CASE WHEN ? != '' THEN ? ELSE show_guid END,"
+            " show_rating_key=CASE WHEN ? != '' THEN ? ELSE show_rating_key END"
             " WHERE plex_guid=?",
-            [(title, file_path, rating_key, content_rating, year, plex_guid)
-             for plex_guid, title, file_path, rating_key, content_rating, year in items],
+            [(title, file_path, rating_key, content_rating, year,
+              show_guid, show_guid, show_rating_key, show_rating_key, plex_guid)
+             for plex_guid, title, file_path, rating_key, content_rating, year, show_guid, show_rating_key in items],
         )
         await conn.commit()
 

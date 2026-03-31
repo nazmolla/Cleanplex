@@ -3,6 +3,7 @@ import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import Library from './pages/Library'
 import Segments from './pages/Segments'
+import Analytics from './pages/Analytics'
 import UsersPage from './pages/Users'
 import SettingsPage from './pages/Settings'
 
@@ -13,6 +14,7 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/library" element={<Library />} />
         <Route path="/segments" element={<Segments />} />
+        <Route path="/analytics" element={<Analytics />} />
         <Route path="/users" element={<UsersPage />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Routes>

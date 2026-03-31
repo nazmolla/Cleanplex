@@ -115,6 +115,60 @@ function renderLabels(labels?: string): React.ReactNode {
   )
 }
 
+function SegmentCard({
+  seg,
+  jumping,
+  deleting,
+  onPreview,
+  onJump,
+  onDelete,
+}: {
+  seg: Segment
+  jumping: Record<number, boolean>
+  deleting: Record<number, boolean>
+  onPreview: (s: Segment) => void
+  onJump: (id: number) => void
+  onDelete: (id: number) => void
+}) {
+  return (
+    <div className="bg-plex-card border border-plex-border rounded-xl overflow-hidden flex flex-col sm:flex-row">
+      <div className="w-full sm:w-40 flex-shrink-0 bg-black relative">
+        {seg.has_thumbnail ? (
+          <img src={seg.thumbnail_url} alt="Flagged frame" loading="lazy" className="w-full h-full object-cover" style={{ minHeight: '90px', maxHeight: '160px' }} />
+        ) : (
+          <div className="w-full h-24 flex items-center justify-center text-gray-700"><AlertTriangle size={20} /></div>
+        )}
+        <div className="absolute bottom-1 left-1 bg-black/70 text-xs text-gray-300 px-1.5 py-0.5 rounded">
+          {Math.round(seg.confidence * 100)}%
+        </div>
+      </div>
+      <div className="flex-1 p-3 sm:p-4 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2 mb-1">
+            <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.start_ms)}</span>
+            <span className="text-gray-600">→</span>
+            <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.end_ms)}</span>
+            <span className="text-xs text-gray-600">({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)</span>
+          </div>
+          <p className="text-xs text-gray-500">Detected {new Date(seg.created_at).toLocaleDateString()}</p>
+          {renderLabels(seg.labels)}
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button onClick={() => onPreview(seg)} title="Preview this segment in-app" className="p-2 text-gray-600 hover:text-green-400 hover:bg-green-400/10 rounded-lg transition-colors">
+            <Play size={16} />
+          </button>
+          <button onClick={() => onJump(seg.id)} disabled={jumping[seg.id]} title="Jump active Plex playback for this title to this segment" className="p-2 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors disabled:opacity-40">
+            <SkipForward size={16} />
+          </button>
+          <button onClick={() => onDelete(seg.id)} disabled={deleting[seg.id]} title="Remove this segment (false positive)" className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-40">
+            <Trash2 size={16} />
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Segments() {
   const [libraries, setLibraries] = useState<Library[]>([])
   const [selectedLib, setSelectedLib] = useState<Library | null>(null)
@@ -132,6 +186,9 @@ export default function Segments() {
   const [expandedShows, setExpandedShows] = useState<Set<string>>(new Set())
   const [expandedSeasons, setExpandedSeasons] = useState<Set<string>>(new Set())
   const [scannerStatus, setScannerStatus] = useState<ScannerStatus | null>(null)
+  const [labelFilter, setLabelFilter] = useState<Set<string>>(new Set())
+  // Set when a show or season node (not individual episode) is selected from the tree.
+  const [selectedGroup, setSelectedGroup] = useState<{ label: string; type: 'show' | 'season'; titles: Title[] } | null>(null)
   const previewVideoRef = useRef<HTMLVideoElement | null>(null)
 
   const toggleShow = (show: string) => {
@@ -173,10 +230,10 @@ export default function Segments() {
   }
 
   // Group segments by episode for TV shows
-  const groupSegmentsByEpisode = (): EpisodeGroup[] => {
+  const groupSegmentsByEpisode = (segs: Segment[]): EpisodeGroup[] => {
     const groups: Record<string, { episodeKey: string; segments: Segment[] }> = {}
-    
-    segments.forEach(seg => {
+
+    segs.forEach(seg => {
       const episodeKey = parseEpisodeKey(seg.title)
       if (!groups[episodeKey]) {
         groups[episodeKey] = { episodeKey, segments: [] }
@@ -245,7 +302,9 @@ export default function Segments() {
 
   const selectTitle = async (title: Title) => {
     setSelectedTitle(title)
+    setSelectedGroup(null)
     setExpandedEpisodes(new Set())
+    setLabelFilter(new Set())
     setLoadingSegs(true)
     try {
       const d = await api.get<{ segments: Segment[] }>(`/api/titles/${encodeURIComponent(title.plex_guid)}/segments`)
@@ -255,22 +314,48 @@ export default function Segments() {
     }
   }
 
+  const selectGroup = async (type: 'show' | 'season', label: string, episodeTitles: Title[]) => {
+    setSelectedTitle(null)
+    setSelectedGroup({ label, type, titles: episodeTitles })
+    setExpandedEpisodes(new Set())
+    setLabelFilter(new Set())
+    setLoadingSegs(true)
+    try {
+      const d = await api.post<{ segments: Segment[] }>('/api/titles/segments/batch', {
+        guids: episodeTitles.map(t => t.plex_guid),
+      })
+      setSegments(d.segments)
+    } catch {
+      setSegments([])
+    } finally {
+      setLoadingSegs(false)
+    }
+  }
+
   const deleteSegment = async (id: number) => {
     setDeleting(d => ({ ...d, [id]: true }))
     try {
       await api.delete(`/api/segments/${id}`)
-      if (selectedTitle && selectedLib) {
+      if ((selectedTitle || selectedGroup) && selectedLib) {
         const d = await api.get<{ titles: Title[] }>(`/api/libraries/${selectedLib.id}/titles`)
         const visibleTitles = d.titles.filter(t => t.segment_count > 0)
         setTitles(visibleTitles)
 
-        const stillVisible = visibleTitles.some(t => t.plex_guid === selectedTitle.plex_guid)
-        if (!stillVisible) {
-          setSelectedTitle(null)
-          setSegments([])
+        if (selectedGroup) {
+          // Reload all segments for the group — single batch request.
+          const d = await api.post<{ segments: Segment[] }>('/api/titles/segments/batch', {
+            guids: selectedGroup.titles.map(t => t.plex_guid),
+          })
+          setSegments(d.segments)
         } else {
-          const segData = await api.get<{ segments: Segment[] }>(`/api/titles/${encodeURIComponent(selectedTitle.plex_guid)}/segments`)
-          setSegments(segData.segments)
+          const stillVisible = visibleTitles.some(t => t.plex_guid === selectedTitle!.plex_guid)
+          if (!stillVisible) {
+            setSelectedTitle(null)
+            setSegments([])
+          } else {
+            const segData = await api.get<{ segments: Segment[] }>(`/api/titles/${encodeURIComponent(selectedTitle!.plex_guid)}/segments`)
+            setSegments(segData.segments)
+          }
         }
       }
     } finally {
@@ -279,16 +364,24 @@ export default function Segments() {
   }
 
   const deleteAllSegments = async () => {
-    if (!selectedTitle) return
     setDeletingAll(true)
     try {
-      await api.delete(`/api/titles/${selectedTitle.plex_guid}/segments`)
-      setSegments([])
+      if (selectedGroup) {
+        // Delete all segments for every episode in the group.
+        await Promise.all(
+          selectedGroup.titles.map(t => api.delete(`/api/titles/${encodeURIComponent(t.plex_guid)}/segments`))
+        )
+        setSegments([])
+        setSelectedGroup(null)
+      } else if (selectedTitle) {
+        await api.delete(`/api/titles/${selectedTitle.plex_guid}/segments`)
+        setSegments([])
+        setSelectedTitle(null)
+      }
       if (selectedLib) {
         const d = await api.get<{ titles: Title[] }>(`/api/libraries/${selectedLib.id}/titles`)
         setTitles(d.titles.filter(t => t.segment_count > 0))
       }
-      setSelectedTitle(null)
       setConfirmDeleteAll(false)
     } finally {
       setDeletingAll(false)
@@ -316,6 +409,53 @@ export default function Segments() {
   const closePreview = () => {
     setPreviewSeg(null)
   }
+
+  // In group view, strip the show name (and season for season-level) from the episode title for a clean header.
+  const episodeLabel = (fullTitle: string): string => {
+    const parts = fullTitle.split(' – ')
+    if (!selectedGroup) return fullTitle
+    if (selectedGroup.type === 'show' && parts.length >= 3) return parts.slice(1).join(' – ')
+    if (selectedGroup.type === 'season' && parts.length >= 3) return parts.slice(2).join(' – ')
+    return fullTitle
+  }
+
+  // Group segments by their full title for show/season group view.
+  const groupSegmentsByFullTitle = (segs: Segment[]): { title: string; segments: Segment[] }[] => {
+    const groups = new Map<string, Segment[]>()
+    for (const seg of segs) {
+      if (!groups.has(seg.title)) groups.set(seg.title, [])
+      groups.get(seg.title)!.push(seg)
+    }
+    return Array.from(groups.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([title, segs]) => ({ title, segments: segs }))
+  }
+
+  // Collect all distinct labels across the current title's segments.
+  const availableLabels: string[] = Array.from(
+    new Set(
+      segments.flatMap(s =>
+        s.labels ? s.labels.split(',').map(l => l.trim()).filter(Boolean) : []
+      )
+    )
+  ).sort()
+
+  const toggleLabelFilter = (label: string) => {
+    setLabelFilter(prev => {
+      const next = new Set(prev)
+      next.has(label) ? next.delete(label) : next.add(label)
+      return next
+    })
+  }
+
+  // When a label filter is active, keep only segments that include at least one selected label.
+  const filteredSegments = labelFilter.size === 0
+    ? segments
+    : segments.filter(s => {
+        if (!s.labels) return false
+        const segLabels = s.labels.split(',').map(l => l.trim())
+        return segLabels.some(l => labelFilter.has(l))
+      })
 
   return (
     <div className="flex gap-4 h-full overflow-hidden">
@@ -346,27 +486,43 @@ export default function Segments() {
                     // TV: Show → Season → Episode hierarchy
                     buildShowGroups().map(showGroup => (
                       <div key={showGroup.show}>
-                        <button
-                          onClick={() => toggleShow(showGroup.show)}
-                          className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded text-xs text-left text-gray-300 hover:text-gray-100 hover:bg-white/5 transition-colors"
-                        >
-                          <ChevronDown size={11} className={`flex-shrink-0 transition-transform ${expandedShows.has(showGroup.show) ? '' : '-rotate-90'}`} />
-                          <span className="truncate flex-1 font-medium">{showGroup.show}</span>
-                          <span className="flex-shrink-0 text-gray-600">{showGroup.totalSegments}</span>
-                        </button>
+                        <div className={`flex items-center gap-0.5 rounded text-xs transition-colors ${selectedGroup?.label === showGroup.show ? 'bg-white/10' : 'hover:bg-white/5'}`}>
+                          <button
+                            onClick={() => toggleShow(showGroup.show)}
+                            className="p-1.5 text-gray-500 hover:text-gray-300 flex-shrink-0"
+                            title="Expand/collapse"
+                          >
+                            <ChevronDown size={11} className={`transition-transform ${expandedShows.has(showGroup.show) ? '' : '-rotate-90'}`} />
+                          </button>
+                          <button
+                            onClick={() => selectGroup('show', showGroup.show, showGroup.seasons.flatMap(s => s.episodes))}
+                            className="flex-1 flex items-center gap-1 px-1 py-1.5 text-left text-gray-300 hover:text-gray-100 truncate"
+                          >
+                            <span className="truncate font-medium">{showGroup.show}</span>
+                            <span className="flex-shrink-0 text-gray-600 ml-auto">{showGroup.totalSegments}</span>
+                          </button>
+                        </div>
                         {expandedShows.has(showGroup.show) && showGroup.seasons.map(seasonGroup => {
                           const seasonKey = `${showGroup.show}__${seasonGroup.season}`
                           const seasonSegs = seasonGroup.episodes.reduce((s, t) => s + t.segment_count, 0)
                           return (
                             <div key={seasonKey} className="ml-3">
-                              <button
-                                onClick={() => toggleSeason(seasonKey)}
-                                className="w-full flex items-center gap-1.5 px-2 py-1 rounded text-xs text-left text-gray-400 hover:text-gray-200 hover:bg-white/5 transition-colors"
-                              >
-                                <ChevronDown size={10} className={`flex-shrink-0 transition-transform ${expandedSeasons.has(seasonKey) ? '' : '-rotate-90'}`} />
-                                <span className="truncate flex-1">{seasonGroup.season}</span>
-                                <span className="flex-shrink-0 text-gray-600 text-xs">{seasonSegs}</span>
-                              </button>
+                              <div className={`flex items-center gap-0.5 rounded text-xs transition-colors ${selectedGroup?.label === seasonGroup.season && selectedGroup?.type === 'season' ? 'bg-white/10' : 'hover:bg-white/5'}`}>
+                                <button
+                                  onClick={() => toggleSeason(seasonKey)}
+                                  className="p-1.5 text-gray-500 hover:text-gray-300 flex-shrink-0"
+                                  title="Expand/collapse"
+                                >
+                                  <ChevronDown size={10} className={`transition-transform ${expandedSeasons.has(seasonKey) ? '' : '-rotate-90'}`} />
+                                </button>
+                                <button
+                                  onClick={() => selectGroup('season', seasonGroup.season, seasonGroup.episodes)}
+                                  className="flex-1 flex items-center gap-1 px-1 py-1 text-left text-gray-400 hover:text-gray-200 truncate"
+                                >
+                                  <span className="truncate">{seasonGroup.season}</span>
+                                  <span className="flex-shrink-0 text-gray-600 text-xs ml-auto">{seasonSegs}</span>
+                                </button>
+                              </div>
                               {expandedSeasons.has(seasonKey) && seasonGroup.episodes.map(t => (
                                 <button
                                   key={t.plex_guid}
@@ -488,7 +644,7 @@ export default function Segments() {
           </div>
         )}
 
-        {!selectedTitle ? (
+        {!selectedTitle && !selectedGroup ? (
           <div className="flex items-center justify-center h-64 text-gray-600 text-sm">
             Select a title to review its segments
           </div>
@@ -496,18 +652,25 @@ export default function Segments() {
           <>
             <div className="flex items-center gap-3 mb-4 justify-between">
               <div className="flex items-center gap-3">
-                {selectedTitle.thumb_url && (
+                {selectedTitle?.thumb_url && (
                   <img
                     src={selectedTitle.thumb_url}
                     alt=""
+                    loading="lazy"
                     className="w-10 h-14 object-cover rounded bg-plex-border"
                     onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
                   />
                 )}
                 <div>
-                  <h2 className="text-lg font-semibold text-gray-100">{selectedTitle.title}</h2>
-                  <p className="text-sm text-gray-500">{segments.length} segment{segments.length !== 1 ? 's' : ''} detected</p>
-                  {selectedTitle.finished_at && (
+                  <h2 className="text-lg font-semibold text-gray-100">
+                    {selectedGroup?.label ?? selectedTitle?.title}
+                  </h2>
+                  <p className="text-sm text-gray-500">
+                    {labelFilter.size > 0
+                      ? `${filteredSegments.length} of ${segments.length} segment${segments.length !== 1 ? 's' : ''}`
+                      : `${segments.length} segment${segments.length !== 1 ? 's' : ''}`} detected
+                  </p>
+                  {selectedTitle?.finished_at && (
                     <p className="text-xs text-gray-500 mt-0.5">Scan finished: {formatFinishedAt(selectedTitle.finished_at)}</p>
                   )}
                 </div>
@@ -523,179 +686,84 @@ export default function Segments() {
               )}
             </div>
 
+            {availableLabels.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 mb-3">
+                <span className="text-xs text-gray-500 mr-1">Filter:</span>
+                {availableLabels.map(label => {
+                  const active = labelFilter.has(label)
+                  const short = label
+                    .replace('_EXPOSED', '')
+                    .replace('FEMALE_', 'F ')
+                    .replace('MALE_', 'M ')
+                    .replace('GENITALIA', 'Gen.')
+                    .replace('BREAST', 'Breast')
+                    .replace('_', ' ')
+                  return (
+                    <button
+                      key={label}
+                      onClick={() => toggleLabelFilter(label)}
+                      title={label}
+                      className={`px-2 py-0.5 text-xs rounded border transition-colors ${
+                        active
+                          ? 'bg-red-500/30 border-red-500/60 text-red-300'
+                          : 'bg-red-500/10 border-red-500/20 text-red-400 hover:bg-red-500/20'
+                      }`}
+                    >
+                      {short}
+                    </button>
+                  )
+                })}
+                {labelFilter.size > 0 && (
+                  <button
+                    onClick={() => setLabelFilter(new Set())}
+                    className="px-2 py-0.5 text-xs rounded border border-gray-600 text-gray-400 hover:text-gray-200 hover:border-gray-400 transition-colors"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            )}
+
             {loadingSegs ? (
               <div className="text-gray-500 text-sm">Loading segments...</div>
             ) : segments.length === 0 ? (
               <div className="bg-plex-card border border-plex-border rounded-xl p-8 text-center text-gray-500 text-sm">
                 No segments found for this title
               </div>
-            ) : selectedLib?.type === 'show' ? (
-              // TV show view — grouped by episode
-              <div className="space-y-2">
-                {groupSegmentsByEpisode().map(episode => (
-                  <div key={episode.episodeKey}>
-                    {/* Episode header */}
-                    <button
-                      onClick={() => toggleEpisodeExpanded(episode.episodeKey)}
-                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-plex-card border border-plex-border text-left hover:border-plex-orange/50 transition-colors"
-                    >
-                      {episode.isExpanded ? (
-                        <ChevronDown size={16} className="text-plex-orange flex-shrink-0" />
-                      ) : (
-                        <ChevronRight size={16} className="text-gray-600 flex-shrink-0" />
-                      )}
-                      <span className="font-mono text-sm font-semibold text-plex-orange">{episode.episodeKey}</span>
-                      <span className="text-sm text-gray-400 truncate">— {episode.episodeTitle.split(' – ').slice(1).join(' – ')}</span>
-                      <span className="ml-auto text-xs text-gray-500 flex-shrink-0">{episode.segments.length} segment{episode.segments.length !== 1 ? 's' : ''}</span>
-                    </button>
-
-                    {/* Episode segments */}
-                    {episode.isExpanded && (
-                      <div className="mt-2 ml-4 space-y-2 pb-2">
-                        {episode.segments.map(seg => (
-                          <div key={seg.id} className="bg-plex-card border border-plex-border rounded-xl overflow-hidden flex flex-col sm:flex-row">
-                            {/* Thumbnail */}
-                            <div className="w-full sm:w-40 flex-shrink-0 bg-black relative">
-                              {seg.has_thumbnail ? (
-                                <img
-                                  src={seg.thumbnail_url}
-                                  alt="Flagged frame"
-                                  className="w-full h-full object-cover"
-                                  style={{ minHeight: '90px', maxHeight: '160px' }}
-                                />
-                              ) : (
-                                <div className="w-full h-24 flex items-center justify-center text-gray-700">
-                                  <AlertTriangle size={20} />
-                                </div>
-                              )}
-                              <div className="absolute bottom-1 left-1 bg-black/70 text-xs text-gray-300 px-1.5 py-0.5 rounded">
-                                {Math.round(seg.confidence * 100)}%
-                              </div>
-                            </div>
-
-                            {/* Info */}
-                            <div className="flex-1 p-3 sm:p-4 flex items-center justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="flex flex-wrap items-center gap-2 mb-1">
-                                  <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.start_ms)}</span>
-                                  <span className="text-gray-600">→</span>
-                                  <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.end_ms)}</span>
-                                  <span className="text-xs text-gray-600">
-                                    ({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)
-                                  </span>
-                                </div>
-                                <p className="text-xs text-gray-500">
-                                  Detected {new Date(seg.created_at).toLocaleDateString()}
-                                </p>
-                                {renderLabels(seg.labels)}
-                              </div>
-                              <div className="flex items-center gap-2 flex-shrink-0">
-                                <button
-                                  onClick={() => openPreview(seg)}
-                                  title="Preview this segment in-app"
-                                  className="p-2 text-gray-600 hover:text-green-400 hover:bg-green-400/10 rounded-lg transition-colors"
-                                >
-                                  <Play size={16} />
-                                </button>
-                                <button
-                                  onClick={() => jumpToSegment(seg.id)}
-                                  disabled={jumping[seg.id]}
-                                  title="Jump active Plex playback for this title to this segment"
-                                  className="p-2 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors disabled:opacity-40"
-                                >
-                                  <SkipForward size={16} />
-                                </button>
-                                <button
-                                  onClick={() => deleteSegment(seg.id)}
-                                  disabled={deleting[seg.id]}
-                                  title="Remove this segment (false positive)"
-                                  className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-40"
-                                >
-                                  <Trash2 size={16} />
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
+            ) : filteredSegments.length === 0 ? (
+              <div className="bg-plex-card border border-plex-border rounded-xl p-8 text-center text-gray-500 text-sm">
+                No segments match the selected label filter
+              </div>
+            ) : selectedGroup ? (
+              // Show / season group view — episode headers with flat segments under each
+              <div className="space-y-4">
+                {groupSegmentsByFullTitle(filteredSegments).map(group => (
+                  <div key={group.title}>
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-plex-card border border-plex-border mb-2">
+                      <span className="text-sm font-semibold text-gray-200 truncate flex-1">{episodeLabel(group.title)}</span>
+                      <span className="text-xs text-gray-500 flex-shrink-0">{group.segments.length} segment{group.segments.length !== 1 ? 's' : ''}</span>
+                    </div>
+                    <div className="ml-4 space-y-2">
+                      {group.segments.map(seg => (
+                        <SegmentCard key={seg.id} seg={seg} jumping={jumping} deleting={deleting} onPreview={openPreview} onJump={jumpToSegment} onDelete={deleteSegment} />
+                      ))}
+                    </div>
                   </div>
                 ))}
               </div>
             ) : (
-              // Movie view — flat list
+              // Single episode or movie — flat list, no grouping
               <div className="grid gap-3">
-                {segments.map(seg => (
-                  <div key={seg.id} className="bg-plex-card border border-plex-border rounded-xl overflow-hidden flex flex-col sm:flex-row">
-                    {/* Thumbnail */}
-                    <div className="w-full sm:w-40 flex-shrink-0 bg-black relative">
-                      {seg.has_thumbnail ? (
-                        <img
-                          src={seg.thumbnail_url}
-                          alt="Flagged frame"
-                          className="w-full h-full object-cover"
-                          style={{ minHeight: '90px', maxHeight: '160px' }}
-                        />
-                      ) : (
-                        <div className="w-full h-24 flex items-center justify-center text-gray-700">
-                          <AlertTriangle size={20} />
-                        </div>
-                      )}
-                      <div className="absolute bottom-1 left-1 bg-black/70 text-xs text-gray-300 px-1.5 py-0.5 rounded">
-                        {Math.round(seg.confidence * 100)}%
-                      </div>
-                    </div>
-
-                    {/* Info */}
-                    <div className="flex-1 p-3 sm:p-4 flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2 mb-1">
-                          <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.start_ms)}</span>
-                          <span className="text-gray-600">→</span>
-                          <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.end_ms)}</span>
-                          <span className="text-xs text-gray-600">
-                            ({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)
-                          </span>
-                        </div>
-                        <p className="text-xs text-gray-500">
-                          Detected {new Date(seg.created_at).toLocaleDateString()}
-                        </p>
-                        {renderLabels(seg.labels)}
-                      </div>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        <button
-                          onClick={() => openPreview(seg)}
-                          title="Preview this segment in-app"
-                          className="p-2 text-gray-600 hover:text-green-400 hover:bg-green-400/10 rounded-lg transition-colors"
-                        >
-                          <Play size={16} />
-                        </button>
-                        <button
-                          onClick={() => jumpToSegment(seg.id)}
-                          disabled={jumping[seg.id]}
-                          title="Jump active Plex playback for this title to this segment"
-                          className="p-2 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors disabled:opacity-40"
-                        >
-                          <SkipForward size={16} />
-                        </button>
-                        <button
-                          onClick={() => deleteSegment(seg.id)}
-                          disabled={deleting[seg.id]}
-                          title="Remove this segment (false positive)"
-                          className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-40"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
+                {filteredSegments.map(seg => (
+                  <SegmentCard key={seg.id} seg={seg} jumping={jumping} deleting={deleting} onPreview={openPreview} onJump={jumpToSegment} onDelete={deleteSegment} />
                 ))}
               </div>
             )}
           </>
         )}
 
-        {confirmDeleteAll && selectedTitle && (
+
+        {confirmDeleteAll && (selectedTitle || selectedGroup) && (
           <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
             <div className="w-full max-w-sm bg-plex-card border border-plex-border rounded-xl overflow-hidden">
               <div className="px-4 py-3 border-b border-plex-border">
@@ -703,7 +771,7 @@ export default function Segments() {
               </div>
               <div className="p-4">
                 <p className="text-sm text-gray-300 mb-4">
-                  Are you sure you want to delete all {segments.length} segment{segments.length !== 1 ? 's' : ''} for <strong>{selectedTitle.title}</strong>? This cannot be undone.
+                  Are you sure you want to delete all {segments.length} segment{segments.length !== 1 ? 's' : ''} for <strong>{selectedGroup?.label ?? selectedTitle?.title}</strong>? This cannot be undone.
                 </p>
                 <div className="flex gap-2 justify-end">
                   <button

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -43,6 +44,10 @@ _paused: bool = False
 _current_guids: set[str] = set()
 _queued_normal: set[str] = set()
 _queued_force: set[str] = set()
+# Ordered lists mirror the sets so callers can expose the queue in execution order.
+# Force items always execute before normal items; within each group order is FIFO.
+_queued_force_ordered: list[str] = []
+_queued_normal_ordered: list[str] = []
 _queue_wakeup_event: asyncio.Event = asyncio.Event()
 _skip_requested_guids: set[str] = set()
 _worker_pool_size: int = 1
@@ -53,8 +58,38 @@ _restart_requested: bool = False
 _state_lock = asyncio.Lock()
 
 
+def is_scan_eligible(job: dict, excluded_library_ids: set[str], scan_ratings: set[str]) -> bool:
+    """Return True if a scan job should enter the normal (non-force) queue.
+
+    A title is eligible when ALL of the following hold:
+      - not marked ignored
+      - its library is not in the excluded set
+      - its content_rating is in scan_ratings, OR scan_ratings is empty (= scan all)
+
+    This is the single source of truth for normal-queue eligibility.
+    Apply it everywhere titles are bulk-enqueued (enqueue_pending, scan_library).
+    force_scan bypasses this check entirely — callers must not call this for force jobs.
+    """
+    if job.get("ignored"):
+        return False
+    if job.get("library_id") in excluded_library_ids:
+        return False
+    if scan_ratings and (job.get("content_rating") or "").strip() not in scan_ratings:
+        return False
+    return True
+
+
 def get_queue_size() -> int:
     return _scan_queue.qsize() + _force_scan_queue.qsize()
+
+
+def get_ordered_queue_guids() -> tuple[list[str], list[str]]:
+    """Return (force_guids, normal_guids) in FIFO execution order.
+
+    Force items will always execute before normal items.
+    Snapshot is taken without the lock — callers should treat it as advisory only.
+    """
+    return list(_queued_force_ordered), list(_queued_normal_ordered)
 
 
 def get_worker_pool_size() -> int:
@@ -107,9 +142,12 @@ async def force_scan_job(plex_guid: str) -> None:
         # Remove from normal queue if already there, so it goes to force queue instead.
         if plex_guid in _queued_normal:
             _queued_normal.discard(plex_guid)
+            if plex_guid in _queued_normal_ordered:
+                _queued_normal_ordered.remove(plex_guid)
             logger.info("Moved %s from normal queue to force queue", plex_guid)
         await _force_scan_queue.put(plex_guid)
         _queued_force.add(plex_guid)
+        _queued_force_ordered.append(plex_guid)
         _queue_wakeup_event.set()
     logger.warning("Force scan activated for %s — will scan immediately", plex_guid)
 
@@ -130,6 +168,7 @@ async def enqueue(plex_guid: str) -> None:
             return
         await _scan_queue.put(plex_guid)
         _queued_normal.add(plex_guid)
+        _queued_normal_ordered.append(plex_guid)
         _queue_wakeup_event.set()
 
 
@@ -158,9 +197,14 @@ async def enqueue_pending() -> None:
             except Exception:
                 break
         _queued_normal.clear()
+        _queued_normal_ordered.clear()
+
+    import json as _json
+    excluded_library_ids = set(_json.loads(await db.get_setting("excluded_library_ids", "[]")))
+    scan_ratings_set = set(_json.loads(await db.get_setting("scan_ratings", "[]")))
 
     jobs = await db.get_scan_jobs(status="pending")
-    active = [j for j in jobs if not j.get("ignored")]
+    active = [j for j in jobs if is_scan_eligible(j, excluded_library_ids, scan_ratings_set)]
 
     movies = [j for j in active if j.get("media_type") != "episode"]
     episodes = [j for j in active if j.get("media_type") == "episode"]
@@ -400,34 +444,47 @@ async def scan_video(plex_guid: str, config) -> None:
         logger.warning("No scan job found for guid %s", plex_guid)
         return
 
-    # Check if title is marked as ignored
-    is_ignored = bool(job.get("ignored", 0))
-    if is_ignored:
-        logger.info("Skipping ignored title: %s", job["title"])
-        return
+    # force_scan overrides every gate below — the user explicitly requested this scan.
+    is_force_scan = bool(job.get("force_scan", 0))
 
-    # Enforce scan_ratings: skip titles whose content rating is not in the configured list.
-    # This check must live here (not just in the watcher) because enqueue_pending() re-queues
-    # all pending jobs on startup without re-checking ratings.
-    scan_ratings: set[str] = set(config.scan_ratings) if config.scan_ratings else set()
-    if scan_ratings:
-        job_rating = (job.get("content_rating") or "").strip()
-        if job_rating not in scan_ratings:
+    if not is_force_scan:
+        # Check if the title's library is excluded from scanning.
+        import json as _json
+        excluded_library_ids = set(_json.loads(await db.get_setting("excluded_library_ids", "[]")))
+        if job.get("library_id") in excluded_library_ids:
             logger.info(
-                "Skipping %s: content rating '%s' not in scan_ratings %s",
+                "Skipping %s: library '%s' is excluded from scanning",
                 job["title"],
-                job_rating,
-                scan_ratings,
+                job.get("library_id"),
             )
             return
 
-    # Safety check: Don't scan outside window unless force-scanned
-    is_force_scan = bool(job.get("force_scan", 0))
-    if not is_force_scan and not config.is_scan_window():
-        logger.warning("Attempted to scan outside scan window (not force-scanned): %s. Re-queueing.", job["title"])
-        await db.update_scan_job_status(plex_guid, "pending")
-        await enqueue(plex_guid)
-        return
+        # Check if title is marked as ignored
+        if bool(job.get("ignored", 0)):
+            logger.info("Skipping ignored title: %s", job["title"])
+            return
+
+        # Safety-net gate: enqueue_pending() and scan_library() now pre-filter using
+        # is_scan_eligible(), but this check catches anything that slips through
+        # (e.g. a single-title enqueue from the API or MCP before the config was set).
+        scan_ratings: set[str] = set(config.scan_ratings) if config.scan_ratings else set()
+        if scan_ratings:
+            job_rating = (job.get("content_rating") or "").strip()
+            if job_rating not in scan_ratings:
+                logger.info(
+                    "Skipping %s: content rating '%s' not in scan_ratings %s",
+                    job["title"],
+                    job_rating,
+                    scan_ratings,
+                )
+                return
+
+        # Don't scan outside the configured time window unless force-scanned.
+        if not config.is_scan_window():
+            logger.warning("Attempted to scan outside scan window (not force-scanned): %s. Re-queueing.", job["title"])
+            await db.update_scan_job_status(plex_guid, "pending")
+            await enqueue(plex_guid)
+            return
 
     file_path = job["file_path"]
     title = job["title"]
@@ -492,7 +549,11 @@ async def scan_video(plex_guid: str, config) -> None:
                 end_ms = cluster_prev_ms + gap_ms
                 thumb_path = ""
                 if cluster_best_jpeg:
-                    thumb_filename = f"{plex_guid.replace('/', '_')}_{cluster_start_ms}.jpg"
+                    # Strip all characters invalid on Windows (colons, asterisks, etc.)
+                    # plex_guid values like "imdb://tt123" would otherwise produce "imdb:__tt123"
+                    # which raises [Errno 22] on Windows when used as a filename.
+                    safe_guid = re.sub(r"[^\w\-]", "_", plex_guid)
+                    thumb_filename = f"{safe_guid}_{cluster_start_ms}.jpg"
                     thumb_full = THUMBNAILS_DIR / thumb_filename
                     thumb_full.write_bytes(cluster_best_jpeg)
                     thumb_path = str(thumb_full)
@@ -626,10 +687,14 @@ async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
                 plex_guid = _force_scan_queue.get_nowait()
                 async with _state_lock:
                     _queued_force.discard(plex_guid)
+                    if plex_guid in _queued_force_ordered:
+                        _queued_force_ordered.remove(plex_guid)
             except asyncio.QueueEmpty:
                 plex_guid = await asyncio.wait_for(_scan_queue.get(), timeout=30)
                 async with _state_lock:
                     _queued_normal.discard(plex_guid)
+                    if plex_guid in _queued_normal_ordered:
+                        _queued_normal_ordered.remove(plex_guid)
         except asyncio.TimeoutError:
             # Queue is empty, respect scan window
             if not config.is_scan_window():

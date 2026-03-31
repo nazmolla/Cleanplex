@@ -4,7 +4,7 @@ from ...logger import get_logger
 import cleanplex.plex_client as plex_mod
 from ...watcher import skip_events
 from ... import database as db
-from ...scanner import get_queue_size, get_current_scan, get_current_scans, get_worker_pool_size, is_paused
+from ...scanner import get_queue_size, get_current_scan, get_current_scans, get_worker_pool_size, is_paused, get_ordered_queue_guids
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -75,6 +75,22 @@ async def scanner_status():
     effective_workers = max(1, int(get_worker_pool_size()))
     active_workers = len(active_scans)
 
+    # Build the full ordered queue: force items first, then normal.
+    force_guids, normal_guids = get_ordered_queue_guids()
+    all_queued_guids = force_guids + normal_guids
+    queued_jobs_by_guid = await db.get_scan_jobs_by_guids(all_queued_guids) if all_queued_guids else {}
+    queue_items = []
+    for pos, guid in enumerate(all_queued_guids):
+        job = queued_jobs_by_guid.get(guid)
+        queue_items.append({
+            "position": pos + 1,
+            "guid": guid,
+            "title": job["title"] if job else guid,
+            "media_type": job.get("media_type", "movie") if job else "movie",
+            "content_rating": job.get("content_rating", "") if job else "",
+            "force": guid in force_guids,
+        })
+
     return {
         "queue_size": get_queue_size(),
         "current_scan": current_guid,
@@ -87,6 +103,7 @@ async def scanner_status():
         "workers_active": active_workers,
         "workers_idle": max(0, effective_workers - active_workers),
         "paused": is_paused(),
+        "queue_items": queue_items,
     }
 
 

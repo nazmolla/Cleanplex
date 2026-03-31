@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -114,17 +116,31 @@ async def scan_library(library_id: str, body: ScanLibraryRequest):
         except RuntimeError:
             return {"ok": False, "error": "Plex not configured"}
 
-    queued = 0
-    for job in jobs:
-        if job["status"] in ("pending", "failed"):
-            await db.reset_scan_job(job["plex_guid"])
-            if body.now:
-                await scan_mod.force_scan_job(job["plex_guid"])
-            else:
-                await scan_mod.enqueue(job["plex_guid"])
-            queued += 1
+    # For the normal queue, pre-filter using the same eligibility rules as enqueue_pending()
+    # so ineligible titles never enter the queue rather than being silently dropped later.
+    excluded_library_ids: set[str] = set()
+    scan_ratings_set: set[str] = set()
+    if not body.now:
+        excluded_library_ids = set(json.loads(await db.get_setting("excluded_library_ids", "[]")))
+        scan_ratings_set = set(json.loads(await db.get_setting("scan_ratings", "[]")))
 
-    return {"ok": True, "queued": queued}
+    queued = 0
+    skipped = 0
+    for job in jobs:
+        if job["status"] not in ("pending", "failed"):
+            continue
+        if body.now:
+            await db.reset_scan_job(job["plex_guid"])
+            await scan_mod.force_scan_job(job["plex_guid"])
+            queued += 1
+        elif scan_mod.is_scan_eligible(job, excluded_library_ids, scan_ratings_set):
+            await db.reset_scan_job(job["plex_guid"])
+            await scan_mod.enqueue(job["plex_guid"])
+            queued += 1
+        else:
+            skipped += 1
+
+    return {"ok": True, "queued": queued, "skipped_ineligible": skipped}
 
 
 @router.post("/pause")

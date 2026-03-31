@@ -60,8 +60,9 @@ class MediaItem:
     library_id: str
     library_title: str
     media_type: str       # "movie" or "episode"
-    content_rating: str = ""  # e.g. "PG-13", "R", "TV-MA"
-    show_guid: str = ""       # grandparentGuid for episodes; empty for movies
+    content_rating: str = ""   # e.g. "PG-13", "R", "TV-MA"
+    show_guid: str = ""        # grandparentGuid for episodes; empty for movies
+    show_rating_key: str = ""  # grandparentRatingKey for episodes; used to build poster URLs from DB
 
 
 @dataclass
@@ -347,6 +348,7 @@ class PlexClient:
             year = getattr(item, "year", None)
 
             show_guid = getattr(item, "grandparentGuid", "") or ""
+            show_rating_key = str(getattr(item, "grandparentRatingKey", "") or "")
 
             return MediaItem(
                 rating_key=str(item.ratingKey),
@@ -360,6 +362,7 @@ class PlexClient:
                 media_type=item.type,
                 content_rating=getattr(item, "contentRating", "") or "",
                 show_guid=show_guid,
+                show_rating_key=show_rating_key,
             )
         except Exception:
             return None
