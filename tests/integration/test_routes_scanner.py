@@ -151,6 +151,17 @@ async def test_toggle_ignored_returns_404_for_missing(http_client):
     assert resp.status_code == 404
 
 
+# ── POST /api/scan/restart-scanner ───────────────────────────────────────────
+
+async def test_restart_scanner_calls_request_scanner_restart(http_client):
+    with patch("cleanplex.web.routes.scanner_routes.scan_mod.request_scanner_restart", new=AsyncMock()) as mock_restart:
+        resp = await http_client.post("/api/scan/restart-scanner")
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    # Regression: previously called without await so the coroutine was dropped
+    mock_restart.assert_awaited_once()
+
+
 # ── POST /api/scan/library/{library_id} ───────────────────────────────────────
 
 async def test_scan_library_queues_pending_jobs(http_client):

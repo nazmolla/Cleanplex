@@ -177,7 +177,7 @@ class ToggleIgnoredRequest(BaseModel):
 async def restart_scanner():
     """Trigger a clean scanner pool restart. The pool will pick up current config
     and re-order the queue within ~10 seconds."""
-    scan_mod.request_scanner_restart()
+    await scan_mod.request_scanner_restart()
     return {"ok": True}
 
 
