@@ -129,7 +129,7 @@ async def sync_library(library_id: str):
         # Refresh mutable Plex metadata for all existing titles in one transaction
         # so that manual rating changes in Plex are reflected after sync.
         await db.refresh_scan_job_metadata_batch([
-            (i.plex_guid, i.title, i.file_path, i.rating_key, i.content_rating, i.year, i.show_guid, i.show_rating_key)
+            (i.plex_guid, i.title, i.file_path, i.rating_key, i.content_rating, i.year, i.show_guid, i.show_rating_key, json.dumps(i.part_files))
             for i in file_items if i.plex_guid in existing_guids
         ])
 
@@ -156,6 +156,7 @@ async def sync_library(library_id: str):
                 year=item.year,
                 show_guid=item.show_guid,
                 show_rating_key=item.show_rating_key,
+                part_files=json.dumps(item.part_files),
             )
             added += 1
 

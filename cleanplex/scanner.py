@@ -490,10 +490,21 @@ async def scan_video(plex_guid: str, config) -> None:
     title = job["title"]
     rating_key = str(job.get("rating_key") or "")
 
-    if not os.path.isfile(file_path):
-        logger.error("Video file not found: %s", file_path)
-        await db.update_scan_job_status(plex_guid, "failed", error_msg="File not found")
-        return
+    # Parse multi-part file list; fall back to single-file if not set.
+    import json as _json_mod
+    _raw_parts = job.get("part_files") or "[]"
+    try:
+        all_parts = _json_mod.loads(_raw_parts)
+    except Exception:
+        all_parts = []
+    if not all_parts:
+        all_parts = [file_path]
+
+    for p in all_parts:
+        if not os.path.isfile(p):
+            logger.error("Video file not found: %s", p)
+            await db.update_scan_job_status(plex_guid, "failed", error_msg=f"File not found: {p}")
+            return
 
     async with _state_lock:
         _current_guids.add(plex_guid)
@@ -502,18 +513,24 @@ async def scan_video(plex_guid: str, config) -> None:
     if deleted:
         logger.info("Cleared %d previous segment(s) for %s", deleted, title)
     await db.update_scan_job_status(plex_guid, "scanning", progress=0.0)
-    logger.info("Scanning: %s", title)
+    logger.info("Scanning: %s (%d part(s))", title, len(all_parts))
 
     try:
-        duration_ms = await get_duration_ms(file_path)
-        if not duration_ms:
-            raise RuntimeError("Could not determine video duration")
-
         # Smaller interval improves recall for short scenes; configurable in settings.
         step_ms = max(1000, int(getattr(config, "scan_step_ms", 5000)))
-        total_steps = max(1, duration_ms // step_ms)
         gap_ms = max(1000, int(getattr(config, "segment_gap_ms", 12000)))
         min_hits = max(1, int(getattr(config, "segment_min_hits", 1)))
+
+        # Get duration for each part; total determines progress denominator.
+        part_durations_ms: list[int] = []
+        for p in all_parts:
+            d = await get_duration_ms(p)
+            if not d:
+                raise RuntimeError(f"Could not determine video duration for: {p}")
+            part_durations_ms.append(d)
+
+        total_duration_ms = sum(part_durations_ms)
+        total_steps = max(1, total_duration_ms // step_ms)
         segments_inserted = 0
 
         cluster_start_ms: int | None = None
@@ -577,81 +594,96 @@ async def scan_video(plex_guid: str, config) -> None:
             cluster_best_score = 0.0
             cluster_detected_labels = []
 
-        # Single ffmpeg process streams all frames; breaking early (skip/pause)
-        # triggers the generator's finally block which kills the process.
-        async for offset_ms, jpeg in extract_frames_batch(file_path, step_ms, duration_ms):
-            idx = offset_ms // step_ms
-
-            # User requested skip of this title — leave it as pending (not re-scanned).
-            if plex_guid in _skip_requested_guids:
-                _skip_requested_guids.discard(plex_guid)
-                logger.info("Scan of '%s' skipped by user request", title)
-                await db.update_scan_job_status(plex_guid, "pending", progress=0.0)
-                return
-
-            if _paused:
-                # Re-queue for later
-                await db.update_scan_job_status(plex_guid, "pending", progress=idx / total_steps)
-                await enqueue(plex_guid)
-                logger.info("Scan paused mid-way through %s, re-queued", title)
-                return
-
-            # Periodically check the scan window; abort if it has ended.
-            if idx % 5 == 0 and not is_force_scan and not config.is_scan_window():
-                await db.update_scan_job_status(plex_guid, "pending", progress=idx / total_steps)
-                await enqueue(plex_guid)
-                logger.info("Scan window ended during scan of '%s', re-queued", title)
-                if not _paused:
-                    pause_scanner()
-                return
-
-            if jpeg:
-                # asyncio.to_thread releases the event loop, allowing ffmpeg's pipe
-                # buffer to continue filling while NudeNet runs in the thread pool.
-                is_nude, score, detected_labels = await asyncio.to_thread(
-                    _classify_frame,
-                    jpeg,
-                    threshold,
-                    enabled_labels,
-                    nudenet_model,
-                    nudenet_model_path,
+        # Scan each part in sequence. For multi-part movies (CD1/CD2) all parts
+        # share the same plex_guid; frames are assigned absolute timestamps by
+        # adding part_time_offset_ms so segments span the full concatenated runtime.
+        # Plex reports viewOffset as an absolute position across all parts, so the
+        # filter engine requires no changes to match against these segments.
+        part_time_offset_ms = 0
+        for part_idx, (part_file, part_duration_ms) in enumerate(zip(all_parts, part_durations_ms)):
+            if len(all_parts) > 1:
+                logger.info(
+                    "Scanning part %d/%d for '%s': %s (offset=%dms)",
+                    part_idx + 1, len(all_parts), title, part_file, part_time_offset_ms,
                 )
-                if is_nude:
-                    if cluster_start_ms is None:
-                        cluster_start_ms = offset_ms
-                        cluster_prev_ms = offset_ms
-                        cluster_hit_count = 1
-                        cluster_best_jpeg = jpeg
-                        cluster_best_score = score
-                        cluster_detected_labels = detected_labels.copy()
-                    elif offset_ms - cluster_prev_ms > gap_ms:
-                        # Previous segment is complete; persist it immediately.
-                        await _flush_cluster()
-                        cluster_start_ms = offset_ms
-                        cluster_prev_ms = offset_ms
-                        cluster_hit_count = 1
-                        cluster_best_jpeg = jpeg
-                        cluster_best_score = score
-                        cluster_detected_labels = detected_labels.copy()
-                    else:
-                        cluster_prev_ms = offset_ms
-                        cluster_hit_count += 1
-                        if score > cluster_best_score:
+
+            async for frame_offset_ms, jpeg in extract_frames_batch(part_file, step_ms, part_duration_ms):
+                # Absolute timestamp across all parts.
+                offset_ms = part_time_offset_ms + frame_offset_ms
+                idx = offset_ms // step_ms
+
+                # User requested skip of this title — leave it as pending (not re-scanned).
+                if plex_guid in _skip_requested_guids:
+                    _skip_requested_guids.discard(plex_guid)
+                    logger.info("Scan of '%s' skipped by user request", title)
+                    await db.update_scan_job_status(plex_guid, "pending", progress=0.0)
+                    return
+
+                if _paused:
+                    # Re-queue for later
+                    await db.update_scan_job_status(plex_guid, "pending", progress=idx / total_steps)
+                    await enqueue(plex_guid)
+                    logger.info("Scan paused mid-way through %s, re-queued", title)
+                    return
+
+                # Periodically check the scan window; abort if it has ended.
+                if idx % 5 == 0 and not is_force_scan and not config.is_scan_window():
+                    await db.update_scan_job_status(plex_guid, "pending", progress=idx / total_steps)
+                    await enqueue(plex_guid)
+                    logger.info("Scan window ended during scan of '%s', re-queued", title)
+                    if not _paused:
+                        pause_scanner()
+                    return
+
+                if jpeg:
+                    # asyncio.to_thread releases the event loop, allowing ffmpeg's pipe
+                    # buffer to continue filling while NudeNet runs in the thread pool.
+                    is_nude, score, detected_labels = await asyncio.to_thread(
+                        _classify_frame,
+                        jpeg,
+                        threshold,
+                        enabled_labels,
+                        nudenet_model,
+                        nudenet_model_path,
+                    )
+                    if is_nude:
+                        if cluster_start_ms is None:
+                            cluster_start_ms = offset_ms
+                            cluster_prev_ms = offset_ms
+                            cluster_hit_count = 1
+                            cluster_best_jpeg = jpeg
+                            cluster_best_score = score
+                            cluster_detected_labels = detected_labels.copy()
+                        elif offset_ms - cluster_prev_ms > gap_ms:
+                            # Previous segment is complete; persist it immediately.
+                            await _flush_cluster()
+                            cluster_start_ms = offset_ms
+                            cluster_prev_ms = offset_ms
+                            cluster_hit_count = 1
                             cluster_best_jpeg = jpeg
                             cluster_best_score = score
                             cluster_detected_labels = detected_labels.copy()
                         else:
-                            # Merge labels from lower-confidence detections
-                            for label in detected_labels:
-                                if label not in cluster_detected_labels:
-                                    cluster_detected_labels.append(label)
+                            cluster_prev_ms = offset_ms
+                            cluster_hit_count += 1
+                            if score > cluster_best_score:
+                                cluster_best_jpeg = jpeg
+                                cluster_best_score = score
+                                cluster_detected_labels = detected_labels.copy()
+                            else:
+                                # Merge labels from lower-confidence detections
+                                for label in detected_labels:
+                                    if label not in cluster_detected_labels:
+                                        cluster_detected_labels.append(label)
 
-            progress = (idx + 1) / total_steps
-            if idx % 30 == 0:  # Update DB every ~2.5 min of video at 5 s steps
-                await db.update_scan_job_status(plex_guid, "scanning", progress=progress)
+                progress = (idx + 1) / total_steps
+                if idx % 30 == 0:  # Update DB every ~2.5 min of video at 5 s steps
+                    await db.update_scan_job_status(plex_guid, "scanning", progress=progress)
 
-        # Flush any trailing cluster at the end of scan.
-        await _flush_cluster()
+            # Flush any open cluster before the next part starts; the time gap
+            # between parts would prevent natural flushing via the gap_ms check.
+            await _flush_cluster()
+            part_time_offset_ms += part_duration_ms
 
         await db.update_scan_job_status(plex_guid, "done", progress=1.0)
 

@@ -66,6 +66,7 @@ async def scan_title(body: ScanTitleRequest):
                         content_rating=item.content_rating,
                         media_type=item.media_type,
                         year=item.year,
+                        part_files=json.dumps(item.part_files),
                     )
                     job = await db.get_scan_job_by_guid(plex_guid)
                     logger.info(f"Scan job created for {plex_guid}")
@@ -111,6 +112,7 @@ async def scan_library(library_id: str, body: ScanLibraryRequest):
                         content_rating=item.content_rating,
                         media_type=item.media_type,
                         year=item.year,
+                        part_files=json.dumps(item.part_files),
                     )
             jobs = await db.get_scan_jobs_by_library(library_id)
         except RuntimeError:

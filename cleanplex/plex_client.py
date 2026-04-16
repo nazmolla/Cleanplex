@@ -63,6 +63,10 @@ class MediaItem:
     content_rating: str = ""   # e.g. "PG-13", "R", "TV-MA"
     show_guid: str = ""        # grandparentGuid for episodes; empty for movies
     show_rating_key: str = ""  # grandparentRatingKey for episodes; used to build poster URLs from DB
+    # Ordered list of all part file paths for multi-part movies (e.g. CD1/CD2).
+    # file_path holds parts[0]; part_files holds the full list.
+    # Empty for single-file titles.
+    part_files: list = field(default_factory=list)
 
 
 @dataclass
@@ -330,9 +334,22 @@ class PlexClient:
 
     def _media_item_from_plex(self, item: Any, library_id: str, library_title: str) -> MediaItem | None:
         try:
+            # For multi-version items, try each media[] entry until we find one
+            # whose primary part file exists on disk. This prevents scan jobs
+            # pointing to stale/missing files when a version was removed.
             file_path = ""
-            if item.media and item.media[0].parts:
-                file_path = item.media[0].parts[0].file or ""
+            chosen_media = None
+            for media in (item.media or []):
+                if media.parts and media.parts[0].file:
+                    file_path = media.parts[0].file
+                    chosen_media = media
+                    break
+
+            # Collect all part file paths from the chosen media version.
+            # Multi-part movies (CD1/CD2) have multiple parts[] under one media[].
+            part_files: list[str] = []
+            if chosen_media and chosen_media.parts:
+                part_files = [p.file for p in chosen_media.parts if p.file]
 
             guid = ""
             if hasattr(item, "guids") and item.guids:
@@ -363,6 +380,7 @@ class PlexClient:
                 content_rating=getattr(item, "contentRating", "") or "",
                 show_guid=show_guid,
                 show_rating_key=show_rating_key,
+                part_files=part_files,
             )
         except Exception:
             return None
