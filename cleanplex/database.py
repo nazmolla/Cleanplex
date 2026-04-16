@@ -592,6 +592,16 @@ async def update_scan_job_status(
         await conn.commit()
 
 
+async def update_part_files(plex_guid: str, part_files: str) -> None:
+    """Update the part_files JSON for an existing scan job without touching status or progress."""
+    async with get_connection() as conn:
+        await conn.execute(
+            "UPDATE scan_jobs SET part_files=? WHERE plex_guid=?",
+            (part_files, plex_guid),
+        )
+        await conn.commit()
+
+
 async def reset_scan_job(plex_guid: str) -> None:
     async with get_connection() as conn:
         await conn.execute(

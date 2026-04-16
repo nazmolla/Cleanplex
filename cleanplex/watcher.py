@@ -98,6 +98,10 @@ async def library_watcher_loop(get_config_fn, get_client_fn) -> None:
                         )
                         await enqueue(item.plex_guid)
                         logger.info("New item queued for scan: %s", item.title)
+                    elif not existing.get("part_files") and len(item.part_files) > 1:
+                        # Backfill part_files for existing jobs that predate multi-part support.
+                        await db.update_part_files(item.plex_guid, json.dumps(item.part_files))
+                        logger.info("Updated part_files for existing job: %s (%d parts)", item.title, len(item.part_files))
 
         except Exception as exc:
             logger.warning("Library watcher error: %s", exc)
