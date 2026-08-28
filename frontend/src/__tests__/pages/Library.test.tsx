@@ -186,4 +186,22 @@ describe('Library', () => {
     unmount()
     expect(abortSpy).toHaveBeenCalled()
   })
+  // Regression: the toggle used to be gated on segment_count > 0, so deleting the
+  // last segment unmounted the only control that could collapse the open box, and
+  // zero-segment titles could never reach the import/export panel.
+  it('offers the segments toggle for a title with no segments', async () => {
+    renderLibrary()
+    await waitFor(() => screen.getAllByText('Movies')[0])
+    await act(async () => {
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: 'lib1' } })
+    })
+    await waitFor(() => screen.getAllByText('Movie B')[0])
+
+    const toggle = screen.getAllByTitle('Import/export segments')[0]
+    await act(async () => { fireEvent.click(toggle) })
+    await waitFor(() => expect(screen.getAllByText(/Skip file/i)[0]).toBeInTheDocument())
+
+    await act(async () => { fireEvent.click(screen.getAllByTitle('Import/export segments')[0]) })
+    await waitFor(() => expect(screen.queryAllByText(/Skip file/i)).toHaveLength(0))
+  })
 })
