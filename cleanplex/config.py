@@ -24,6 +24,10 @@ class Config:
     nudenet_model_path: str = ""
     segment_gap_ms: int = 12000
     segment_min_hits: int = 1
+    # SigLIP fallback for frames NudeNet did not flag (siglip_detector.py).
+    siglip_enabled: bool = False
+    siglip_threshold: float = 0.3
+    siglip_min_hits: int = 2
     scan_ratings: list[str] = field(default_factory=list)  # empty = scan all ratings
     scan_labels: list[str] = field(default_factory=lambda: [
         "FEMALE_BREAST_EXPOSED",
@@ -70,6 +74,9 @@ class Config:
             nudenet_model_path=s.get("nudenet_model_path", ""),
             segment_gap_ms=int(s.get("segment_gap_ms", "12000")),
             segment_min_hits=int(s.get("segment_min_hits", "1")),
+            siglip_enabled=s.get("siglip_enabled", "0") == "1",
+            siglip_threshold=float(s.get("siglip_threshold", "0.3")),
+            siglip_min_hits=max(1, int(s.get("siglip_min_hits", "2"))),
             scan_ratings=_labels(s.get("scan_ratings", "[]")),
             scan_labels=_labels(s.get("scan_labels", "[]")),
             scan_window_start=_time(s.get("scan_window_start", "23:00")),

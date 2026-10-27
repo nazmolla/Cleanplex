@@ -18,6 +18,10 @@ dependencies = [
     "pyyaml>=6.0",
     "python-multipart>=0.0.9",
     "Pillow>=10.0.0",
+    # Imported directly by siglip_detector; onnxruntime and opencv also come with nudenet.
+    "tokenizers>=0.15",
+    "onnxruntime>=1.17",
+    "opencv-python-headless>=4.8",
 ]
 
 [project.scripts]

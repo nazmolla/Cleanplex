@@ -520,12 +520,7 @@ export default function Analytics() {
                 controls
                 playsInline
                 className="w-full rounded-lg bg-black max-h-[50vh] sm:max-h-[70vh]"
-                src={`/api/segments/${previewSeg.id}/stream`}
-                onLoadedMetadata={e => { e.currentTarget.currentTime = previewSeg.start_ms / 1000 }}
-                onTimeUpdate={e => {
-                  const el = e.currentTarget
-                  if (el.currentTime >= previewSeg.end_ms / 1000) el.pause()
-                }}
+                src={`/api/segments/${previewSeg.id}/preview`}
               />
             </div>
           </div>

@@ -76,7 +76,7 @@ sudo journalctl -u cleanplex -f   # View logs
 
 ## Configuration
 
-All configuration is done via the **web UI** at `http://your-server:7979/settings`. No config files to edit.
+All configuration is done via the **web UI** at `http://your-server:7979/settings`, grouped into sections (Plex Connection, Playback, Scan Scope & Schedule, NudeNet Detection, SigLIP Fallback, Segments, Sharing). No config files to edit.
 
 | Setting | Default | Description |
 |---|---|---|
@@ -91,6 +91,9 @@ All configuration is done via the **web UI** at `http://your-server:7979/setting
 | Scan Window | 23:00–06:00 | Time window when background scanning runs |
 | Scanner Workers | 2 | Number of parallel scans (higher = more CPU/memory usage) |
 | Detector Labels | — | Select which nudity types to detect (and skip). Only selected labels trigger skips |
+| SigLIP Fallback | off | Second, whole-frame check that runs only on frames NudeNet did not flag, to catch scenes it misses. Follows Detector Labels. Downloads ~815 MB of model files on first use. Its segments have source `siglip` and medium severity |
+| SigLIP Threshold | 0.3 | Share (0–1) of a frame's match that must go to enabled-label descriptions. Separate from Confidence Threshold |
+| SigLIP Consecutive Frames | 2 | SigLIP-only hits must repeat on this many consecutive sampled frames before a segment is created |
 | Content Ratings | — | Only scan and filter titles matching your selected ratings |
 
 ## Segment Expansion & Skip Logic
@@ -115,8 +118,9 @@ Segments carry a **category** (nudity, sex, violence, language, drugs, fear, com
 | `mute` | Drops the volume for the segment and restores it after — used for profanity |
 
 Each user gets a 0–3 level per category. A segment fires when *level + severity* exceeds 3, so
-level 3 filters everything in that category and level 0 filters nothing. Users with no saved
-preferences have everything filtered, matching the previous behaviour.
+level 3 filters everything in that category and level 0 filters nothing. Every category starts
+at level 3 when filtering is on; lowering or turning one off is always an explicit choice, and
+changing one category never affects the others.
 
 `blank` and `blur` appear in some imported files but are **not supported**: Plex exposes playback
 position and volume, not the video stream. Those segments are logged and ignored rather than
@@ -171,7 +175,7 @@ only. Those categories are populated by importing skip files, where humans have 
 #### Dashboard
 - **Active streams** — Shows all users currently watching, with playback position and controllability status
 - **Scanner status** — Number of workers active, queue size, and which titles are currently being scanned
-- **Recent skip events** — Log of the last 50 skips with timestamp, title, user, and client
+- **Recent skips** — Every recorded skip and mute (paged, with a total), with optional from/to date filters; failed actions are flagged. History is kept for `skip_event_retention_days`
 
 #### Library
 - **Import skip files** — Upload `.skp` / `.edl` / `.mcf`, paste a timestamp list, or export segments as EDL/MCF
@@ -186,7 +190,9 @@ only. Those categories are populated by importing skip files, where humans have 
 - **Live scanner banner** — shows which titles are currently being scanned with progress bars
 - **Segment details** — Timestamp range, confidence score, and a thumbnail from the detected scene
 - **Delete false positives** — Remove incorrectly flagged segments
-- **Preview video** — In-app player to review the segment before deletion
+- **Right-click to rescan** — On a movie, episode, season or show: *Rescan now* or *Rescan tonight* (queued for the scan window)
+- **Live updates** — The open title's segments and the tree counts refresh as a rescan runs and when it finishes
+- **Preview video** — In-app player; the server cuts a short H.264/AAC clip (5 s either side) so it plays in any browser, reading the file as the service account. *Open in VLC* starts and stops at the segment
 - **Jump to segment** — Send Plex seek command to that spot in the video
 - **Scan completion info** — Timestamp when the title finished scanning
 

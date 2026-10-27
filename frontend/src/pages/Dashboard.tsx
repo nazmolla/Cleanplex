@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
-import { Monitor, SkipForward, Clock, Wifi, WifiOff, ChevronDown, ChevronRight, Film, Tv, Zap } from 'lucide-react'
+import RecentSkips from '../components/RecentSkips'
+import { Monitor, Clock, Wifi, WifiOff, ChevronDown, ChevronRight, Film, Tv, Zap } from 'lucide-react'
 
 interface Session {
   session_key: string
@@ -13,14 +14,6 @@ interface Session {
   is_controllable: boolean
   filtering_enabled: boolean
   thumb_url: string
-}
-
-interface SkipEvent {
-  time: string
-  user: string
-  title: string
-  position_ms: number
-  client: string
 }
 
 interface QueueItem {
@@ -58,7 +51,6 @@ function msToTime(ms: number): string {
 
 export default function Dashboard() {
   const [sessions, setSessions] = useState<Session[]>([])
-  const [events, setEvents] = useState<SkipEvent[]>([])
   const [scanner, setScanner] = useState<ScannerStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [skipLoadingKey, setSkipLoadingKey] = useState<string | null>(null)
@@ -69,13 +61,11 @@ export default function Dashboard() {
   // without a signal since it's a one-shot, user-triggered call.
   const refresh = async () => {
     try {
-      const [s, e, sc] = await Promise.all([
+      const [s, sc] = await Promise.all([
         api.get<{ sessions: Session[] }>('/api/sessions'),
-        api.get<{ events: SkipEvent[] }>('/api/sessions/events'),
         api.get<ScannerStatus>('/api/sessions/scanner-status'),
       ])
       setSessions(s.sessions)
-      setEvents(e.events)
       setScanner(sc)
     } catch {
       // ignore
@@ -93,13 +83,11 @@ export default function Dashboard() {
       controller.abort()
       controller = new AbortController()
       try {
-        const [s, e, sc] = await Promise.all([
+        const [s, sc] = await Promise.all([
           api.get<{ sessions: Session[] }>('/api/sessions', { signal: controller.signal }),
-          api.get<{ events: SkipEvent[] }>('/api/sessions/events', { signal: controller.signal }),
           api.get<ScannerStatus>('/api/sessions/scanner-status', { signal: controller.signal }),
         ])
         setSessions(s.sessions)
-        setEvents(e.events)
         setScanner(sc)
       } catch {
         // Ignore — includes intentional abort
@@ -319,29 +307,7 @@ export default function Dashboard() {
         )}
       </section>
 
-      {/* Recent skip events */}
-      <section>
-        <h2 className="text-lg font-semibold text-gray-200 mb-3 flex items-center gap-2">
-          <SkipForward size={18} className="text-plex-orange" />
-          Recent Skips
-        </h2>
-        {events.length === 0 ? (
-          <div className="bg-plex-card border border-plex-border rounded-xl p-6 text-center text-gray-500 text-sm">
-            No skips yet
-          </div>
-        ) : (
-          <div className="bg-plex-card border border-plex-border rounded-xl divide-y divide-plex-border">
-            {events.slice(0, 10).map((ev, i) => (
-              <div key={i} className="px-4 py-3 flex items-center gap-3 text-sm">
-                <Clock size={14} className="text-gray-600 flex-shrink-0" />
-                <span className="text-gray-500 w-20 flex-shrink-0">{ev.time.slice(11)}</span>
-                <span className="text-gray-300 truncate flex-1">{ev.title}</span>
-                <span className="text-gray-500 text-xs flex-shrink-0">{ev.user} · {ev.client}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
+      <RecentSkips />
     </div>
   )
 }

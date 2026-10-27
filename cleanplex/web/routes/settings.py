@@ -1,5 +1,7 @@
+from typing import Literal
+
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ...logger import get_logger
 from ... import database as db
@@ -57,6 +59,11 @@ class SettingsPayload(BaseModel):
     scan_ratings: str | None = None
     scan_labels: str | None = None
     profanity_wordlist: str | None = None
+    # Validated here because a bad value would otherwise only surface as a scan
+    # failure in Config.load(), long after the user pressed Save.
+    siglip_enabled: Literal["0", "1"] | None = None
+    siglip_threshold: str | None = Field(None, pattern=r"^(0(\.\d+)?|1(\.0+)?)$")
+    siglip_min_hits: str | None = Field(None, pattern=r"^[1-9]$")
 
 
 class ValidateModelPathPayload(BaseModel):

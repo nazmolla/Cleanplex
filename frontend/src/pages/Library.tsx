@@ -160,6 +160,8 @@ export default function Library() {
   const [sortBy, setSortBy] = useState<SortOption>('date-added')
   const [sortDesc, setSortDesc] = useState(true)
   const [showIgnored, setShowIgnored] = useState(false)
+  // Ratings the scanner accepts; empty means every rating is scanned.
+  const [scanRatings, setScanRatings] = useState<string[]>([])
   const [scannerStatus, setScannerStatus] = useState<ScannerStatus | null>(null)
   const [selectedGuids, setSelectedGuids] = useState<string[]>([])
   const [expandedShows, setExpandedShows] = useState<Set<string>>(new Set())
@@ -184,7 +186,10 @@ export default function Library() {
       .then(d => setMachineId(d.machine_identifier))
       .catch(() => {})
     api.get<Record<string, string>>('/api/settings')
-      .then(d => setPlexBaseUrl((d.plex_url || '').replace(/\/$/, '')))
+      .then(d => {
+        setPlexBaseUrl((d.plex_url || '').replace(/\/$/, ''))
+        try { setScanRatings(JSON.parse(d.scan_ratings || '[]')) } catch { setScanRatings([]) }
+      })
       .catch(() => {})
   }, [])
 
@@ -539,16 +544,24 @@ export default function Library() {
 
   const availableRatings = Array.from(new Set(titles.map(t => t.content_rating).filter(Boolean))).sort()
 
-  const counts: Record<string, number> = { all: titles.length }
-  for (const t of titles) counts[t.status] = (counts[t.status] ?? 0) + 1
+  // A pending title whose rating the scanner excludes will never be scanned, so it
+  // is not listed at all; already-scanned ones keep their results visible.
+  const ratingExcluded = (t: Title) =>
+    t.status === 'pending' && scanRatings.length > 0 && !scanRatings.includes((t.content_rating || '').trim())
 
-  const filtered = titles.filter(t => {
-    if (statusFilter !== 'all' && t.status !== statusFilter) return false
+  // Every filter except the status tab, so each tab's count matches what it lists.
+  const visible = titles.filter(t => {
+    if (ratingExcluded(t)) return false
     if (filter && !t.title.toLowerCase().includes(filter.toLowerCase())) return false
     if (ratingFilter !== 'all' && t.content_rating !== ratingFilter) return false
     if (!showIgnored && t.ignored) return false
     return true
   })
+
+  const counts: Record<string, number> = { all: visible.length }
+  for (const t of visible) counts[t.status] = (counts[t.status] ?? 0) + 1
+
+  const filtered = visible.filter(t => statusFilter === 'all' || t.status === statusFilter)
 
   const sorted = [...filtered].sort((a, b) => {
     let aVal: any, bVal: any
@@ -1277,15 +1290,10 @@ export default function Library() {
                 controls
                 playsInline
                 className="w-full rounded-lg bg-black max-h-[50vh] sm:max-h-[70vh]"
-                src={`/api/segments/${previewSeg.id}/stream`}
-                onLoadedMetadata={e => { e.currentTarget.currentTime = previewSeg.start_ms / 1000 }}
-                onTimeUpdate={e => {
-                  const el = e.currentTarget
-                  if (el.currentTime >= previewSeg.end_ms / 1000) el.pause()
-                }}
+                src={`/api/segments/${previewSeg.id}/preview`}
               />
               <p className="text-xs text-gray-500 mt-2">
-                Playback uses your browser codecs. If the file does not play, use the jump button to seek in Plex instead.
+                The server cuts this clip from the source with 5s either side, so it plays in any browser.
               </p>
             </div>
           </div>

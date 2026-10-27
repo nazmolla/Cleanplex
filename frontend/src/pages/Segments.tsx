@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
+import ScanContextMenu, { ScanTarget } from '../components/ScanContextMenu'
 import { Film, Tv, ChevronRight, ChevronDown, Trash2, AlertTriangle, SkipForward, Play, Tv2 } from 'lucide-react'
 
 interface Library {
@@ -198,6 +199,23 @@ export default function Segments() {
   // Set when a show or season node (not individual episode) is selected from the tree.
   const [selectedGroup, setSelectedGroup] = useState<{ label: string; type: 'show' | 'season'; titles: Title[] } | null>(null)
   const previewVideoRef = useRef<HTMLVideoElement | null>(null)
+  const [scanMenu, setScanMenu] = useState<ScanTarget | null>(null)
+  const [scanNotice, setScanNotice] = useState('')
+
+  const openScanMenu = (e: React.MouseEvent, label: string, guids: string[]) => {
+    e.preventDefault()
+    setScanMenu({ x: e.clientX, y: e.clientY, label, guids })
+  }
+
+  // One batch request per menu action, however many episodes a show has.
+  const rescan = async (target: ScanTarget, now: boolean) => {
+    try {
+      const r = await api.post<{ queued: number }>('/api/scan/titles', { plex_guids: target.guids, now })
+      setScanNotice(`${target.label}: ${r.queued} title${r.queued === 1 ? '' : 's'} queued ${now ? 'to scan now' : 'for tonight'}`)
+    } catch (err: any) {
+      setScanNotice(`Could not queue ${target.label}: ${err.message || 'unknown error'}`)
+    }
+  }
 
   const toggleShow = (show: string) => {
     setExpandedShows(prev => { const n = new Set(prev); n.has(show) ? n.delete(show) : n.add(show); return n })
@@ -293,6 +311,42 @@ export default function Segments() {
       controller.abort()
     }
   }, [])
+
+  // Keep the open title or group live while it is rescanned: refetch its segments
+  // on every scanner tick where one of its titles is scanning, plus once when that
+  // scan finishes (that is when the final segments land), and refresh the tree
+  // counts then too. Ends on its own once nothing selected is scanning.
+  const prevScanningRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (!scannerStatus) return
+    const scanning = new Set(scannerStatus.active_scans.map(a => a.guid))
+    const finished = [...prevScanningRef.current].filter(g => !scanning.has(g))
+    prevScanningRef.current = scanning
+
+    const selectedGuids = selectedGroup
+      ? selectedGroup.titles.map(t => t.plex_guid)
+      : selectedTitle ? [selectedTitle.plex_guid] : []
+    const touched = (gs: string[]) => gs.some(g => selectedGuids.includes(g))
+    const scanningSelected = touched([...scanning])
+    const finishedSelected = touched(finished)
+    if (!scanningSelected && !finishedSelected && finished.length === 0) return
+
+    const controller = new AbortController()
+    if (scanningSelected || finishedSelected) {
+      const load = selectedGroup
+        ? api.post<{ segments: Segment[] }>('/api/titles/segments/batch', { guids: selectedGuids })
+        : api.get<{ segments: Segment[] }>(`/api/titles/${encodeURIComponent(selectedGuids[0])}/segments`, {
+            signal: controller.signal,
+          })
+      load.then(d => !controller.signal.aborted && setSegments(d.segments)).catch(() => {})
+    }
+    if (finished.length > 0 && selectedLib) {
+      api.get<{ titles: Title[] }>(`/api/libraries/${selectedLib.id}/titles`, { signal: controller.signal })
+        .then(d => setTitles(d.titles.filter(t => t.segment_count > 0)))
+        .catch(() => {})
+    }
+    return () => controller.abort()
+  }, [scannerStatus])
 
   const selectLib = async (lib: Library) => {
     setSelectedLib(lib)
@@ -543,7 +597,10 @@ export default function Segments() {
                     // TV: Show → Season → Episode hierarchy
                     buildShowGroups().map(showGroup => (
                       <div key={showGroup.show}>
-                        <div className={`flex items-center gap-0.5 rounded text-xs transition-colors ${selectedGroup?.label === showGroup.show ? 'bg-white/10' : 'hover:bg-white/5'}`}>
+                        <div
+                          onContextMenu={e => openScanMenu(e, showGroup.show, showGroup.seasons.flatMap(s => s.episodes.map(t => t.plex_guid)))}
+                          className={`flex items-center gap-0.5 rounded text-xs transition-colors ${selectedGroup?.label === showGroup.show ? 'bg-white/10' : 'hover:bg-white/5'}`}
+                        >
                           <button
                             onClick={() => toggleShow(showGroup.show)}
                             className="p-1.5 text-gray-500 hover:text-gray-300 flex-shrink-0"
@@ -571,7 +628,10 @@ export default function Segments() {
                           const seasonSegs = seasonGroup.episodes.reduce((s, t) => s + t.segment_count, 0)
                           return (
                             <div key={seasonKey} className="ml-3">
-                              <div className={`flex items-center gap-0.5 rounded text-xs transition-colors ${selectedGroup?.label === seasonGroup.season && selectedGroup?.type === 'season' ? 'bg-white/10' : 'hover:bg-white/5'}`}>
+                              <div
+                                onContextMenu={e => openScanMenu(e, `${showGroup.show} – ${seasonGroup.season}`, seasonGroup.episodes.map(t => t.plex_guid))}
+                                className={`flex items-center gap-0.5 rounded text-xs transition-colors ${selectedGroup?.label === seasonGroup.season && selectedGroup?.type === 'season' ? 'bg-white/10' : 'hover:bg-white/5'}`}
+                              >
                                 <button
                                   onClick={() => toggleSeason(seasonKey)}
                                   className="p-1.5 text-gray-500 hover:text-gray-300 flex-shrink-0"
@@ -590,6 +650,7 @@ export default function Segments() {
                               {expandedSeasons.has(seasonKey) && seasonGroup.episodes.map(t => (
                                 <div
                                   key={t.plex_guid}
+                                  onContextMenu={e => openScanMenu(e, t.title, [t.plex_guid])}
                                   className={`group flex items-center rounded text-xs ml-2 transition-colors ${
                                     selectedTitle?.plex_guid === t.plex_guid
                                       ? 'bg-white/10 text-gray-100'
@@ -623,6 +684,7 @@ export default function Segments() {
                     titles.map(t => (
                       <div
                         key={t.plex_guid}
+                        onContextMenu={e => openScanMenu(e, t.title, [t.plex_guid])}
                         className={`group flex items-center rounded text-xs transition-colors ${
                           selectedTitle?.plex_guid === t.plex_guid
                             ? 'bg-white/10 text-gray-100'
@@ -656,6 +718,12 @@ export default function Segments() {
 
       {/* Segments detail panel - independent scroll */}
       <div className="flex-1 min-w-0 overflow-y-auto">
+        {scanNotice && (
+          <div className="mb-3 flex items-center justify-between bg-plex-card border border-plex-border rounded-lg px-3 py-2 text-xs text-gray-300">
+            <span>{scanNotice}</span>
+            <button onClick={() => setScanNotice('')} className="text-gray-500 hover:text-gray-200">Dismiss</button>
+          </div>
+        )}
         {/* Mobile library/title selectors */}
         <div className="flex md:hidden flex-col gap-2 mb-4">
           <h1 className="text-xl font-bold text-gray-100">Segments</h1>
@@ -993,26 +1061,17 @@ export default function Segments() {
                   controls
                   autoPlay
                   className="w-full rounded-lg bg-black max-h-[70vh]"
-                  src={`/api/segments/${previewSeg.id}/stream`}
-                  onLoadedMetadata={e => {
-                    const el = e.currentTarget
-                    el.currentTime = previewSeg.start_ms / 1000
-                  }}
-                  onTimeUpdate={e => {
-                    const el = e.currentTarget
-                    if (el.currentTime >= previewSeg.end_ms / 1000) {
-                      el.pause()
-                    }
-                  }}
+                  src={`/api/segments/${previewSeg.id}/preview`}
                 />
                 <p className="text-xs text-gray-500 mt-2">
-                  Playback uses your browser codecs. If this file does not play, use the jump button to seek in Plex instead.
+                  The server cuts this clip from the source with 5s either side, so it plays in any browser.
                 </p>
               </div>
             </div>
           </div>
         )}
       </div>
+      {scanMenu && <ScanContextMenu target={scanMenu} onScan={rescan} onClose={() => setScanMenu(null)} />}
     </div>
   )
 }

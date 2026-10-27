@@ -1,7 +1,7 @@
 import json
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ...logger import get_logger
 import cleanplex.plex_client as plex_mod
@@ -17,6 +17,14 @@ class ScanTitleRequest(BaseModel):
     plex_guid: str
     now: bool = False
     library_id: str | None = None
+
+
+class ScanTitlesRequest(BaseModel):
+    """Request body for rescanning many titles at once (a season or a whole show)."""
+    # Bounded so one request cannot pin the event loop; a long-running show is
+    # well under this.
+    plex_guids: list[str] = Field(min_length=1, max_length=5000)
+    now: bool = False
 
 
 class ScanLibraryRequest(BaseModel):
@@ -89,6 +97,26 @@ async def scan_title(body: ScanTitleRequest):
         await scan_mod.enqueue(plex_guid)
     logger.info(f"Title {plex_guid} queued. Queue size: {scan_mod.get_queue_size()}")
     return {"ok": True, "queued": plex_guid}
+
+
+@router.post("/titles")
+async def scan_titles(body: ScanTitlesRequest):
+    """Rescan titles that already have scan jobs. now=true jumps the queue; otherwise
+    they wait for the scan window. Unknown GUIDs are reported back, not created."""
+    guids = list(dict.fromkeys(body.plex_guids))
+    jobs = await db.get_scan_jobs_by_guids(guids)
+    known = [g for g in guids if g in jobs]
+    if not known:
+        raise HTTPException(status_code=404, detail="None of these titles have scan jobs")
+
+    await db.reset_scan_jobs(known)
+    for guid in known:
+        if body.now:
+            await scan_mod.force_scan_job(guid)
+        else:
+            await scan_mod.enqueue(guid)
+    logger.info("Queued %d titles for rescan (now=%s)", len(known), body.now)
+    return {"ok": True, "queued": len(known), "missing": [g for g in guids if g not in jobs]}
 
 
 @router.post("/library/{library_id}")

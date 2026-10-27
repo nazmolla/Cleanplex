@@ -20,7 +20,12 @@ interface Settings {
   excluded_library_ids: string
   scan_ratings: string
   scan_labels: string
+  siglip_enabled: string
+  siglip_threshold: string
+  siglip_min_hits: string
 }
+
+type SectionId = 'connection' | 'playback' | 'schedule' | 'nudenet' | 'siglip' | 'segments' | 'sync'
 
 interface Library {
   id: string
@@ -56,6 +61,9 @@ const DEFAULT: Settings = {
   excluded_library_ids: '[]',
   scan_ratings: '[]',
   scan_labels: '["FEMALE_BREAST_EXPOSED","FEMALE_GENITALIA_EXPOSED","MALE_GENITALIA_EXPOSED","ANUS_EXPOSED","BUTTOCKS_EXPOSED"]',
+  siglip_enabled: '0',
+  siglip_threshold: '0.3',
+  siglip_min_hits: '2',
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -90,6 +98,7 @@ export default function SettingsPage() {
   const [downloadResult, setDownloadResult] = useState<{ ok: boolean; message: string } | null>(null)
   const [restarting, setRestarting] = useState(false)
   const [restarted, setRestarted] = useState(false)
+  const [section, setSection] = useState<SectionId>('connection')
 
   useEffect(() => {
     Promise.all([
@@ -272,333 +281,419 @@ export default function SettingsPage() {
     }
   }
 
+  const h2Cls = "text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border"
   const inputCls = "w-full px-3 py-2 bg-plex-darker border border-plex-border rounded-lg text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-plex-orange/60 transition-colors"
 
   if (loading) return <div className="text-gray-500 text-sm">Loading...</div>
 
+  const sections: { id: SectionId; label: string }[] = [
+    { id: 'connection', label: 'Plex Connection' },
+    { id: 'playback', label: 'Playback' },
+    { id: 'schedule', label: 'Scan Scope & Schedule' },
+    { id: 'nudenet', label: 'NudeNet Detection' },
+    { id: 'siglip', label: 'SigLIP Fallback' },
+    { id: 'segments', label: 'Segments' },
+    { id: 'sync', label: 'Sharing' },
+  ]
+
   return (
-    <div className="max-w-xl space-y-8">
-      <h1 className="text-2xl font-bold text-gray-100">Settings</h1>
-
-      {/* Plex connection */}
-      <section>
-        <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Plex Connection</h2>
-        <div className="space-y-4">
-          <Field label="Plex Server URL" hint="e.g. http://192.168.1.10:32400">
-            <input
-              type="url"
-              value={form.plex_url}
-              onChange={set('plex_url')}
-              placeholder="http://localhost:32400"
-              className={inputCls}
-            />
-          </Field>
-
-          <Field label="Plex Token" hint="Find yours at plex.tv/devices.xml or in Plex logs">
-            <div className="relative">
-              <input
-                type={showToken ? 'text' : 'password'}
-                value={form.plex_token}
-                onChange={set('plex_token')}
-                placeholder="xxxxxxxxxxxxxxxxxxxx"
-                className={inputCls + ' pr-10'}
-              />
-              <button
-                type="button"
-                onClick={() => setShowToken(v => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
-              >
-                {showToken ? <EyeOff size={15} /> : <Eye size={15} />}
-              </button>
-            </div>
-          </Field>
-
-          <div className="flex items-center gap-3">
+    <div className="max-w-3xl">
+      <h1 className="text-2xl font-bold text-gray-100 mb-4">Settings</h1>
+      <div className="flex flex-col md:flex-row gap-6">
+        {/* Section nav: a column on desktop, a scrolling row on phones. */}
+        <nav aria-label="Settings sections" className="flex md:flex-col gap-1 md:w-48 flex-shrink-0 overflow-x-auto">
+          {sections.map(sec => (
             <button
-              onClick={testConnection}
-              disabled={testing || !form.plex_url || !form.plex_token}
-              className="px-4 py-2 text-sm bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
+              key={sec.id}
+              onClick={() => setSection(sec.id)}
+              aria-current={section === sec.id ? 'page' : undefined}
+              className={`text-left whitespace-nowrap px-3 py-2 rounded-lg text-sm transition-colors ${
+                section === sec.id ? 'bg-plex-orange/20 text-plex-orange' : 'text-gray-400 hover:text-gray-100 hover:bg-white/5'
+              }`}
             >
-              {testing && <Loader2 size={14} className="animate-spin" />}
-              Test Connection
+              {sec.label}
             </button>
-            {testResult && (
-              <span className={`flex items-center gap-1.5 text-sm ${testResult.ok ? 'text-green-400' : 'text-red-400'}`}>
-                {testResult.ok ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
-                {testResult.message}
-              </span>
-            )}
-          </div>
-        </div>
-      </section>
+          ))}
+        </nav>
 
-      {/* Filter settings */}
-      <section>
-        <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Filter Settings</h2>
-        <div className="space-y-4">
-          <Field label="Poll Interval (seconds)" hint="How often to check active streams for scenes to skip">
-            <input type="number" min="2" max="30" value={form.poll_interval} onChange={set('poll_interval')} className={inputCls} />
-          </Field>
-          <Field label="Detection Confidence Threshold" hint="Frames scoring above this value (0–1) are flagged as nudity. Lower = more sensitive.">
-            <input type="number" min="0.1" max="1" step="0.05" value={form.confidence_threshold} onChange={set('confidence_threshold')} className={inputCls} />
-          </Field>
-          <Field label="Scan Frame Interval (ms)" hint="How often frames are sampled during scanning. Lower catches more scenes but takes longer.">
-            <input type="number" min="1000" max="20000" step="500" value={form.scan_step_ms} onChange={set('scan_step_ms')} className={inputCls} />
-          </Field>
-          <Field label="Scanner Workers" hint="How many titles can be scanned in parallel. Higher values use more CPU, disk, and memory.">
-            <input type="number" min="1" max="12" step="1" value={form.scan_workers} onChange={set('scan_workers')} className={inputCls} />
-          </Field>
-          <Field label="NudeNet Model" hint="320n is bundled and fastest. 640m is downloaded by Cleanplex automatically and then cached locally.">
-            <select value={form.nudenet_model} onChange={set('nudenet_model')} className={inputCls}>
-              <option value="320n">320n (default, fast)</option>
-              <option value="640m">640m (higher accuracy, slower)</option>
-            </select>
-          </Field>
-          <Field label="Prepare 640m Model" hint="Optional: click once to pre-download 640m now. Otherwise it will auto-download on first 640m scan.">
-            <div className="mt-2 flex items-center gap-3">
-              <button
-                type="button"
-                onClick={validateModelPath}
-                disabled={validatingModel}
-                className="px-3 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
-              >
-                {validatingModel && <Loader2 size={13} className="animate-spin" />}
-                Download/Check 640m model
-              </button>
-              {modelValidationResult && (
-                <span className={`flex items-center gap-1.5 text-xs ${modelValidationResult.ok ? 'text-green-400' : 'text-red-400'}`}>
-                  {modelValidationResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-                  {modelValidationResult.message}
-                </span>
-              )}
-            </div>
-          </Field>
-          <Field label="Segment Merge Gap (ms)" hint="Flagged frames closer than this are merged into one segment.">
-            <input type="number" min="1000" max="30000" step="500" value={form.segment_gap_ms} onChange={set('segment_gap_ms')} className={inputCls} />
-          </Field>
-          <Field label="Minimum Hits Per Segment" hint="Require at least this many flagged frames in a cluster to keep a segment. Increase to reduce false positives.">
-            <input type="number" min="1" max="6" step="1" value={form.segment_min_hits} onChange={set('segment_min_hits')} className={inputCls} />
-          </Field>
-          <Field label="Skip Buffer (ms)" hint="Extra milliseconds to seek past the end of a detected segment">
-            <input type="number" min="0" step="500" value={form.skip_buffer_ms} onChange={set('skip_buffer_ms')} className={inputCls} />
-          </Field>
-        </div>
-      </section>
+        <div className="flex-1 min-w-0 space-y-8 pb-6">
+          {section === 'connection' && (
+            <section>
+              <h2 className={h2Cls}>Plex Connection</h2>
+              <div className="space-y-4">
+                <Field label="Plex Server URL" hint="e.g. http://192.168.1.10:32400">
+                  <input
+                    type="url"
+                    value={form.plex_url}
+                    onChange={set('plex_url')}
+                    placeholder="http://localhost:32400"
+                    className={inputCls}
+                  />
+                </Field>
 
-      {/* Scan schedule */}
-      <section>
-        <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Scan Schedule</h2>
-        <p className="text-xs text-gray-500 mb-4">Background video scanning only runs within this time window to avoid slowing your device during the day.</p>
-        <div className="flex gap-4">
-          <Field label="Start Time">
-            <input type="time" value={form.scan_window_start} onChange={set('scan_window_start')} className={inputCls} />
-          </Field>
-          <Field label="End Time">
-            <input type="time" value={form.scan_window_end} onChange={set('scan_window_end')} className={inputCls} />
-          </Field>
-        </div>
-      </section>
+                <Field label="Plex Token" hint="Find yours at plex.tv/devices.xml or in Plex logs">
+                  <div className="relative">
+                    <input
+                      type={showToken ? 'text' : 'password'}
+                      value={form.plex_token}
+                      onChange={set('plex_token')}
+                      placeholder="xxxxxxxxxxxxxxxxxxxx"
+                      className={inputCls + ' pr-10'}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowToken(v => !v)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+                    >
+                      {showToken ? <EyeOff size={15} /> : <Eye size={15} />}
+                    </button>
+                  </div>
+                </Field>
 
-      {/* Scan ratings */}
-      <section>
-        <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Scan Ratings</h2>
-        <p className="text-xs text-gray-500 mb-3">Only scan titles with these content ratings. Leave all unchecked to scan everything.</p>
-        <div className="grid grid-cols-2 gap-2">
-          {/* VALUE is the exact content_rating string stored in Plex / the DB.
-              Empty string ("") represents titles Plex left unrated. */}
-          {[
-            { label: 'G',            value: 'G' },
-            { label: 'PG',           value: 'PG' },
-            { label: 'PG-13',        value: 'PG-13' },
-            { label: 'R',            value: 'R' },
-            { label: 'NC-17',        value: 'NC-17' },
-            { label: 'TV-G',         value: 'TV-G' },
-            { label: 'TV-PG',        value: 'TV-PG' },
-            { label: 'TV-14',        value: 'TV-14' },
-            { label: 'TV-MA',        value: 'TV-MA' },
-            { label: 'NR',           value: 'NR' },
-            { label: 'X',            value: 'X' },
-            { label: 'Unrated (no rating set in Plex)', value: '' },
-          ].map(({ label, value }) => {
-            const selected: string[] = (() => { try { return JSON.parse(form.scan_ratings) } catch { return [] } })()
-            const checked = selected.includes(value)
-            const toggle = () => {
-              const next = checked ? selected.filter((r: string) => r !== value) : [...selected, value]
-              setForm(f => ({ ...f, scan_ratings: JSON.stringify(next) }))
-            }
-            return (
-              <label key={value === '' ? '__unrated__' : value} className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 accent-plex-orange" />
-                <span className={`text-sm ${checked ? 'text-gray-100' : 'text-gray-500'}`}>{label}</span>
-              </label>
-            )
-          })}
-        </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={testConnection}
+                    disabled={testing || !form.plex_url || !form.plex_token}
+                    className="px-4 py-2 text-sm bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
+                  >
+                    {testing && <Loader2 size={14} className="animate-spin" />}
+                    Test Connection
+                  </button>
+                  {testResult && (
+                    <span className={`flex items-center gap-1.5 text-sm ${testResult.ok ? 'text-green-400' : 'text-red-400'}`}>
+                      {testResult.ok ? <CheckCircle2 size={15} /> : <XCircle size={15} />}
+                      {testResult.message}
+                    </span>
+                  )}
+                </div>
+              </div>
       </section>
+          )}
 
-      {/* Detector labels */}
-      <section>
-        <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Detector Labels</h2>
-        <p className="text-xs text-gray-500 mb-3">Choose which NudeNet labels should count toward detection. Exposed-only labels are usually less noisy.</p>
-        <div className="grid grid-cols-2 gap-2">
-          {detectorLabels.map(label => {
-            const selected = (() => { try { return JSON.parse(form.scan_labels) } catch { return [] } })()
-            const checked = selected.includes(label)
-            const toggle = () => {
-              const next = checked ? selected.filter((r: string) => r !== label) : [...selected, label]
-              setForm(f => ({ ...f, scan_labels: JSON.stringify(next) }))
-            }
-            return (
-              <label key={label} className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 accent-plex-orange" />
-                <span className={`text-sm ${checked ? 'text-gray-100' : 'text-gray-500'}`}>{label}</span>
-              </label>
-            )
-          })}
-        </div>
+          {section === 'playback' && (
+            <section>
+              <h2 className={h2Cls}>Playback</h2>
+              <p className="text-xs text-gray-500 mb-4">How Cleanplex watches active streams and acts on segments.</p>
+              <div className="space-y-4">
+                <Field label="Poll Interval (seconds)" hint="How often to check active streams for scenes to skip">
+                            <input type="number" min="2" max="30" value={form.poll_interval} onChange={set('poll_interval')} className={inputCls} />
+                          </Field>
+                <Field label="Skip Buffer (ms)" hint="Extra milliseconds to seek past the end of a detected segment">
+                            <input type="number" min="0" step="500" value={form.skip_buffer_ms} onChange={set('skip_buffer_ms')} className={inputCls} />
+                          </Field>
+              </div>
+            </section>
+          )}
+
+          {section === 'schedule' && (
+            <>
+              <section>
+                <h2 className={h2Cls}>Scan Schedule</h2>
+                <p className="text-xs text-gray-500 mb-4">Background video scanning only runs within this time window to avoid slowing your device during the day.</p>
+                <div className="flex gap-4">
+                  <Field label="Start Time">
+                    <input type="time" value={form.scan_window_start} onChange={set('scan_window_start')} className={inputCls} />
+                  </Field>
+                  <Field label="End Time">
+                    <input type="time" value={form.scan_window_end} onChange={set('scan_window_end')} className={inputCls} />
+                  </Field>
+                </div>
       </section>
-
-      {/* Library exclusions */}
-      {libraries.length > 0 && (
-        <section>
-          <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Library Exclusions</h2>
-          <p className="text-xs text-gray-500 mb-3">Excluded libraries will not be scanned or synced.</p>
-          <div className="space-y-2">
-            {libraries.map(lib => (
-              <label key={lib.id} className="flex items-center gap-3 cursor-pointer group">
-                <input
-                  type="checkbox"
-                  checked={excludedIds.includes(lib.id)}
-                  onChange={() => toggleExcluded(lib.id)}
-                  className="w-4 h-4 accent-plex-orange"
-                />
-                <span className={`text-sm ${excludedIds.includes(lib.id) ? 'text-gray-500 line-through' : 'text-gray-200'}`}>
-                  {lib.title}
-                </span>
-                <span className="text-xs text-gray-600">{lib.type}</span>
-              </label>
-            ))}
-          </div>
+              <section>
+                <h2 className={h2Cls}>Workers</h2>
+                <div className="space-y-4">
+                  <Field label="Scanner Workers" hint="How many titles can be scanned in parallel. Higher values use more CPU, disk, and memory.">
+                              <input type="number" min="1" max="12" step="1" value={form.scan_workers} onChange={set('scan_workers')} className={inputCls} />
+                            </Field>
+                </div>
+              </section>
+              <section>
+                <h2 className={h2Cls}>Scan Ratings</h2>
+                <p className="text-xs text-gray-500 mb-3">Only scan titles with these content ratings. Leave all unchecked to scan everything.</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {/* VALUE is the exact content_rating string stored in Plex / the DB.
+                      Empty string ("") represents titles Plex left unrated. */}
+                  {[
+                    { label: 'G',            value: 'G' },
+                    { label: 'PG',           value: 'PG' },
+                    { label: 'PG-13',        value: 'PG-13' },
+                    { label: 'R',            value: 'R' },
+                    { label: 'NC-17',        value: 'NC-17' },
+                    { label: 'TV-G',         value: 'TV-G' },
+                    { label: 'TV-PG',        value: 'TV-PG' },
+                    { label: 'TV-14',        value: 'TV-14' },
+                    { label: 'TV-MA',        value: 'TV-MA' },
+                    { label: 'NR',           value: 'NR' },
+                    { label: 'X',            value: 'X' },
+                    { label: 'Unrated (no rating set in Plex)', value: '' },
+                  ].map(({ label, value }) => {
+                    const selected: string[] = (() => { try { return JSON.parse(form.scan_ratings) } catch { return [] } })()
+                    const checked = selected.includes(value)
+                    const toggle = () => {
+                      const next = checked ? selected.filter((r: string) => r !== value) : [...selected, value]
+                      setForm(f => ({ ...f, scan_ratings: JSON.stringify(next) }))
+                    }
+                    return (
+                      <label key={value === '' ? '__unrated__' : value} className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 accent-plex-orange" />
+                        <span className={`text-sm ${checked ? 'text-gray-100' : 'text-gray-500'}`}>{label}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+      </section>
+              {libraries.length > 0 && (
+                <section>
+                  <h2 className={h2Cls}>Library Exclusions</h2>
+                    <p className="text-xs text-gray-500 mb-3">Excluded libraries will not be scanned or synced.</p>
+                    <div className="space-y-2">
+                      {libraries.map(lib => (
+                        <label key={lib.id} className="flex items-center gap-3 cursor-pointer group">
+                          <input
+                            type="checkbox"
+                            checked={excludedIds.includes(lib.id)}
+                            onChange={() => toggleExcluded(lib.id)}
+                            className="w-4 h-4 accent-plex-orange"
+                          />
+                          <span className={`text-sm ${excludedIds.includes(lib.id) ? 'text-gray-500 line-through' : 'text-gray-200'}`}>
+                            {lib.title}
+                          </span>
+                          <span className="text-xs text-gray-600">{lib.type}</span>
+                        </label>
+                      ))}
+                    </div>
         </section>
-      )}
+              )}
+            </>
+          )}
 
-      {/* Segment Library Sync */}
-      <section>
-        <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Segment Library Sync</h2>
-        <p className="text-xs text-gray-500 mb-4">Crowdsource segment detections through one shared GitHub repository. Upload and download are always manual.</p>
-        <div className="space-y-4">
-          <Field label="Repository" hint="Fixed shared repository used by all users.">
-            <input
-              type="text"
-              value={syncStatus?.github_repo || 'nazmolla/cleanplex-segments'}
-              readOnly
-              className={inputCls + ' opacity-80'}
-            />
-          </Field>
-          <Field label="Instance Name" hint="Name attached to your submissions in the crowdsourced dataset.">
-            <input
-              type="text"
-              value={syncForm.instance_name}
-              onChange={e => setSyncForm(f => ({ ...f, instance_name: e.target.value }))}
-              placeholder="e.g. home-server"
-              className={inputCls}
-            />
-          </Field>
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={syncForm.sync_enabled}
-              onChange={e => setSyncForm(f => ({ ...f, sync_enabled: e.target.checked }))}
-              className="w-4 h-4 accent-plex-orange"
-            />
-            <span className="text-sm text-gray-300">Enable sync</span>
-          </label>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={saveSync}
-              disabled={savingSync}
-              className="px-4 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
-            >
-              {savingSync && <Loader2 size={13} className="animate-spin" />}
-              Save Sync Settings
-            </button>
-            {savedSync && (
-              <span className="flex items-center gap-1.5 text-xs text-green-400">
-                <CheckCircle2 size={13} /> Saved
-              </span>
-            )}
-          </div>
-          <div className="pt-2 border-t border-plex-border/50 space-y-3">
-            <p className="text-xs text-gray-500">Upload and download crowdsourced segment detections from the shared library.</p>
-            <div className="flex items-center gap-3 flex-wrap">
-              <button
-                type="button"
-                onClick={doUpload}
-                disabled={uploading || !syncForm.sync_enabled}
-                className="px-4 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
-              >
-                {uploading && <Loader2 size={13} className="animate-spin" />}
-                Upload My Segments
-              </button>
-              <button
-                type="button"
-                onClick={doDownload}
-                disabled={downloading || !syncForm.sync_enabled}
-                className="px-4 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
-              >
-                {downloading && <Loader2 size={13} className="animate-spin" />}
-                Download Crowdsourced Segments
-              </button>
-              {uploadResult && (
-                <span className={`flex items-center gap-1.5 text-xs ${uploadResult.ok ? 'text-green-400' : 'text-red-400'}`}>
-                  {uploadResult.ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
-                  {uploadResult.message}
-                </span>
-              )}
-              {downloadResult && (
-                <span className={`flex items-center gap-1.5 text-xs ${downloadResult.ok ? 'text-green-400' : 'text-red-400'}`}>
-                  {downloadResult.ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
-                  {downloadResult.message}
-                </span>
-              )}
-            </div>
-            {syncStatus?.last_sync_time && (
-              <p className="text-xs text-gray-600">Last sync: {syncStatus.last_sync_time}</p>
-            )}
-          </div>
-        </div>
+          {section === 'nudenet' && (
+            <>
+              <section>
+                <h2 className={h2Cls}>NudeNet Model</h2>
+                <div className="space-y-4">
+                  <Field label="NudeNet Model" hint="320n is bundled and fastest. 640m is downloaded by Cleanplex automatically and then cached locally.">
+                              <select value={form.nudenet_model} onChange={set('nudenet_model')} className={inputCls}>
+                                <option value="320n">320n (default, fast)</option>
+                                <option value="640m">640m (higher accuracy, slower)</option>
+                              </select>
+                            </Field>
+                  <Field label="Prepare 640m Model" hint="Optional: click once to pre-download 640m now. Otherwise it will auto-download on first 640m scan.">
+                              <div className="mt-2 flex items-center gap-3">
+                                <button
+                                  type="button"
+                                  onClick={validateModelPath}
+                                  disabled={validatingModel}
+                                  className="px-3 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
+                                >
+                                  {validatingModel && <Loader2 size={13} className="animate-spin" />}
+                                  Download/Check 640m model
+                                </button>
+                                {modelValidationResult && (
+                                  <span className={`flex items-center gap-1.5 text-xs ${modelValidationResult.ok ? 'text-green-400' : 'text-red-400'}`}>
+                                    {modelValidationResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                                    {modelValidationResult.message}
+                                  </span>
+                                )}
+                              </div>
+                            </Field>
+                  <Field label="Detection Confidence Threshold" hint="Frames scoring above this value (0–1) are flagged as nudity. Lower = more sensitive.">
+                              <input type="number" min="0.1" max="1" step="0.05" value={form.confidence_threshold} onChange={set('confidence_threshold')} className={inputCls} />
+                            </Field>
+                  <Field label="Scan Frame Interval (ms)" hint="How often frames are sampled during scanning. Lower catches more scenes but takes longer.">
+                              <input type="number" min="1000" max="20000" step="500" value={form.scan_step_ms} onChange={set('scan_step_ms')} className={inputCls} />
+                            </Field>
+                </div>
+              </section>
+              <section>
+                <h2 className={h2Cls}>Detector Labels</h2>
+                <p className="text-xs text-gray-500 mb-3">Choose which NudeNet labels should count toward detection. Exposed-only labels are usually less noisy.</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {detectorLabels.map(label => {
+                    const selected = (() => { try { return JSON.parse(form.scan_labels) } catch { return [] } })()
+                    const checked = selected.includes(label)
+                    const toggle = () => {
+                      const next = checked ? selected.filter((r: string) => r !== label) : [...selected, label]
+                      setForm(f => ({ ...f, scan_labels: JSON.stringify(next) }))
+                    }
+                    return (
+                      <label key={label} className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 accent-plex-orange" />
+                        <span className={`text-sm ${checked ? 'text-gray-100' : 'text-gray-500'}`}>{label}</span>
+                      </label>
+                    )
+                  })}
+                </div>
       </section>
+            </>
+          )}
 
-      {/* Save */}
-      <div className="flex flex-wrap items-center gap-3">
-        <button
-          onClick={save}
-          disabled={saving}
-          className="px-6 py-2.5 bg-plex-orange text-black font-semibold text-sm rounded-lg hover:bg-plex-orange/90 transition-colors disabled:opacity-50 flex items-center gap-2"
-        >
-          {saving && <Loader2 size={14} className="animate-spin" />}
-          Save Settings
-        </button>
-        {saved && (
-          <span className="flex items-center gap-1.5 text-sm text-green-400">
-            <CheckCircle2 size={15} /> Saved
-          </span>
-        )}
-        <button
-          onClick={restartScanner}
-          disabled={restarting}
-          className="px-4 py-2.5 bg-plex-card border border-plex-border text-sm rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-50 flex items-center gap-2"
-          title="Restart the scanner pool — picks up config changes and reorders the queue"
-        >
-          <RotateCcw size={14} className={restarting ? 'animate-spin' : ''} />
-          Restart Scanner
-        </button>
-        {restarted && (
-          <span className="flex items-center gap-1.5 text-sm text-green-400">
-            <CheckCircle2 size={15} /> Restarting — queue will reorder within ~10s
-          </span>
-        )}
+          {section === 'siglip' && (
+            <section>
+              <h2 className={h2Cls}>SigLIP Fallback</h2>
+              <p className="text-xs text-gray-500 mb-4">
+                A light whole-frame check that only looks at frames NudeNet did not flag, to catch scenes it misses.
+                It follows the Detector Labels: enabled labels count as hits, the others as counter-examples.
+                Its segments are marked <span className="text-gray-300">siglip</span> with medium severity.
+                Turning it on downloads about 815 MB of model files on the next scan.
+              </p>
+              <div className="space-y-4">
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.siglip_enabled === '1'}
+                    onChange={e => setForm(f => ({ ...f, siglip_enabled: e.target.checked ? '1' : '0' }))}
+                    className="w-4 h-4 accent-plex-orange"
+                  />
+                  <span className="text-sm text-gray-300">Enable SigLIP fallback</span>
+                </label>
+                <Field label="SigLIP Threshold" hint="Share of the frame's match that goes to enabled-label descriptions (0–1). Separate from the NudeNet threshold. Lower = catches more, with more false positives.">
+                  <input type="number" min="0.05" max="0.95" step="0.05" value={form.siglip_threshold} onChange={set('siglip_threshold')} disabled={form.siglip_enabled !== '1'} className={inputCls + ' disabled:opacity-40'} />
+                </Field>
+                <Field label="Consecutive Frames Required" hint="A SigLIP-only hit must repeat on this many consecutive sampled frames before a segment is created. Filters one-off false alarms.">
+                  <input type="number" min="1" max="6" step="1" value={form.siglip_min_hits} onChange={set('siglip_min_hits')} disabled={form.siglip_enabled !== '1'} className={inputCls + ' disabled:opacity-40'} />
+                </Field>
+              </div>
+            </section>
+          )}
+
+          {section === 'segments' && (
+            <section>
+              <h2 className={h2Cls}>Segments</h2>
+              <p className="text-xs text-gray-500 mb-4">How flagged frames are grouped into segments.</p>
+              <div className="space-y-4">
+                <Field label="Segment Merge Gap (ms)" hint="Flagged frames closer than this are merged into one segment.">
+                            <input type="number" min="1000" max="30000" step="500" value={form.segment_gap_ms} onChange={set('segment_gap_ms')} className={inputCls} />
+                          </Field>
+                <Field label="Minimum Hits Per Segment" hint="Require at least this many flagged frames in a cluster to keep a segment. Increase to reduce false positives.">
+                            <input type="number" min="1" max="6" step="1" value={form.segment_min_hits} onChange={set('segment_min_hits')} className={inputCls} />
+                          </Field>
+              </div>
+            </section>
+          )}
+
+          {section === 'sync' && (
+            <section>
+              <h2 className={h2Cls}>Segment Library Sync</h2>
+              <p className="text-xs text-gray-500 mb-4">Crowdsource segment detections through one shared GitHub repository. Upload and download are always manual.</p>
+              <div className="space-y-4">
+                <Field label="Repository" hint="Fixed shared repository used by all users.">
+                  <input
+                    type="text"
+                    value={syncStatus?.github_repo || 'nazmolla/cleanplex-segments'}
+                    readOnly
+                    className={inputCls + ' opacity-80'}
+                  />
+                </Field>
+                <Field label="Instance Name" hint="Name attached to your submissions in the crowdsourced dataset.">
+                  <input
+                    type="text"
+                    value={syncForm.instance_name}
+                    onChange={e => setSyncForm(f => ({ ...f, instance_name: e.target.value }))}
+                    placeholder="e.g. home-server"
+                    className={inputCls}
+                  />
+                </Field>
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={syncForm.sync_enabled}
+                    onChange={e => setSyncForm(f => ({ ...f, sync_enabled: e.target.checked }))}
+                    className="w-4 h-4 accent-plex-orange"
+                  />
+                  <span className="text-sm text-gray-300">Enable sync</span>
+                </label>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={saveSync}
+                    disabled={savingSync}
+                    className="px-4 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
+                  >
+                    {savingSync && <Loader2 size={13} className="animate-spin" />}
+                    Save Sync Settings
+                  </button>
+                  {savedSync && (
+                    <span className="flex items-center gap-1.5 text-xs text-green-400">
+                      <CheckCircle2 size={13} /> Saved
+                    </span>
+                  )}
+                </div>
+                <div className="pt-2 border-t border-plex-border/50 space-y-3">
+                  <p className="text-xs text-gray-500">Upload and download crowdsourced segment detections from the shared library.</p>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={doUpload}
+                      disabled={uploading || !syncForm.sync_enabled}
+                      className="px-4 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
+                    >
+                      {uploading && <Loader2 size={13} className="animate-spin" />}
+                      Upload My Segments
+                    </button>
+                    <button
+                      type="button"
+                      onClick={doDownload}
+                      disabled={downloading || !syncForm.sync_enabled}
+                      className="px-4 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
+                    >
+                      {downloading && <Loader2 size={13} className="animate-spin" />}
+                      Download Crowdsourced Segments
+                    </button>
+                    {uploadResult && (
+                      <span className={`flex items-center gap-1.5 text-xs ${uploadResult.ok ? 'text-green-400' : 'text-red-400'}`}>
+                        {uploadResult.ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
+                        {uploadResult.message}
+                      </span>
+                    )}
+                    {downloadResult && (
+                      <span className={`flex items-center gap-1.5 text-xs ${downloadResult.ok ? 'text-green-400' : 'text-red-400'}`}>
+                        {downloadResult.ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
+                        {downloadResult.message}
+                      </span>
+                    )}
+                  </div>
+                  {syncStatus?.last_sync_time && (
+                    <p className="text-xs text-gray-600">Last sync: {syncStatus.last_sync_time}</p>
+                  )}
+                </div>
+              </div>
+      </section>
+          )}
+        </div>
+      </div>
+
+      {/* Sticky so Save is reachable from every section; it saves all of them at once. */}
+      <div className="sticky bottom-0 py-3 bg-plex-darker/95 border-t border-plex-border backdrop-blur">
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={save}
+            disabled={saving}
+            className="px-6 py-2.5 bg-plex-orange text-black font-semibold text-sm rounded-lg hover:bg-plex-orange/90 transition-colors disabled:opacity-50 flex items-center gap-2"
+          >
+            {saving && <Loader2 size={14} className="animate-spin" />}
+            Save Settings
+          </button>
+          {saved && (
+            <span className="flex items-center gap-1.5 text-sm text-green-400">
+              <CheckCircle2 size={15} /> Saved
+            </span>
+          )}
+          <button
+            onClick={restartScanner}
+            disabled={restarting}
+            className="px-4 py-2.5 bg-plex-card border border-plex-border text-sm rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-50 flex items-center gap-2"
+            title="Restart the scanner pool — picks up config changes and reorders the queue"
+          >
+            <RotateCcw size={14} className={restarting ? 'animate-spin' : ''} />
+            Restart Scanner
+          </button>
+          {restarted && (
+            <span className="flex items-center gap-1.5 text-sm text-green-400">
+              <CheckCircle2 size={15} /> Restarting — queue will reorder within ~10s
+            </span>
+          )}
+        </div>
       </div>
     </div>
   )

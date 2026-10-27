@@ -27,6 +27,7 @@ Every change — regardless of size — must follow these rules. No exceptions.
 | Backend | Python 3.11+, FastAPI, aiosqlite | All I/O must be async |
 | Database | SQLite (WAL mode) | Single file at `~/.cleanplex/cleanplex.db` |
 | ML Inference | NudeNet (ONNX, local) | CPU-only; wrapped in `asyncio.to_thread` |
+| ML Fallback | SigLIP base 224 (ONNX via onnxruntime, `tokenizers`) | Optional; only on frames NudeNet did not flag |
 | Content vocabulary | MovieContentFilter 1.1.0 | Category names, severities and channels; see `importers/_common.py` |
 | Video | FFmpeg / ffprobe | Subprocess via `frame_extractor.py` |
 | Plex API | `plexapi` + `httpx` | Wrapped in `PlexClient` |
@@ -39,6 +40,7 @@ Every change — regardless of size — must follow these rules. No exceptions.
 |---|---|
 | `database.py` | All SQL — no raw queries outside this file |
 | `scanner.py` | Frame extraction, NudeNet inference, segment writing |
+| `siglip_detector.py` | SigLIP zero-shot fallback for frames NudeNet did not flag — model download, prompts from `scan_labels`, scoring |
 | `subtitle_scanner.py` | Subtitle parsing and profanity matching — emits muted language segments |
 | `importers/` | Skip file parsers and exporters (`.skp`, `.edl`, `.mcf`, pasted lists). One module per format; all return the same normalized segment dict |
 | `plex_client.py` | All Plex API calls — no `plexapi` imports elsewhere |

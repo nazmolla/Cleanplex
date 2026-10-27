@@ -187,3 +187,26 @@ async def test_get_thumbnail_serves_file(http_client):
         assert resp.headers["content-type"] == "image/jpeg"
     finally:
         os.unlink(tmp_path)
+
+
+# ── SigLIP fallback settings (issue #83) ──────────────────────────────────────
+
+async def test_siglip_settings_have_defaults_and_persist(http_client):
+    before = (await http_client.get("/api/settings")).json()
+    assert (before["siglip_enabled"], before["siglip_threshold"], before["siglip_min_hits"]) == ("0", "0.3", "2")
+
+    resp = await http_client.put("/api/settings", json={"siglip_enabled": "1", "siglip_threshold": "0.35", "siglip_min_hits": "3"})
+    after = (await http_client.get("/api/settings")).json()
+
+    assert resp.status_code == 200
+    assert (after["siglip_enabled"], after["siglip_threshold"], after["siglip_min_hits"]) == ("1", "0.35", "3")
+
+
+@pytest.mark.parametrize("body", [
+    {"siglip_enabled": "yes"},
+    {"siglip_threshold": "1.5"},
+    {"siglip_threshold": "abc"},
+    {"siglip_min_hits": "0"},
+])
+async def test_invalid_siglip_settings_are_rejected(http_client, body):
+    assert (await http_client.put("/api/settings", json=body)).status_code == 422

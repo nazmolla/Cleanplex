@@ -6,16 +6,21 @@ import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
+from .importers._common import CATEGORIES
 from .logger import get_logger
 
 logger = get_logger(__name__)
 
 _DB_PATH: Path | None = None
+# Level a category filters at when a user has no row for it: 3 is "Everything".
+# Turning a category down is always an explicit user choice.
+DEFAULT_CATEGORY_LEVEL = 3
 # Serializes concurrent upsert_plex_markers calls so DELETE+INSERT never interleave.
 _marker_upsert_lock = asyncio.Lock()
 
@@ -204,6 +209,16 @@ DEFAULT_SETTINGS = {
     "scan_workers": "2",
     "segment_gap_ms": "12000",
     "segment_min_hits": "1",
+    # SigLIP fallback: off by default because enabling it downloads ~815 MB of
+    # model weights on the next scan. Its threshold is a softmax share, not a
+    # NudeNet confidence, so it is tuned separately from confidence_threshold.
+    # 0.3 from a 238-frame sample of this library: 54% of NudeNet-flagged thumbnails
+    # score >= 0.3 (that set includes NudeNet false positives); 1 of 11 ordinary
+    # frames did. Biased toward recall, since misses matter more than false hits.
+    "siglip_enabled": "0",
+    "siglip_threshold": "0.3",
+    # Consecutive SigLIP-only frames needed before a segment is written.
+    "siglip_min_hits": "2",
     "scan_window_start": "23:00",
     "scan_window_end": "06:00",
     "log_level": "INFO",
@@ -328,6 +343,9 @@ async def init_db() -> None:
                 (key, value),
             )
         await conn.commit()
+    added = await backfill_user_category_prefs()
+    if added:
+        logger.info("Backfilled %d missing category prefs at level %d", added, DEFAULT_CATEGORY_LEVEL)
     logger.info("Database initialised at %s", db_path)
 
 
@@ -393,19 +411,44 @@ async def record_skip_event(
         return cursor.lastrowid
 
 
-async def get_skip_events(limit: int = 50, offset: int = 0) -> list[dict]:
-    """Return recent skip events, newest first."""
+def _skip_event_range(start: datetime | None, end: datetime | None) -> tuple[str, list[str]]:
+    """Build the WHERE clause for an optional [start, end) window on created_at.
+
+    created_at is SQLite's CURRENT_TIMESTAMP, a naive UTC string, so bounds are
+    converted to the same form; naive inputs are taken as already UTC.
+    """
+    clauses, params = [], []
+    for op, bound in ((">=", start), ("<", end)):
+        if bound is None:
+            continue
+        if bound.tzinfo is not None:
+            bound = bound.astimezone(timezone.utc).replace(tzinfo=None)
+        clauses.append(f"created_at {op} ?")
+        params.append(bound.strftime("%Y-%m-%d %H:%M:%S"))
+    return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+
+async def get_skip_events(
+    limit: int = 50,
+    offset: int = 0,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> list[dict]:
+    """Return skip events newest first, optionally limited to [start, end)."""
+    where, params = _skip_event_range(start, end)
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            "SELECT * FROM skip_events ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-            (limit, offset),
+            f"SELECT * FROM skip_events{where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
         )
         return [dict(r) for r in rows]
 
 
-async def count_skip_events() -> int:
+async def count_skip_events(start: datetime | None = None, end: datetime | None = None) -> int:
+    """Return how many skip events fall in [start, end), or all of them."""
+    where, params = _skip_event_range(start, end)
     async with get_connection() as conn:
-        row = await (await conn.execute("SELECT COUNT(*) FROM skip_events")).fetchone()
+        row = await (await conn.execute(f"SELECT COUNT(*) FROM skip_events{where}", params)).fetchone()
         return row[0] if row else 0
 
 
@@ -499,6 +542,43 @@ async def upsert_user_category_pref(username: str, category: str, level: int, ac
             (username, category, level, action),
         )
         await conn.commit()
+
+
+async def get_missing_user_category_prefs() -> list[dict]:
+    """Return [{"plex_username", "category"}] for categories a user with prefs has no row for."""
+    values = ",".join("(?)" for _ in CATEGORIES)
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "WITH users AS (SELECT DISTINCT plex_username FROM user_category_prefs), "
+            f"cats(category) AS (VALUES {values}) "
+            "SELECT u.plex_username, c.category FROM users u CROSS JOIN cats c "
+            "LEFT JOIN user_category_prefs p "
+            "  ON p.plex_username = u.plex_username AND p.category = c.category "
+            "WHERE p.category IS NULL ORDER BY u.plex_username, c.category",
+            CATEGORIES,
+        )
+        return [dict(r) for r in rows]
+
+
+async def backfill_user_category_prefs() -> int:
+    """Give users with prefs an explicit DEFAULT_CATEGORY_LEVEL row for every missing category.
+
+    Before issue #77 a missing row meant Off, so a user who changed one category
+    silently stopped filtering the rest. Rows that already exist are untouched and
+    the insert is idempotent. Users with no prefs at all are left alone: an empty
+    set already means "filter everything". Returns the number of rows added.
+    """
+    missing = await get_missing_user_category_prefs()
+    if not missing:
+        return 0
+    async with get_connection() as conn:
+        await conn.executemany(
+            "INSERT OR IGNORE INTO user_category_prefs(plex_username, category, level, action) "
+            "VALUES(?,?,?,'')",
+            [(m["plex_username"], m["category"], DEFAULT_CATEGORY_LEVEL) for m in missing],
+        )
+        await conn.commit()
+    return len(missing)
 
 
 async def delete_user_category_prefs(username: str) -> int:
@@ -932,6 +1012,35 @@ async def reset_scan_job(plex_guid: str) -> None:
             (plex_guid,),
         )
         await conn.commit()
+
+
+async def reset_scan_jobs(plex_guids: list[str]) -> int:
+    """Mark many jobs pending in one UPDATE; returns how many rows matched."""
+    if not plex_guids:
+        return 0
+    placeholders = ",".join("?" * len(plex_guids))
+    async with get_connection() as conn:
+        cursor = await conn.execute(
+            "UPDATE scan_jobs SET status='pending', progress=0, started_at=NULL, finished_at=NULL, "
+            f"error_msg=NULL WHERE plex_guid IN ({placeholders})",
+            plex_guids,
+        )
+        await conn.commit()
+        return cursor.rowcount
+
+
+async def reset_interrupted_scans() -> int:
+    """Move jobs left in 'scanning' back to 'pending'; returns how many were reset.
+
+    Called once at startup, when no worker can be scanning yet: any such row was
+    cut off by a restart and would otherwise show as scanning forever.
+    """
+    async with get_connection() as conn:
+        cursor = await conn.execute(
+            "UPDATE scan_jobs SET status='pending', started_at=NULL WHERE status='scanning'"
+        )
+        await conn.commit()
+        return cursor.rowcount
 
 
 async def set_force_scan(plex_guid: str, force: bool) -> None:

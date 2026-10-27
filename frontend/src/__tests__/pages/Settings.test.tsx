@@ -123,3 +123,31 @@ describe('Settings', () => {
     expect(pollCount).toBeLessThanOrEqual(130)
   })
 })
+
+describe('Settings sections', () => {
+  it('shows one section at a time and switches from the nav', async () => {
+    renderSettings()
+    await waitFor(() => screen.getByDisplayValue('http://plex:32400'))
+    expect(screen.queryByText('Enable SigLIP fallback')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'SigLIP Fallback' }))
+
+    expect(screen.getByText('Enable SigLIP fallback')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('http://plex:32400')).not.toBeInTheDocument()
+  })
+
+  it('saves the SigLIP toggle with the other settings', async () => {
+    mockApi.put.mockResolvedValue({})
+    renderSettings()
+    await waitFor(() => screen.getByDisplayValue('http://plex:32400'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'SigLIP Fallback' }))
+    fireEvent.click(screen.getByLabelText('Enable SigLIP fallback'))
+    fireEvent.click(screen.getByRole('button', { name: /Save Settings/ }))
+
+    await waitFor(() => expect(mockApi.put).toHaveBeenCalled())
+    const body = mockApi.put.mock.calls[0][1]
+    expect(body.siglip_enabled).toBe('1')
+    expect(body.siglip_threshold).toBe('0.3')
+  })
+})

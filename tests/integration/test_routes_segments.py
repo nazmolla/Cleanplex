@@ -186,3 +186,77 @@ async def test_sync_library_adds_new_titles(http_client):
     data = resp.json()
     assert data["ok"] is True
     assert data["new"] == 1
+
+
+# ── Preview clips and VLC playlist (issue #80) ────────────────────────────────
+
+async def _segment_with_file(tmp_path, start_ms=60000, end_ms=70000):
+    media = tmp_path / "movie.mkv"
+    media.write_bytes(b"not really video")
+    await db.upsert_scan_job(plex_guid="guid-prev", title="Movie", file_path=str(media),
+                             rating_key="1", library_id="lib", library_title="Lib")
+    return await db.insert_segment("guid-prev", "Movie", start_ms=start_ms, end_ms=end_ms), media
+
+
+async def test_preview_streams_padded_clip_from_the_server(http_client, tmp_path):
+    seg_id, media = await _segment_with_file(tmp_path)
+    calls = []
+
+    async def fake_clip(path, start_ms, duration_ms):
+        calls.append((path, start_ms, duration_ms))
+        yield b"mp4-bytes"
+
+    with patch("cleanplex.web.routes.segments.frame_extractor.stream_clip", fake_clip):
+        resp = await http_client.get(f"/api/segments/{seg_id}/preview")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "video/mp4"
+    assert resp.headers["x-clip-start-ms"] == "55000"
+    assert resp.content == b"mp4-bytes"
+    assert calls == [(str(media), 55000, 20000)]
+
+
+async def test_preview_clamps_padding_at_the_start_and_caps_length(http_client, tmp_path):
+    seg_id, _ = await _segment_with_file(tmp_path, start_ms=2000, end_ms=2 * 60 * 60 * 1000)
+    calls = []
+
+    async def fake_clip(path, start_ms, duration_ms):
+        calls.append((start_ms, duration_ms))
+        yield b""
+
+    with patch("cleanplex.web.routes.segments.frame_extractor.stream_clip", fake_clip):
+        await http_client.get(f"/api/segments/{seg_id}/preview")
+
+    assert calls == [(0, 10 * 60 * 1000)]
+
+
+async def test_preview_404_for_unknown_segment(http_client):
+    assert (await http_client.get("/api/segments/99999/preview")).status_code == 404
+
+
+async def test_preview_404_when_source_file_is_missing(http_client, tmp_path):
+    seg_id, media = await _segment_with_file(tmp_path)
+    media.unlink()
+
+    assert (await http_client.get(f"/api/segments/{seg_id}/preview")).status_code == 404
+
+
+async def test_vlc_playlist_starts_and_stops_around_the_segment(http_client, tmp_path):
+    seg_id, _ = await _segment_with_file(tmp_path)
+
+    body = (await http_client.get(f"/api/segments/{seg_id}/vlc")).text
+
+    assert "#EXTVLCOPT:start-time=55.0" in body
+    assert "#EXTVLCOPT:stop-time=75.0" in body
+    assert body.strip().endswith(f"/api/segments/{seg_id}/stream")
+
+
+async def test_segment_lists_are_never_browser_cached(http_client):
+    """Regression for #81: a cached list hid rescan results until a hard reload."""
+    await db.insert_segment("guid-nc", "Movie", start_ms=0, end_ms=1000)
+
+    single = await http_client.get("/api/titles/guid-nc/segments")
+    batch = await http_client.post("/api/titles/segments/batch", json={"guids": ["guid-nc"]})
+
+    assert single.headers["cache-control"] == "no-store"
+    assert batch.headers["cache-control"] == "no-store"

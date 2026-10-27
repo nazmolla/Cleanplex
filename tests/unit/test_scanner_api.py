@@ -223,3 +223,10 @@ async def test_enqueue_pending_ignored_titles_excluded():
 
     assert "normal" in queued
     assert "ignored" not in queued
+
+
+# ── Model input size (issue #82) ──────────────────────────────────────────────
+
+@pytest.mark.parametrize("name, size", [("640m", 640), (" 640M ", 640), ("320n", 320), ("", 320)])
+def test_inference_resolution_follows_the_model_name(name, size):
+    assert scanner._inference_resolution(name) == size
