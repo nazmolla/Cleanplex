@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { api } from '../api/client'
+import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import SkipFileImport from '../components/SkipFileImport'
 import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2 } from 'lucide-react'
 
@@ -40,6 +41,8 @@ interface Segment {
   thumbnail_url: string
   created_at: string
   labels?: string
+  source?: string
+  detector?: string
 }
 
 interface ScannerStatus {
@@ -409,6 +412,7 @@ export default function Library() {
                   <span className="text-gray-600 text-xs">→</span>
                   <span className="font-mono text-xs text-plex-orange">{msToTimecode(seg.end_ms)}</span>
                   <span className="text-xs text-gray-600">({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)</span>
+                  <SegmentOriginBadge seg={seg} />
                 </div>
                 {renderLabels(seg.labels)}
               </div>

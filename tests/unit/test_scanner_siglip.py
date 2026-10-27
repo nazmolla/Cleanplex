@@ -72,6 +72,7 @@ async def test_two_consecutive_siglip_frames_make_a_medium_siglip_segment(tmp_pa
     assert segs[0]["severity"] == "medium"
     # Tagged with the winning existing label, never a SigLIP-specific one.
     assert segs[0]["labels"] == "BUTTOCKS_EXPOSED"
+    assert segs[0]["detector"] == "siglip-base-224"
     assert segs[0]["confidence"] == pytest.approx(0.8)
     assert segs[0]["start_ms"] == 10 * STEP
 
@@ -94,6 +95,8 @@ async def test_cluster_with_a_nudenet_hit_stays_a_scanner_segment(tmp_path):
     assert segs[0]["severity"] == "high"
     assert segs[0]["labels"] == "FEMALE_BREAST_EXPOSED"
     assert segs[0]["start_ms"] == 5 * STEP
+    # Records the NudeNet model in use (#92); Config() defaults to 320n.
+    assert segs[0]["detector"] == "nudenet-320n"
 
 
 async def test_disabled_siglip_is_never_called(tmp_path):

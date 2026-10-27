@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { api } from '../api/client'
+import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import SkipAnalytics from '../components/SkipAnalytics'
 import { BarChart2, X, AlertTriangle, Trash2, Play, SkipForward, ChevronLeft, ChevronRight } from 'lucide-react'
 
@@ -27,6 +28,8 @@ interface Segment {
   content_rating: string
   media_type: string
   rating_key: string
+  source?: string
+  detector?: string
 }
 
 const PAGE_SIZE = 50
@@ -413,6 +416,7 @@ export default function Analytics() {
                             {seg.content_rating}
                           </span>
                         )}
+                        <SegmentOriginBadge seg={seg} />
                       </div>
                       {/* Label chips */}
                       {seg.labels && (

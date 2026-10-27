@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
+import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import ScanContextMenu, { ScanTarget } from '../components/ScanContextMenu'
 import { Film, Tv, ChevronRight, ChevronDown, Trash2, AlertTriangle, SkipForward, Play, Tv2 } from 'lucide-react'
 
@@ -29,6 +30,8 @@ interface Segment {
   thumbnail_url: string
   created_at: string
   labels?: string
+  source?: string
+  detector?: string
 }
 
 interface ScannerStatus {
@@ -150,6 +153,7 @@ function SegmentCard({
             <span className="text-gray-600">→</span>
             <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.end_ms)}</span>
             <span className="text-xs text-gray-600">({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)</span>
+            <SegmentOriginBadge seg={seg} />
           </div>
           <p className="text-xs text-gray-500">Detected {new Date(seg.created_at).toLocaleDateString()}</p>
           {renderLabels(seg.labels)}

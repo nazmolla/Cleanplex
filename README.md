@@ -188,7 +188,7 @@ only. Those categories are populated by importing skip files, where humans have 
 #### Segments
 - **Three-panel browser**: Library tree → Select title → Browse its segments
 - **Live scanner banner** — shows which titles are currently being scanned with progress bars
-- **Segment details** — Timestamp range, confidence score, and a thumbnail from the detected scene
+- **Segment details** — Timestamp range, confidence score, a thumbnail from the detected scene, and what found it (e.g. *NudeNet 640m*, *SigLIP*, *Subtitles*, *VideoSkip (.skp)*)
 - **Delete false positives** — Remove incorrectly flagged segments
 - **Right-click to rescan** — On a movie, episode, season or show: *Rescan now* or *Rescan tonight* (queued for the scan window)
 - **Live updates** — The open title's segments and the tree counts refresh as a rescan runs and when it finishes

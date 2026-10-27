@@ -32,6 +32,8 @@ from .logger import get_logger
 logger = get_logger(__name__)
 
 MODEL_REPO = "Xenova/siglip-base-patch16-224"
+# Stored on segments this stage produces (segments.detector).
+DETECTOR_ID = "siglip-base-224"
 _BASE_URL = f"https://huggingface.co/{MODEL_REPO}/resolve/main"
 # Published path -> local filename. fp32 weights: the int8 exports trade recall
 # for size, and recall is the whole point of this stage. ~815 MB, downloaded once.

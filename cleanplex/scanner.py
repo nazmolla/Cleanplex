@@ -609,6 +609,8 @@ async def scan_video(plex_guid: str, config) -> None:
         enabled_labels = set(config.scan_labels) if config.scan_labels else set()
         nudenet_model = str(getattr(config, "nudenet_model", "320n"))
         nudenet_model_path = str(getattr(config, "nudenet_model_path", ""))
+        # A user-supplied model file; checked before the 640m download fills the path.
+        custom_model = bool(nudenet_model_path)
 
         # Pre-warm 640m model under asyncio.Lock before dispatching threads so
         # parallel workers do not race to download the same file concurrently.
@@ -624,6 +626,10 @@ async def scan_video(plex_guid: str, config) -> None:
         if siglip_on and not await siglip_detector.ensure_models_async():
             logger.warning("SigLIP models unavailable; scanning %s with NudeNet only", title)
             siglip_on = False
+
+        # Recorded on each segment so the UI can say which model found it. Taken
+        # after the 640m fallback above, so it names the model actually used.
+        nudenet_detector = f"nudenet-{nudenet_model}" + ("-custom" if custom_model else "")
 
         THUMBNAILS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -666,6 +672,7 @@ async def scan_video(plex_guid: str, config) -> None:
                     # came from; users can tell them apart and threshold them.
                     severity="high" if source == "scanner" else "medium",
                     source=source,
+                    detector=nudenet_detector if source == "scanner" else siglip_detector.DETECTOR_ID,
                 )
                 segments_inserted += 1
 

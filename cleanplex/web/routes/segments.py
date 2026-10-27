@@ -382,6 +382,7 @@ async def get_segments_batch(data: dict):
             "channel": seg.get("channel") or "both",
             "language": seg.get("language") or "",
             "source": seg.get("source") or "scanner",
+            "detector": seg.get("detector") or "",
         })
     return Response(
         content=json.dumps({"segments": result}),
@@ -435,6 +436,7 @@ async def get_segments_for_title(plex_guid: str):
             "channel": seg.get("channel") or "both",
             "language": seg.get("language") or "",
             "source": seg.get("source") or "scanner",
+            "detector": seg.get("detector") or "",
         })
     return Response(
         content=json.dumps({"segments": result}),

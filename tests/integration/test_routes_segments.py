@@ -260,3 +260,13 @@ async def test_segment_lists_are_never_browser_cached(http_client):
 
     assert single.headers["cache-control"] == "no-store"
     assert batch.headers["cache-control"] == "no-store"
+
+
+async def test_segment_list_reports_its_detector(http_client):
+    """#92: the UI labels each segment with the model that found it."""
+    await db.insert_segment("guid-det", "Movie", start_ms=0, end_ms=1000, detector="nudenet-640m")
+    await db.insert_segment("guid-det", "Movie", start_ms=2000, end_ms=3000, source="skp")
+
+    segs = (await http_client.get("/api/titles/guid-det/segments")).json()["segments"]
+
+    assert [(s["source"], s["detector"]) for s in segs] == [("scanner", "nudenet-640m"), ("skp", "")]
