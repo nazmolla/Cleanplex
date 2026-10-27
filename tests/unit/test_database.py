@@ -533,3 +533,16 @@ async def test_reset_scan_jobs_with_empty_list_does_nothing():
     assert await db.reset_scan_jobs([]) == 0
 
 
+async def test_reset_interrupted_scans_returns_scanning_jobs_to_pending():
+    for guid, status in (("a", "scanning"), ("b", "done"), ("c", "scanning")):
+        await db.upsert_scan_job(plex_guid=guid, title=guid, file_path=f"/{guid}", rating_key="1",
+                                 library_id="lib", library_title="Lib")
+        await db.update_scan_job_status(guid, status)
+
+    assert await db.reset_interrupted_scans() == 2
+    assert (await db.get_scan_job_by_guid("a"))["status"] == "pending"
+    assert (await db.get_scan_job_by_guid("b"))["status"] == "done"
+
+
+async def test_reset_interrupted_scans_with_nothing_scanning_does_nothing():
+    assert await db.reset_interrupted_scans() == 0

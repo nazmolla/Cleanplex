@@ -1029,6 +1029,20 @@ async def reset_scan_jobs(plex_guids: list[str]) -> int:
         return cursor.rowcount
 
 
+async def reset_interrupted_scans() -> int:
+    """Move jobs left in 'scanning' back to 'pending'; returns how many were reset.
+
+    Called once at startup, when no worker can be scanning yet: any such row was
+    cut off by a restart and would otherwise show as scanning forever.
+    """
+    async with get_connection() as conn:
+        cursor = await conn.execute(
+            "UPDATE scan_jobs SET status='pending', started_at=NULL WHERE status='scanning'"
+        )
+        await conn.commit()
+        return cursor.rowcount
+
+
 async def set_force_scan(plex_guid: str, force: bool) -> None:
     """Set or unset the force_scan flag for a specific job."""
     async with get_connection() as conn:

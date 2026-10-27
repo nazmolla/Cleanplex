@@ -32,6 +32,9 @@ async def _amain() -> None:
 
     # Mark any jobs left in running/queued state from a previous crashed process.
     await recover_stale_jobs()
+    interrupted = await db.reset_interrupted_scans()
+    if interrupted:
+        logger.info("Reset %d scan job(s) interrupted by the last shutdown to pending", interrupted)
 
     pruned = await db.prune_skip_events(int(await db.get_setting("skip_event_retention_days", "90")))
     if pruned:
