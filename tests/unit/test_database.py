@@ -509,3 +509,13 @@ async def test_init_db_backfills_existing_users():
     assert set(await db.get_user_category_prefs("alice")) == set(CATEGORIES)
 
 
+async def test_skip_event_range_with_no_matches_returns_empty():
+    from datetime import datetime
+
+    await db.record_skip_event(plex_guid="g")
+
+    window = (datetime(2000, 1, 1), datetime(2000, 1, 2))
+    assert await db.get_skip_events(50, 0, *window) == []
+    assert await db.count_skip_events(*window) == 0
+
+

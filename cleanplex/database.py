@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -400,19 +401,44 @@ async def record_skip_event(
         return cursor.lastrowid
 
 
-async def get_skip_events(limit: int = 50, offset: int = 0) -> list[dict]:
-    """Return recent skip events, newest first."""
+def _skip_event_range(start: datetime | None, end: datetime | None) -> tuple[str, list[str]]:
+    """Build the WHERE clause for an optional [start, end) window on created_at.
+
+    created_at is SQLite's CURRENT_TIMESTAMP, a naive UTC string, so bounds are
+    converted to the same form; naive inputs are taken as already UTC.
+    """
+    clauses, params = [], []
+    for op, bound in ((">=", start), ("<", end)):
+        if bound is None:
+            continue
+        if bound.tzinfo is not None:
+            bound = bound.astimezone(timezone.utc).replace(tzinfo=None)
+        clauses.append(f"created_at {op} ?")
+        params.append(bound.strftime("%Y-%m-%d %H:%M:%S"))
+    return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+
+async def get_skip_events(
+    limit: int = 50,
+    offset: int = 0,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> list[dict]:
+    """Return skip events newest first, optionally limited to [start, end)."""
+    where, params = _skip_event_range(start, end)
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            "SELECT * FROM skip_events ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-            (limit, offset),
+            f"SELECT * FROM skip_events{where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
         )
         return [dict(r) for r in rows]
 
 
-async def count_skip_events() -> int:
+async def count_skip_events(start: datetime | None = None, end: datetime | None = None) -> int:
+    """Return how many skip events fall in [start, end), or all of them."""
+    where, params = _skip_event_range(start, end)
     async with get_connection() as conn:
-        row = await (await conn.execute("SELECT COUNT(*) FROM skip_events")).fetchone()
+        row = await (await conn.execute(f"SELECT COUNT(*) FROM skip_events{where}", params)).fetchone()
         return row[0] if row else 0
 
 

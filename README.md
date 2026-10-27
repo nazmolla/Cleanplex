@@ -172,7 +172,7 @@ only. Those categories are populated by importing skip files, where humans have 
 #### Dashboard
 - **Active streams** — Shows all users currently watching, with playback position and controllability status
 - **Scanner status** — Number of workers active, queue size, and which titles are currently being scanned
-- **Recent skip events** — Log of the last 50 skips with timestamp, title, user, and client
+- **Recent skips** — Every recorded skip and mute (paged, with a total), with optional from/to date filters; failed actions are flagged. History is kept for `skip_event_retention_days`
 
 #### Library
 - **Import skip files** — Upload `.skp` / `.edl` / `.mcf`, paste a timestamp list, or export segments as EDL/MCF

@@ -15,7 +15,7 @@ import { api } from '../../api/client'
 const mockApi = api as { get: ReturnType<typeof vi.fn>; post: ReturnType<typeof vi.fn> }
 
 const emptySessions = { sessions: [] }
-const emptyEvents = { events: [] }
+const emptyEvents = { events: [], total: 0 }
 const scannerIdle = {
   queue_size: 0,
   current_scan: null,
@@ -43,7 +43,7 @@ beforeEach(() => {
   // file hangs until the 5s test timeout.
   vi.useFakeTimers({ shouldAdvanceTime: true })
   mockApi.get.mockImplementation((path: string) => {
-    if (path.includes('events')) return Promise.resolve(emptyEvents)
+    if (path.includes('skips/history')) return Promise.resolve(emptyEvents)
     if (path.includes('scanner-status')) return Promise.resolve(scannerIdle)
     return Promise.resolve(emptySessions)
   })
@@ -85,7 +85,7 @@ describe('Dashboard', () => {
       thumb_url: '',
     }
     mockApi.get.mockImplementation((path: string) => {
-      if (path.includes('events')) return Promise.resolve(emptyEvents)
+      if (path.includes('skips/history')) return Promise.resolve(emptyEvents)
       if (path.includes('scanner-status')) return Promise.resolve(scannerIdle)
       return Promise.resolve({ sessions: [session] })
     })
@@ -100,7 +100,7 @@ describe('Dashboard', () => {
       active_scans: [{ guid: 'g1', title: 'Some Movie', progress: 0.5, status: 'scanning' }],
     }
     mockApi.get.mockImplementation((path: string) => {
-      if (path.includes('events')) return Promise.resolve(emptyEvents)
+      if (path.includes('skips/history')) return Promise.resolve(emptyEvents)
       if (path.includes('scanner-status')) return Promise.resolve(scannerActive)
       return Promise.resolve(emptySessions)
     })
@@ -111,7 +111,7 @@ describe('Dashboard', () => {
   it('shows paused badge when scanner is paused', async () => {
     const paused = { ...scannerIdle, paused: true }
     mockApi.get.mockImplementation((path: string) => {
-      if (path.includes('events')) return Promise.resolve(emptyEvents)
+      if (path.includes('skips/history')) return Promise.resolve(emptyEvents)
       if (path.includes('scanner-status')) return Promise.resolve(paused)
       return Promise.resolve(emptySessions)
     })

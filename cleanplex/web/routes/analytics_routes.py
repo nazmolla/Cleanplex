@@ -1,5 +1,6 @@
 """Analytics routes: label-based segment statistics and segment browsing."""
 
+from datetime import datetime
 from urllib.parse import quote
 
 from fastapi import APIRouter, Query
@@ -112,9 +113,11 @@ async def get_most_skipped_titles(limit: int = Query(20, ge=1, le=100)):
 async def get_skip_history(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    start: datetime | None = Query(None, description="inclusive lower bound, ISO 8601"),
+    end: datetime | None = Query(None, description="exclusive upper bound, ISO 8601"),
 ):
-    """Return recent filter actions, newest first."""
+    """Return filter actions newest first, optionally within [start, end)."""
     return {
-        "events": await db.get_skip_events(limit, offset),
-        "total": await db.count_skip_events(),
+        "events": await db.get_skip_events(limit, offset, start, end),
+        "total": await db.count_skip_events(start, end),
     }
