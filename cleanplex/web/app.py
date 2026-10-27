@@ -25,6 +25,23 @@ from .routes.import_routes import router as import_router
 from .routes.events_routes import router as events_router
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# index.html names the current bundle, so the browser must revalidate it on every
+# load (a cheap 304 via ETag); without this Safari kept serving the pre-deploy
+# shell and its old JavaScript (#94).
+_SHELL_CACHE = "no-cache"
+# Vite puts a content hash in every asset file name, so a cached copy is never stale.
+_ASSET_CACHE = "public, max-age=31536000, immutable"
+
+
+class _HashedAssets(StaticFiles):
+    """Static files whose names change whenever their content does."""
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code in (200, 304):
+            response.headers["Cache-Control"] = _ASSET_CACHE
+        return response
 logger = get_logger(__name__)
 
 
@@ -68,14 +85,14 @@ def create_app() -> FastAPI:
 
     # Serve built React frontend (if present)
     if STATIC_DIR.exists():
-        app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
+        app.mount("/assets", _HashedAssets(directory=str(STATIC_DIR / "assets")), name="assets")
 
         @app.get("/", include_in_schema=False)
         @app.get("/{full_path:path}", include_in_schema=False)
         async def serve_spa(full_path: str = ""):
             index = STATIC_DIR / "index.html"
             if index.exists():
-                return FileResponse(str(index))
+                return FileResponse(str(index), headers={"Cache-Control": _SHELL_CACHE})
             return {"message": "Cleanplex API running. Frontend not built yet."}
 
     return app
