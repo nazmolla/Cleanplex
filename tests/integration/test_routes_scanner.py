@@ -181,3 +181,40 @@ async def test_scan_library_skips_done_jobs(http_client):
     assert resp.status_code == 200
     assert resp.json()["queued"] == 0
     mock_enqueue.assert_not_awaited()
+
+
+# ── POST /api/scan/titles (issue #79) ────────────────────────────────────────
+
+async def test_scan_titles_queues_known_jobs_for_tonight(http_client):
+    for guid in ("ep1", "ep2"):
+        await _make_job(guid)
+        await db.update_scan_job_status(guid, "done")
+    with patch("cleanplex.web.routes.scanner_routes.scan_mod.enqueue", new=AsyncMock()) as mock_enqueue:
+        resp = await http_client.post("/api/scan/titles", json={"plex_guids": ["ep1", "ep2", "ep1", "nope"]})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "queued": 2, "missing": ["nope"]}
+    assert [c.args[0] for c in mock_enqueue.await_args_list] == ["ep1", "ep2"]
+    jobs = await db.get_scan_jobs_by_guids(["ep1", "ep2"])
+    assert {j["status"] for j in jobs.values()} == {"pending"}
+
+
+async def test_scan_titles_now_forces_each_job(http_client):
+    await _make_job("ep1")
+    with patch("cleanplex.web.routes.scanner_routes.scan_mod.force_scan_job", new=AsyncMock()) as mock_force:
+        resp = await http_client.post("/api/scan/titles", json={"plex_guids": ["ep1"], "now": True})
+
+    assert resp.status_code == 200
+    mock_force.assert_awaited_once_with("ep1")
+
+
+async def test_scan_titles_404_when_no_jobs_match(http_client):
+    resp = await http_client.post("/api/scan/titles", json={"plex_guids": ["nope"]})
+
+    assert resp.status_code == 404
+
+
+async def test_scan_titles_rejects_an_empty_list(http_client):
+    resp = await http_client.post("/api/scan/titles", json={"plex_guids": []})
+
+    assert resp.status_code == 422

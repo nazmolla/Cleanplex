@@ -519,3 +519,17 @@ async def test_skip_event_range_with_no_matches_returns_empty():
     assert await db.count_skip_events(*window) == 0
 
 
+async def test_reset_scan_jobs_marks_matching_jobs_pending():
+    for guid in ("a", "b"):
+        await db.upsert_scan_job(plex_guid=guid, title=guid, file_path=f"/{guid}", rating_key="1",
+                                 library_id="lib", library_title="Lib")
+        await db.update_scan_job_status(guid, "done")
+
+    assert await db.reset_scan_jobs(["a", "b", "missing"]) == 2
+    assert (await db.get_scan_job_by_guid("a"))["status"] == "pending"
+
+
+async def test_reset_scan_jobs_with_empty_list_does_nothing():
+    assert await db.reset_scan_jobs([]) == 0
+
+

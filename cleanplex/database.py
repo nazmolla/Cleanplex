@@ -1004,6 +1004,21 @@ async def reset_scan_job(plex_guid: str) -> None:
         await conn.commit()
 
 
+async def reset_scan_jobs(plex_guids: list[str]) -> int:
+    """Mark many jobs pending in one UPDATE; returns how many rows matched."""
+    if not plex_guids:
+        return 0
+    placeholders = ",".join("?" * len(plex_guids))
+    async with get_connection() as conn:
+        cursor = await conn.execute(
+            "UPDATE scan_jobs SET status='pending', progress=0, started_at=NULL, finished_at=NULL, "
+            f"error_msg=NULL WHERE plex_guid IN ({placeholders})",
+            plex_guids,
+        )
+        await conn.commit()
+        return cursor.rowcount
+
+
 async def set_force_scan(plex_guid: str, force: bool) -> None:
     """Set or unset the force_scan flag for a specific job."""
     async with get_connection() as conn:
