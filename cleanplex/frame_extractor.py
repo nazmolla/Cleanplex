@@ -141,11 +141,21 @@ async def extract_frame(file_path: str, offset_ms: int) -> bytes | None:
         return None
 
 
+# Silence from ffmpeg for this long means it is stuck rather than slow: software
+# decoding of 4K HEVC under load can take several seconds per sampled frame.
+FRAME_STALL_TIMEOUT_S = 180
+
+
+class FrameStreamStalled(RuntimeError):
+    """ffmpeg stopped producing frames before the end of the file."""
+
+
 async def extract_frames_batch(
     file_path: str,
     step_ms: int,
     duration_ms: int,
     size: int = 320,
+    hardware: bool = False,
 ) -> AsyncGenerator[tuple[int, bytes | None], None]:
     """Yield (offset_ms, jpeg_bytes) for every step_ms interval via one ffmpeg process.
 
@@ -165,12 +175,39 @@ async def extract_frames_batch(
     Frames are scaled so their longest side is *size*, keeping aspect ratio. NudeNet
     pads each frame to a square and resizes it to the model's input size, so this
     should equal that size: smaller starves the model of detail, larger is wasted.
+
+    With *hardware*, ffmpeg uses whatever hardware decoder the host offers
+    (-hwaccel auto: VideoToolbox, VAAPI, NVDEC, D3D11...) and decodes in software
+    where there is none. A file the hardware decoder cannot handle, i.e. one that
+    yields no frames, is retried in software.
+
+    Raises FrameStreamStalled if ffmpeg goes silent mid-file, so the scan fails
+    visibly instead of being saved as complete with the rest of the film unscanned.
     """
+    produced = False
+    try:
+        async for item in _frame_stream(file_path, step_ms, duration_ms, size, hardware):
+            produced = True
+            yield item
+    except FrameStreamStalled:
+        if produced or not hardware:
+            raise
+    if hardware and not produced:
+        logger.info("Hardware decoding gave no frames for %s; retrying in software", file_path)
+        async for item in _frame_stream(file_path, step_ms, duration_ms, size, False):
+            yield item
+
+
+async def _frame_stream(
+    file_path: str, step_ms: int, duration_ms: int, size: int, hardware: bool,
+) -> AsyncGenerator[tuple[int, bytes | None], None]:
+    """One ffmpeg run of extract_frames_batch."""
     # Express step as a rational fps fraction to avoid float rounding (e.g. 1000/5000).
     fps_str = f"1000/{step_ms}"
     cmd = [
         _FFMPEG_BIN,
         "-loglevel", "error",
+        *(["-hwaccel", "auto"] if hardware else []),
         "-i", file_path,
         "-vf", f"fps={fps_str},scale={size}:{size}:force_original_aspect_ratio=decrease:force_divisible_by=2",
         "-f", "image2pipe",
@@ -180,7 +217,7 @@ async def extract_frames_batch(
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
     )
 
     buffer = bytearray()
@@ -192,12 +229,11 @@ async def extract_frames_batch(
     try:
         while True:
             try:
-                chunk = await asyncio.wait_for(proc.stdout.read(131_072), timeout=30)
+                chunk = await asyncio.wait_for(proc.stdout.read(131_072), timeout=FRAME_STALL_TIMEOUT_S)
             except asyncio.TimeoutError:
-                logger.warning(
-                    "ffmpeg batch read timed out at %d ms for %s", offset_ms, file_path
-                )
-                break
+                raise FrameStreamStalled(
+                    f"ffmpeg produced no frames for {FRAME_STALL_TIMEOUT_S:.0f}s at {offset_ms} ms of {file_path}"
+                ) from None
             if not chunk:
                 break
             buffer.extend(chunk)

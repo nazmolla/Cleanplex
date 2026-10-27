@@ -23,6 +23,7 @@ interface Settings {
   siglip_enabled: string
   siglip_threshold: string
   siglip_min_hits: string
+  hw_decode: string
 }
 
 type SectionId = 'connection' | 'playback' | 'schedule' | 'nudenet' | 'siglip' | 'segments' | 'sync'
@@ -64,6 +65,7 @@ const DEFAULT: Settings = {
   siglip_enabled: '0',
   siglip_threshold: '0.3',
   siglip_min_hits: '2',
+  hw_decode: '1',
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -405,6 +407,21 @@ export default function SettingsPage() {
                   <Field label="Scanner Workers" hint="How many titles can be scanned in parallel. Higher values use more CPU, disk, and memory.">
                               <input type="number" min="1" max="12" step="1" value={form.scan_workers} onChange={set('scan_workers')} className={inputCls} />
                             </Field>
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.hw_decode !== '0'}
+                      onChange={e => setForm(f => ({ ...f, hw_decode: e.target.checked ? '1' : '0' }))}
+                      className="w-4 h-4 mt-0.5 accent-plex-orange"
+                    />
+                    <span className="text-sm text-gray-300">
+                      Hardware video decoding
+                      <span className="block text-xs text-gray-500">
+                        Uses this machine's video decoder when it has one (much faster on 4K HEVC). Files it cannot
+                        handle are decoded in software automatically; turn off only if scans misbehave.
+                      </span>
+                    </span>
+                  </label>
                 </div>
               </section>
               <section>

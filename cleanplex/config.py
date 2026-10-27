@@ -28,6 +28,8 @@ class Config:
     siglip_enabled: bool = False
     siglip_threshold: float = 0.3
     siglip_min_hits: int = 2
+    # ffmpeg -hwaccel auto for scans; falls back to software per file (#107).
+    hw_decode: bool = True
     scan_ratings: list[str] = field(default_factory=list)  # empty = scan all ratings
     scan_labels: list[str] = field(default_factory=lambda: [
         "FEMALE_BREAST_EXPOSED",
@@ -77,6 +79,7 @@ class Config:
             siglip_enabled=s.get("siglip_enabled", "0") == "1",
             siglip_threshold=float(s.get("siglip_threshold", "0.3")),
             siglip_min_hits=max(1, int(s.get("siglip_min_hits", "2"))),
+            hw_decode=s.get("hw_decode", "1") == "1",
             scan_ratings=_labels(s.get("scan_ratings", "[]")),
             scan_labels=_labels(s.get("scan_labels", "[]")),
             scan_window_start=_time(s.get("scan_window_start", "23:00")),

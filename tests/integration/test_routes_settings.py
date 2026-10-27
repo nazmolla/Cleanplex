@@ -210,3 +210,11 @@ async def test_siglip_settings_have_defaults_and_persist(http_client):
 ])
 async def test_invalid_siglip_settings_are_rejected(http_client, body):
     assert (await http_client.put("/api/settings", json=body)).status_code == 422
+
+
+async def test_hw_decode_defaults_on_and_can_be_turned_off(http_client):
+    assert (await http_client.get("/api/settings")).json()["hw_decode"] == "1"
+
+    assert (await http_client.put("/api/settings", json={"hw_decode": "0"})).status_code == 200
+    assert (await http_client.get("/api/settings")).json()["hw_decode"] == "0"
+    assert (await http_client.put("/api/settings", json={"hw_decode": "yes"})).status_code == 422

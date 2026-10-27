@@ -713,6 +713,12 @@ async def scan_video(plex_guid: str, config) -> None:
             logger.warning("SigLIP models unavailable; scanning %s with NudeNet only", title)
             siglip_on = False
 
+        # Frames are sized for NudeNet. SigLIP shrinks every frame to 224 px, so a
+        # 320 px frame loses it nothing, but it must never get less than that.
+        frame_size = _inference_resolution(nudenet_model)
+        if siglip_on:
+            frame_size = max(frame_size, siglip_detector.IMAGE_SIZE)
+
         # Recorded on each segment so the UI can say which model found it. Taken
         # after the 640m fallback above, so it names the model actually used.
         nudenet_detector = f"nudenet-{nudenet_model}" + ("-custom" if custom_model else "")
@@ -786,7 +792,8 @@ async def scan_video(plex_guid: str, config) -> None:
                 )
 
             async for frame_offset_ms, jpeg in extract_frames_batch(
-                part_file, step_ms, part_duration_ms, _inference_resolution(nudenet_model)
+                part_file, step_ms, part_duration_ms, frame_size,
+                hardware=bool(getattr(config, "hw_decode", True)),
             ):
                 # Absolute timestamp across all parts.
                 offset_ms = part_time_offset_ms + frame_offset_ms

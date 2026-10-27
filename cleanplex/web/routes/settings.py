@@ -65,6 +65,7 @@ class SettingsPayload(BaseModel):
     siglip_enabled: Literal["0", "1"] | None = None
     siglip_threshold: str | None = Field(None, pattern=r"^(0(\.\d+)?|1(\.0+)?)$")
     siglip_min_hits: str | None = Field(None, pattern=r"^[1-9]$")
+    hw_decode: Literal["0", "1"] | None = None
 
 
 class ValidateModelPathPayload(BaseModel):

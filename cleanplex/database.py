@@ -238,6 +238,8 @@ DEFAULT_SETTINGS = {
     "siglip_threshold": "0.3",
     # Consecutive SigLIP-only frames needed before a segment is written.
     "siglip_min_hits": "2",
+    # Use the host's hardware video decoder for scans when it has one (#107).
+    "hw_decode": "1",
     "scan_window_start": "23:00",
     "scan_window_end": "06:00",
     "log_level": "INFO",
