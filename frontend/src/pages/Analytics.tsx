@@ -2,7 +2,9 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { api } from '../api/client'
 import { useLiveRefresh } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
+import FalsePositiveButton from '../components/FalsePositiveButton'
 import SkipAnalytics from '../components/SkipAnalytics'
+import DetectionAccuracy from '../components/DetectionAccuracy'
 import { BarChart2, X, AlertTriangle, Trash2, Play, SkipForward, ChevronLeft, ChevronRight } from 'lucide-react'
 
 interface LabelCount {
@@ -195,19 +197,24 @@ export default function Analytics() {
     toggleLabel(key)
   }
 
+  // This list shows active detections only, so a marked segment leaves it, as on
+  // delete; the mark can be undone from the Segments or Library page.
+  const dropFromList = (seg: Segment) => {
+    setSegments(prev => prev.filter(s => s.id !== seg.id))
+    setTotalSegments(t => Math.max(0, t - 1))
+    setLabelCounts(prev => {
+      const tokens = (seg.labels || '').split(',').map(l => l.trim()).filter(Boolean)
+      return prev.map(lc =>
+        tokens.includes(lc.label) ? { ...lc, count: Math.max(0, lc.count - 1) } : lc
+      ).filter(lc => lc.count > 0)
+    })
+  }
+
   const deleteSeg = async (seg: Segment) => {
     setDeletingSegs(d => ({ ...d, [seg.id]: true }))
     try {
       await api.delete(`/api/segments/${seg.id}`)
-      setSegments(prev => prev.filter(s => s.id !== seg.id))
-      setTotalSegments(t => Math.max(0, t - 1))
-      // Update label bar counts
-      setLabelCounts(prev => {
-        const tokens = (seg.labels || '').split(',').map(l => l.trim()).filter(Boolean)
-        return prev.map(lc =>
-          tokens.includes(lc.label) ? { ...lc, count: Math.max(0, lc.count - 1) } : lc
-        ).filter(lc => lc.count > 0)
-      })
+      dropFromList(seg)
     } finally {
       setDeletingSegs(d => ({ ...d, [seg.id]: false }))
     }
@@ -291,6 +298,13 @@ export default function Analytics() {
           Skip History
         </h2>
         <SkipAnalytics />
+      </section>
+
+      <section>
+        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">
+          Detection accuracy
+        </h2>
+        <DetectionAccuracy />
       </section>
 
       {/* ── Label filter chips ─────────────────────────────────────────────── */}
@@ -468,6 +482,7 @@ export default function Analytics() {
                       >
                         <SkipForward size={14} />
                       </button>
+                      <FalsePositiveButton seg={seg} onChange={(_, fp) => { if (fp) dropFromList(seg) }} />
                       <button
                         onClick={() => deleteSeg(seg)}
                         disabled={deletingSegs[seg.id]}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { api } from '../api/client'
 import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
+import FalsePositiveButton, { FalsePositiveTag } from '../components/FalsePositiveButton'
 import SkipFileImport from '../components/SkipFileImport'
 import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2 } from 'lucide-react'
 
@@ -44,6 +45,7 @@ interface Segment {
   labels?: string
   source?: string
   detector?: string
+  false_positive?: boolean
 }
 
 interface ScannerStatus {
@@ -394,7 +396,7 @@ export default function Library() {
         ) : segs.length === 0 ? (
           <p className="text-xs text-gray-600 px-1">No segments found</p>
         ) : segs.map(seg => (
-          <div key={seg.id} className="flex flex-col sm:flex-row gap-0 bg-plex-darker border border-plex-border rounded-lg overflow-hidden">
+          <div key={seg.id} className={`flex flex-col sm:flex-row gap-0 bg-plex-darker border border-plex-border rounded-lg overflow-hidden ${seg.false_positive ? 'opacity-50' : ''}`}>
             {/* Thumbnail: full-width on mobile, fixed sidebar on desktop */}
             <div className="w-full sm:w-40 sm:flex-shrink-0 bg-black relative">
               {seg.has_thumbnail ? (
@@ -414,6 +416,7 @@ export default function Library() {
                   <span className="font-mono text-xs text-plex-orange">{msToTimecode(seg.end_ms)}</span>
                   <span className="text-xs text-gray-600">({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)</span>
                   <SegmentOriginBadge seg={seg} />
+                  {seg.false_positive && <FalsePositiveTag />}
                 </div>
                 {renderLabels(seg.labels)}
               </div>
@@ -440,6 +443,15 @@ export default function Library() {
                 >
                   <SkipForward size={15} />
                 </button>
+                <FalsePositiveButton
+                  seg={seg}
+                  onChange={(id, fp) =>
+                    setLoadedSegments(prev => ({
+                      ...prev,
+                      [guid]: (prev[guid] ?? []).map(x => (x.id === id ? { ...x, false_positive: fp } : x)),
+                    }))
+                  }
+                />
                 <button
                   onClick={() => deleteSegmentInline(seg.id, guid)}
                   disabled={deletingSegs[seg.id]}
