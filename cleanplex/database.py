@@ -209,6 +209,16 @@ DEFAULT_SETTINGS = {
     "scan_workers": "2",
     "segment_gap_ms": "12000",
     "segment_min_hits": "1",
+    # SigLIP fallback: off by default because enabling it downloads ~815 MB of
+    # model weights on the next scan. Its threshold is a softmax share, not a
+    # NudeNet confidence, so it is tuned separately from confidence_threshold.
+    # 0.3 from a 238-frame sample of this library: 54% of NudeNet-flagged thumbnails
+    # score >= 0.3 (that set includes NudeNet false positives); 1 of 11 ordinary
+    # frames did. Biased toward recall, since misses matter more than false hits.
+    "siglip_enabled": "0",
+    "siglip_threshold": "0.3",
+    # Consecutive SigLIP-only frames needed before a segment is written.
+    "siglip_min_hits": "2",
     "scan_window_start": "23:00",
     "scan_window_end": "06:00",
     "log_level": "INFO",

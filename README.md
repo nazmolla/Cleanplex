@@ -76,7 +76,7 @@ sudo journalctl -u cleanplex -f   # View logs
 
 ## Configuration
 
-All configuration is done via the **web UI** at `http://your-server:7979/settings`. No config files to edit.
+All configuration is done via the **web UI** at `http://your-server:7979/settings`, grouped into sections (Plex Connection, Playback, Scan Scope & Schedule, NudeNet Detection, SigLIP Fallback, Segments, Sharing). No config files to edit.
 
 | Setting | Default | Description |
 |---|---|---|
@@ -91,6 +91,9 @@ All configuration is done via the **web UI** at `http://your-server:7979/setting
 | Scan Window | 23:00–06:00 | Time window when background scanning runs |
 | Scanner Workers | 2 | Number of parallel scans (higher = more CPU/memory usage) |
 | Detector Labels | — | Select which nudity types to detect (and skip). Only selected labels trigger skips |
+| SigLIP Fallback | off | Second, whole-frame check that runs only on frames NudeNet did not flag, to catch scenes it misses. Follows Detector Labels. Downloads ~815 MB of model files on first use. Its segments have source `siglip` and medium severity |
+| SigLIP Threshold | 0.3 | Share (0–1) of a frame's match that must go to enabled-label descriptions. Separate from Confidence Threshold |
+| SigLIP Consecutive Frames | 2 | SigLIP-only hits must repeat on this many consecutive sampled frames before a segment is created |
 | Content Ratings | — | Only scan and filter titles matching your selected ratings |
 
 ## Segment Expansion & Skip Logic

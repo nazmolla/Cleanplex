@@ -15,6 +15,7 @@ import httpx
 import cleanplex.plex_client as plex_mod
 
 from .frame_extractor import extract_frames_batch, get_duration_ms
+from . import siglip_detector
 from .logger import get_logger
 from . import database as db
 
@@ -396,6 +397,20 @@ def _classify_frame(
         return False, 0.0, []
 
 
+def _segment_source(nudenet_hits: int, hit_count: int, max_siglip_run: int,
+                    min_hits: int, siglip_min_hits: int) -> str | None:
+    """Decide what a finished cluster becomes: "scanner", "siglip", or nothing.
+
+    Any NudeNet hit makes it a normal scanner segment, judged by segment_min_hits
+    over all its frames as before. A cluster built only from SigLIP fallback hits
+    needs a run of siglip_min_hits consecutive frames, since single-frame SigLIP
+    hits are noisy.
+    """
+    if nudenet_hits > 0:
+        return "scanner" if hit_count >= min_hits else None
+    return "siglip" if max_siglip_run >= siglip_min_hits else None
+
+
 def _cluster_frames(
     flagged_ms: list[int],
     gap_ms: int = 15_000,
@@ -543,6 +558,9 @@ async def scan_video(plex_guid: str, config) -> None:
         cluster_best_jpeg: bytes = b""
         cluster_best_score = 0.0
         cluster_detected_labels: list[str] = []
+        cluster_nudenet_hits = 0
+        cluster_max_siglip_run = 0
+        siglip_run = 0  # consecutive SigLIP-only hit frames ending at the current frame
 
         threshold = config.confidence_threshold
         enabled_labels = set(config.scan_labels) if config.scan_labels else set()
@@ -557,16 +575,27 @@ async def scan_video(plex_guid: str, config) -> None:
                 logger.warning("Could not prepare 640m model for %s; falling back to 320n", title)
                 nudenet_model = "320n"
 
+        siglip_on = bool(getattr(config, "siglip_enabled", False)) and bool(enabled_labels)
+        siglip_threshold = float(getattr(config, "siglip_threshold", 0.3))
+        siglip_min_hits = max(1, int(getattr(config, "siglip_min_hits", 2)))
+        if siglip_on and not await siglip_detector.ensure_models_async():
+            logger.warning("SigLIP models unavailable; scanning %s with NudeNet only", title)
+            siglip_on = False
+
         THUMBNAILS_DIR.mkdir(parents=True, exist_ok=True)
 
         async def _flush_cluster() -> None:
             nonlocal cluster_start_ms, cluster_prev_ms, cluster_hit_count
             nonlocal cluster_best_jpeg, cluster_best_score, cluster_detected_labels, segments_inserted
+            nonlocal cluster_nudenet_hits, cluster_max_siglip_run
 
             if cluster_start_ms is None:
                 return
 
-            if cluster_hit_count >= min_hits:
+            source = _segment_source(
+                cluster_nudenet_hits, cluster_hit_count, cluster_max_siglip_run, min_hits, siglip_min_hits
+            )
+            if source:
                 end_ms = cluster_prev_ms + gap_ms
                 thumb_path = ""
                 if cluster_best_jpeg:
@@ -585,9 +614,15 @@ async def scan_video(plex_guid: str, config) -> None:
                     title=title,
                     start_ms=cluster_start_ms,
                     end_ms=end_ms,
-                    confidence=cluster_best_score,
+                    # Undo the -1 ranking offset applied to SigLIP scores below.
+                    confidence=cluster_best_score if source == "scanner" else cluster_best_score + 1.0,
                     thumbnail_path=thumb_path,
                     labels=labels_str,
+                    # SigLIP-only segments are a safety net with more false positives,
+                    # so they rank one severity below NudeNet hits and say where they
+                    # came from; users can tell them apart and threshold them.
+                    severity="high" if source == "scanner" else "medium",
+                    source=source,
                 )
                 segments_inserted += 1
 
@@ -597,6 +632,8 @@ async def scan_video(plex_guid: str, config) -> None:
             cluster_best_jpeg = b""
             cluster_best_score = 0.0
             cluster_detected_labels = []
+            cluster_nudenet_hits = 0
+            cluster_max_siglip_run = 0
 
         # Scan each part in sequence. For multi-part movies (CD1/CD2) all parts
         # share the same plex_guid; frames are assigned absolute timestamps by
@@ -652,35 +689,43 @@ async def scan_video(plex_guid: str, config) -> None:
                         nudenet_model,
                         nudenet_model_path,
                     )
-                    if is_nude:
-                        if cluster_start_ms is None:
-                            cluster_start_ms = offset_ms
-                            cluster_prev_ms = offset_ms
-                            cluster_hit_count = 1
-                            cluster_best_jpeg = jpeg
-                            cluster_best_score = score
-                            cluster_detected_labels = detected_labels.copy()
-                        elif offset_ms - cluster_prev_ms > gap_ms:
+                    # SigLIP only looks at frames NudeNet passed over: its job is
+                    # the scenes NudeNet misses, not a second opinion on its hits.
+                    siglip_hit = False
+                    if not is_nude and siglip_on:
+                        siglip_score, siglip_label = await asyncio.to_thread(
+                            siglip_detector.score_frame, jpeg, enabled_labels
+                        )
+                        siglip_hit = siglip_score >= siglip_threshold
+                    siglip_run = siglip_run + 1 if siglip_hit else 0
+                    if siglip_hit:
+                        # Ranked below any NudeNet score so a NudeNet frame always
+                        # wins the thumbnail and labels of a mixed cluster.
+                        score, detected_labels = siglip_score - 1.0, [siglip_label]
+
+                    if is_nude or siglip_hit:
+                        if cluster_start_ms is not None and offset_ms - cluster_prev_ms > gap_ms:
                             # Previous segment is complete; persist it immediately.
                             await _flush_cluster()
+                        if cluster_start_ms is None:
                             cluster_start_ms = offset_ms
-                            cluster_prev_ms = offset_ms
-                            cluster_hit_count = 1
+                            cluster_hit_count = 0
                             cluster_best_jpeg = jpeg
                             cluster_best_score = score
                             cluster_detected_labels = detected_labels.copy()
-                        else:
-                            cluster_prev_ms = offset_ms
-                            cluster_hit_count += 1
-                            if score > cluster_best_score:
-                                cluster_best_jpeg = jpeg
-                                cluster_best_score = score
-                                cluster_detected_labels = detected_labels.copy()
-                            else:
-                                # Merge labels from lower-confidence detections
-                                for label in detected_labels:
-                                    if label not in cluster_detected_labels:
-                                        cluster_detected_labels.append(label)
+                        elif score > cluster_best_score:
+                            cluster_best_jpeg = jpeg
+                            cluster_best_score = score
+                            cluster_detected_labels = detected_labels.copy()
+                        elif is_nude:
+                            # Merge labels from lower-confidence detections
+                            for label in detected_labels:
+                                if label not in cluster_detected_labels:
+                                    cluster_detected_labels.append(label)
+                        cluster_prev_ms = offset_ms
+                        cluster_hit_count += 1
+                        cluster_nudenet_hits += int(is_nude)
+                        cluster_max_siglip_run = max(cluster_max_siglip_run, siglip_run)
 
                 progress = (idx + 1) / total_steps
                 if idx % 30 == 0:  # Update DB every ~2.5 min of video at 5 s steps
