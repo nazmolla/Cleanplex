@@ -15,7 +15,7 @@ import httpx
 import cleanplex.plex_client as plex_mod
 
 from .frame_extractor import extract_frames_batch, get_duration_ms
-from . import siglip_detector
+from . import events, siglip_detector
 from .logger import get_logger
 from . import database as db
 
@@ -33,6 +33,8 @@ _model_download_lock = asyncio.Lock()
 
 THUMBNAILS_DIR: Path = Path.home() / ".cleanplex" / "thumbnails"
 MODELS_DIR: Path = Path.home() / ".cleanplex" / "models"
+# Minimum gap between scan_progress events per scan; the UI bar needs no finer.
+PROGRESS_EVENT_INTERVAL_S = 2.0
 NUDENET_640_MODEL_FILENAME = "640m.onnx"
 NUDENET_640_DOWNLOAD_URLS = [
     "https://github.com/notAI-tech/NudeNet/releases/download/v3/640m.onnx",
@@ -121,12 +123,14 @@ def pause_scanner() -> None:
     global _paused
     _paused = True
     logger.info("Scanner paused")
+    events.publish("scanner_changed")
 
 
 def resume_scanner() -> None:
     global _paused
     _paused = False
     logger.info("Scanner resumed")
+    events.publish("scanner_changed")
 
 
 async def force_scan_job(plex_guid: str) -> None:
@@ -153,6 +157,7 @@ async def force_scan_job(plex_guid: str) -> None:
         _queued_force.add(plex_guid)
         _queued_force_ordered.append(plex_guid)
     await _notify_workers()
+    events.publish("scanner_changed")
     logger.warning("Force scan activated for %s — will scan immediately", plex_guid)
 
 
@@ -574,8 +579,13 @@ async def scan_video(plex_guid: str, config) -> None:
     deleted = await db.delete_segments_for_guid(plex_guid)
     if deleted:
         logger.info("Cleared %d previous segment(s) for %s", deleted, title)
+        events.publish("segments_changed", guid=plex_guid)
     await db.update_scan_job_status(plex_guid, "scanning", progress=0.0)
     logger.info("Scanning: %s (%d part(s))", title, len(all_parts))
+    events.publish("scan_started", guid=plex_guid)
+    # Progress events are throttled by wall time, not frames: frame rate varies with
+    # the file and model, and the UI only needs a steady bar.
+    last_progress_event = 0.0
 
     try:
         # Smaller interval improves recall for short scenes; configurable in settings.
@@ -675,6 +685,7 @@ async def scan_video(plex_guid: str, config) -> None:
                     detector=nudenet_detector if source == "scanner" else siglip_detector.DETECTOR_ID,
                 )
                 segments_inserted += 1
+                events.publish("segments_changed", guid=plex_guid)
 
             cluster_start_ms = None
             cluster_prev_ms = 0
@@ -780,6 +791,10 @@ async def scan_video(plex_guid: str, config) -> None:
                 progress = (idx + 1) / total_steps
                 if idx % 30 == 0:  # Update DB every ~2.5 min of video at 5 s steps
                     await db.update_scan_job_status(plex_guid, "scanning", progress=progress)
+                now = time.monotonic()
+                if now - last_progress_event >= PROGRESS_EVENT_INTERVAL_S:
+                    last_progress_event = now
+                    events.publish("scan_progress", guid=plex_guid, progress=round(progress, 4))
 
             # Flush any open cluster before the next part starts; the time gap
             # between parts would prevent natural flushing via the gap_ms check.
@@ -807,6 +822,9 @@ async def scan_video(plex_guid: str, config) -> None:
     finally:
         async with _state_lock:
             _current_guids.discard(plex_guid)
+        # Covers every exit (done, failed, skipped, paused, window ended): the UI
+        # refetches the job to learn which.
+        events.publish("scan_finished", guid=plex_guid)
 
 
 async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:

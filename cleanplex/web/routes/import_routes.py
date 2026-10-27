@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from ...logger import get_logger
 from ... import database as db
+from ... import events
 from ... import importers
 from ...importers._common import ParseError
 
@@ -55,6 +56,7 @@ async def _store(plex_guid: str, segments: list[dict], source: str, replace: boo
         await db.delete_segments_for_guid(plex_guid)
 
     count = await db.insert_segments_bulk(plex_guid, job.get("title") or "", segments, source)
+    events.publish("segments_changed", guid=plex_guid)
     logger.info("Imported %d segment(s) for '%s' from %s", count, job.get("title"), source)
 
     return {

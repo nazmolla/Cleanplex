@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from ...logger import get_logger
 import cleanplex.plex_client as plex_mod
 from ... import database as db
+from ... import events
 from ... import frame_extractor
 
 logger = get_logger(__name__)
@@ -162,6 +163,7 @@ async def sync_library(library_id: str):
             added += 1
 
         logger.info(f"Library {library_id} synced: {added} new titles added")
+        events.publish("titles_changed", library_id=library_id)
         return {"ok": True, "synced": len(items), "new": added, "removed": removed}
     except RuntimeError as e:
         logger.error(f"Plex client error during library sync: {e}")
@@ -583,6 +585,7 @@ async def delete_segment(segment_id: int):
         raise HTTPException(status_code=404, detail="Segment not found")
 
     _refresh_cleanplex_summary_for_guid(seg["plex_guid"])
+    events.publish("segments_changed", guid=seg["plex_guid"])
 
     return {"ok": True}
 
@@ -592,6 +595,7 @@ async def delete_all_segments_for_title(plex_guid: str):
     """Delete all segments for a specific title."""
     deleted = await db.delete_segments_for_guid(plex_guid)
     _refresh_cleanplex_summary_for_guid(plex_guid)
+    events.publish("segments_changed", guid=plex_guid)
     return {"ok": True, "deleted": deleted}
 
 

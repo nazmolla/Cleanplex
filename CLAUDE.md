@@ -48,6 +48,7 @@ Every change — regardless of size — must follow these rules. No exceptions.
 | `watcher.py` | Polling loops only — no business logic |
 | `sync.py` / `sync_merge.py` | GitHub sync and segment merge logic |
 | `bg_jobs.py` | Background job lifecycle — no domain logic |
+| `events.py` | In-process event bus streamed to browsers by `GET /api/events` (SSE). Publish where a change happens; events name what changed, not the new state |
 | `web/routes/` | HTTP surface only — call domain modules, never raw DB |
 
 ---

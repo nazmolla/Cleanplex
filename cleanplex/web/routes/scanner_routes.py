@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from ...logger import get_logger
 import cleanplex.plex_client as plex_mod
 from ... import database as db
+from ... import events
 from ... import scanner as scan_mod
 
 logger = get_logger(__name__)
@@ -96,6 +97,7 @@ async def scan_title(body: ScanTitleRequest):
     else:
         await scan_mod.enqueue(plex_guid)
     logger.info(f"Title {plex_guid} queued. Queue size: {scan_mod.get_queue_size()}")
+    events.publish("scanner_changed")
     return {"ok": True, "queued": plex_guid}
 
 
@@ -116,6 +118,7 @@ async def scan_titles(body: ScanTitlesRequest):
         else:
             await scan_mod.enqueue(guid)
     logger.info("Queued %d titles for rescan (now=%s)", len(known), body.now)
+    events.publish("scanner_changed")
     return {"ok": True, "queued": len(known), "missing": [g for g in guids if g not in jobs]}
 
 
@@ -170,6 +173,7 @@ async def scan_library(library_id: str, body: ScanLibraryRequest):
         else:
             skipped += 1
 
+    events.publish("scanner_changed")
     return {"ok": True, "queued": queued, "skipped_ineligible": skipped}
 
 
@@ -196,6 +200,7 @@ async def skip_current_scan(body: SkipCurrentScanRequest | None = None):
             raise HTTPException(status_code=404, detail="Requested scan is not currently active")
     else:
         scan_mod.skip_current_scan()
+    events.publish("scanner_changed")
     return {"ok": True, "skipped": target_guid}
 
 
@@ -217,6 +222,7 @@ async def reorder_queue():
     then TV episodes grouped by show). Use this to fix queue ordering at any time
     without restarting the server."""
     await scan_mod.enqueue_pending()
+    events.publish("scanner_changed")
     return {"ok": True, "queue_size": scan_mod.get_queue_size()}
 
 
@@ -228,4 +234,5 @@ async def toggle_title_ignored(plex_guid: str, body: ToggleIgnoredRequest):
         raise HTTPException(status_code=404, detail="Title not found")
     
     await db.set_ignored(plex_guid, body.ignored)
+    events.publish("titles_changed", library_id=job.get("library_id") or "")
     return {"ok": True, "plex_guid": plex_guid, "ignored": body.ignored}

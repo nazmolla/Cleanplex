@@ -112,3 +112,18 @@ def test_segment_source_rules():
     assert scanner._segment_source(1, 1, 0, 2, 2) is None
     assert scanner._segment_source(0, 3, 2, 1, 2) == "siglip"
     assert scanner._segment_source(0, 3, 1, 1, 2) is None
+
+
+async def test_scan_announces_start_segments_and_finish(tmp_path):
+    """#89: the UI follows a scan through events instead of polling."""
+    from cleanplex import events
+
+    await _job(tmp_path)
+    with events.subscribe() as q:
+        await _scan(nudenet_hits={6}, siglip_hits=set())
+        seen = [q.get_nowait() for _ in range(q.qsize())]
+
+    types = [t for t, _ in seen]
+    assert types[0] == "scan_started" and types[-1] == "scan_finished"
+    assert ("segments_changed", {"guid": "g"}) in seen
+    assert all(d.get("guid") == "g" for _, d in seen)

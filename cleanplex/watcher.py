@@ -9,6 +9,7 @@ from datetime import datetime
 
 from .logger import get_logger
 from . import database as db
+from . import events
 from . import filter_engine
 from . import importers
 from .scanner import enqueue, enqueue_pending, scanner_loop
@@ -22,10 +23,12 @@ skip_events: deque[dict] = deque(maxlen=50)
 # Floor for adaptive polling, so a session sitting right before a segment cannot
 # drive the poll rate high enough to hammer the Plex API.
 MIN_POLL_INTERVAL_S = 1.0
+_last_sessions_signature: tuple = ()
 
 
 async def session_watcher_loop(get_config_fn, get_client_fn) -> None:
     """Poll Plex sessions every `poll_interval` seconds and fire skips."""
+    global _last_sessions_signature
     while True:
         config = await get_config_fn()
 
@@ -37,6 +40,12 @@ async def session_watcher_loop(get_config_fn, get_client_fn) -> None:
         try:
             client = get_client_fn()
             sessions = await client.get_active_sessions()
+            # Tell the UI when streams start, stop or move. Whole seconds, so a paused
+            # stream stops producing events while a playing one ticks each poll.
+            signature = tuple(sorted((s.session_key, s.position_ms // 1000) for s in sessions))
+            if signature != _last_sessions_signature:
+                _last_sessions_signature = signature
+                events.publish("sessions_changed")
 
             # Drop tracking state for sessions that ended, restoring volume for any
             # that stopped mid-mute. Plex reuses session keys, so stale entries
@@ -116,6 +125,7 @@ async def _import_sidecar(item) -> bool:
 
         segments, source = importers.parse_file(sidecar)
         count = await db.insert_segments_bulk(item.plex_guid, item.title, segments, source)
+        events.publish("segments_changed", guid=item.plex_guid)
         await db.update_scan_job_status(item.plex_guid, "completed", progress=100)
         logger.info(
             "Imported %d segment(s) for '%s' from %s — skipping ML scan",

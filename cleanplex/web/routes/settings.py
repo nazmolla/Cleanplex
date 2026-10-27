@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from ...logger import get_logger
 from ... import database as db
+from ... import events
 import cleanplex.plex_client as plex_mod
 from ... import scanner as scan_mod
 from .segments import _invalidate_scan_labels_cache
@@ -119,7 +120,8 @@ async def update_settings(payload: SettingsPayload):
     # Restart scanner pool if worker count changed
     if scan_workers_changed:
         await scan_mod.request_scanner_restart()
-    
+
+    events.publish("settings_changed")
     return {"ok": True}
 
 
