@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { api } from '../api/client'
 import SkipFileImport from '../components/SkipFileImport'
 import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2 } from 'lucide-react'
@@ -168,6 +168,10 @@ export default function Library() {
   const [expandedSeasons, setExpandedSeasons] = useState<Set<string>>(new Set())
   const [expandedSegments, setExpandedSegments] = useState<Set<string>>(new Set())
   const [loadedSegments, setLoadedSegments] = useState<Record<string, Segment[]>>({})
+  // The title's segment_count when its list was fetched. Compared with later counts
+  // rather than the list length, because the list hides disabled labels and the
+  // count does not; a length check would refetch forever.
+  const loadedCounts = useRef<Record<string, number>>({})
   const [loadingSegments, setLoadingSegments] = useState<Set<string>>(new Set())
   const [deletingSegs, setDeletingSegs] = useState<Record<number, boolean>>({})
   const [deletingAllSegs, setDeletingAllSegs] = useState<Record<string, boolean>>({})
@@ -262,9 +266,10 @@ export default function Library() {
       isOpen ? next.delete(guid) : next.add(guid)
       return next
     })
-    // Lazy-fetch on first expand only.
+    // Fetch on expand unless the cached list is still current (see the effect below).
     if (!isOpen && !(guid in loadedSegments)) {
       setLoadingSegments(prev => new Set(prev).add(guid))
+      loadedCounts.current[guid] = titles.find(t => t.plex_guid === guid)?.segment_count ?? 0
       try {
         const d = await api.get<{ segments: Segment[] }>(`/api/titles/${encodeURIComponent(guid)}/segments`)
         setLoadedSegments(prev => ({ ...prev, [guid]: d.segments }))
@@ -275,6 +280,35 @@ export default function Library() {
       }
     }
   }
+
+  // When refreshed titles report a different segment count than a cached list was
+  // fetched at (a scan or import added or removed segments), refetch the open ones
+  // in one batch request and drop the rest so they refetch on their next expand.
+  // Keyed on titles only: expanding a title must not trigger a refetch here.
+  useEffect(() => {
+    const stale = titles.filter(t => t.plex_guid in loadedCounts.current && loadedCounts.current[t.plex_guid] !== t.segment_count)
+    if (stale.length === 0) return
+    const open = stale.filter(t => expandedSegments.has(t.plex_guid)).map(t => t.plex_guid)
+    const closed = stale.filter(t => !expandedSegments.has(t.plex_guid)).map(t => t.plex_guid)
+    for (const t of stale) loadedCounts.current[t.plex_guid] = t.segment_count
+    if (closed.length) {
+      setLoadedSegments(prev => {
+        const next = { ...prev }
+        for (const g of closed) delete next[g]
+        return next
+      })
+      for (const g of closed) delete loadedCounts.current[g]
+    }
+    if (open.length) {
+      api.post<{ segments: Segment[] }>('/api/titles/segments/batch', { guids: open })
+        .then(d => {
+          const byGuid: Record<string, Segment[]> = Object.fromEntries(open.map(g => [g, []]))
+          for (const seg of d.segments) byGuid[seg.plex_guid]?.push(seg)
+          setLoadedSegments(prev => ({ ...prev, ...byGuid }))
+        })
+        .catch(() => {})
+    }
+  }, [titles])
 
   const deleteAllTitleSegs = async (guid: string) => {
     setDeletingAllSegs(d => ({ ...d, [guid]: true }))

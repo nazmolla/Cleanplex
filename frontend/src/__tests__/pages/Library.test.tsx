@@ -229,6 +229,7 @@ describe('Library', () => {
       expect(screen.getByRole('button', { name: /^All/ })).toHaveTextContent('(3)')
     })
   })
+
   it('keeps refreshing titles while a scan runs (#88)', async () => {
     const scanningStatus = { ...scannerIdle, active_scans: [{ guid: 'g2', title: 'Movie B', progress: 0.5, status: 'scanning' }] }
     mockApi.get.mockImplementation((path: string) => {
@@ -254,5 +255,41 @@ describe('Library', () => {
     }
 
     await waitFor(() => expect(titleCalls()).toBeGreaterThanOrEqual(before + 2))
+  })
+
+  it('refetches an open segment list when a scan changes its count (#90)', async () => {
+    const seg = (id: number) => ({
+      id, plex_guid: 'g1', title: 'Movie A', start_ms: id * 60_000, end_ms: id * 60_000 + 5000,
+      confidence: 0.9, thumbnail_url: '', created_at: '', labels: '', category: 'nudity',
+      severity: 'high', action: 'skip', channel: 'both', language: '', source: 'scanner',
+    })
+    let count = 1
+    const scanningStatus = { ...scannerIdle, active_scans: [{ guid: 'g1', title: 'Movie A', progress: 0.5, status: 'scanning' }] }
+    mockApi.get.mockImplementation((path: string) => {
+      if (path.includes('scanner-status')) return Promise.resolve({ ...scanningStatus })
+      if (path.includes('libraries') && !path.includes('titles')) return Promise.resolve({ libraries })
+      if (path.startsWith('/api/titles/')) return Promise.resolve({ segments: [seg(1)] })
+      if (path.includes('titles')) return Promise.resolve({ titles: [{ ...titles[0], segment_count: count }] })
+      return Promise.resolve({})
+    })
+    mockApi.post.mockImplementation((path: string) =>
+      Promise.resolve(path.includes('segments/batch') ? { segments: [seg(1), seg(2)] } : { ok: true }))
+    renderLibrary()
+    await waitFor(() => screen.getAllByText('Movies')[0])
+    await act(async () => {
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: 'lib1' } })
+    })
+    fireEvent.click(await screen.findByTitle('Toggle segments'))
+    await waitFor(() => expect(screen.getByText('00:01:00')).toBeInTheDocument())
+    expect(screen.queryByText('00:02:00')).not.toBeInTheDocument()
+
+    count = 2
+    for (let i = 0; i < 6; i++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    }
+
+    await waitFor(() => expect(screen.getByText('00:02:00')).toBeInTheDocument())
+    const batchCalls = mockApi.post.mock.calls.filter(([p]: [string]) => p.includes('segments/batch'))
+    expect(batchCalls).toHaveLength(1)
   })
 })
