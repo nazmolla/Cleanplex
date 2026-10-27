@@ -123,6 +123,7 @@ async def extract_frames_batch(
     file_path: str,
     step_ms: int,
     duration_ms: int,
+    size: int = 320,
 ) -> AsyncGenerator[tuple[int, bytes | None], None]:
     """Yield (offset_ms, jpeg_bytes) for every step_ms interval via one ffmpeg process.
 
@@ -138,6 +139,10 @@ async def extract_frames_batch(
 
     Yields None for offset_ms values where ffmpeg produced no frame (e.g. the video
     ended earlier than duration_ms indicated).
+
+    Frames are scaled so their longest side is *size*, keeping aspect ratio. NudeNet
+    pads each frame to a square and resizes it to the model's input size, so this
+    should equal that size: smaller starves the model of detail, larger is wasted.
     """
     # Express step as a rational fps fraction to avoid float rounding (e.g. 1000/5000).
     fps_str = f"1000/{step_ms}"
@@ -145,7 +150,7 @@ async def extract_frames_batch(
         _FFMPEG_BIN,
         "-loglevel", "error",
         "-i", file_path,
-        "-vf", f"fps={fps_str},scale=320:-2",
+        "-vf", f"fps={fps_str},scale={size}:{size}:force_original_aspect_ratio=decrease:force_divisible_by=2",
         "-f", "image2pipe",
         "-vcodec", "mjpeg",
         "pipe:1",

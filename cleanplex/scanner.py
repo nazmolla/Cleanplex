@@ -249,14 +249,18 @@ async def enqueue_pending() -> None:
         )
 
 
+def _inference_resolution(model_name: str) -> int:
+    """Return the square input size NudeNet uses for this model name (640m or 320n)."""
+    return 640 if (model_name or "320n").strip().lower().startswith("640") else 320
+
+
 def _get_detector(model_name: str = "320n", model_path: str = ""):
-    model_name_normalized = (model_name or "320n").strip().lower()
     detector = getattr(_thread_local, "nude_detector", None)
     detector_key = getattr(_thread_local, "nude_detector_key", None)
 
     # 640m is pre-warmed by scan_video() via _ensure_640m_model_async() before any
     # thread is dispatched. _get_detector() only does a local path check here.
-    requested_resolution = 640 if model_name_normalized.startswith("640") else 320
+    requested_resolution = _inference_resolution(model_name)
     selected_model_path = (model_path or "").strip()
     if requested_resolution == 640 and not selected_model_path:
         # Fallback: attempt sync check in case caller skipped pre-warm.
@@ -607,7 +611,9 @@ async def scan_video(plex_guid: str, config) -> None:
                     part_idx + 1, len(all_parts), title, part_file, part_time_offset_ms,
                 )
 
-            async for frame_offset_ms, jpeg in extract_frames_batch(part_file, step_ms, part_duration_ms):
+            async for frame_offset_ms, jpeg in extract_frames_batch(
+                part_file, step_ms, part_duration_ms, _inference_resolution(nudenet_model)
+            ):
                 # Absolute timestamp across all parts.
                 offset_ms = part_time_offset_ms + frame_offset_ms
                 idx = offset_ms // step_ms

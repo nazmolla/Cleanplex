@@ -31,3 +31,36 @@ async def test_stream_clip_yields_nothing_for_an_unreadable_file(tmp_path):
 
     assert data == b""
 
+
+# ── Scan frame sizing (issue #82) ─────────────────────────────────────────────
+
+def _make_video(path, size):
+    subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", f"testsrc=size={size}:rate=5",
+         "-t", "2", "-c:v", "mpeg4", str(path)],
+        check=True,
+    )
+
+
+async def _first_frame_size(path, size):
+    import cv2
+    import numpy as np
+
+    async for _, jpeg in frame_extractor.extract_frames_batch(str(path), 1000, 2000, size):
+        mat = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        return mat.shape[1], mat.shape[0]
+
+
+@pytest.mark.parametrize("size, expected", [(320, (320, 180)), (640, (640, 360))])
+async def test_landscape_frames_match_the_model_input_width(tmp_path, size, expected):
+    src = tmp_path / "wide.mkv"
+    _make_video(src, "1920x1080")
+
+    assert await _first_frame_size(src, size) == expected
+
+
+async def test_portrait_frames_are_bounded_by_height(tmp_path):
+    src = tmp_path / "tall.mkv"
+    _make_video(src, "720x1280")
+
+    assert await _first_frame_size(src, 640) == (360, 640)
