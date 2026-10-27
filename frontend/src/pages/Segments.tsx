@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
+import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import ScanContextMenu, { ScanTarget } from '../components/ScanContextMenu'
 import { Film, Tv, ChevronRight, ChevronDown, Trash2, AlertTriangle, SkipForward, Play, Tv2 } from 'lucide-react'
@@ -295,62 +296,64 @@ export default function Segments() {
     api.get<{ libraries: Library[] }>('/api/libraries').then(d => setLibraries(d.libraries))
   }, [])
 
-  // Poll scanner status every 3s so Segments page mirrors live scan activity.
-  // AbortController prevents stale responses from overwriting newer state.
+  const scannerCtl = useRef<AbortController | null>(null)
+  const loadScanner = useCallback(() => {
+    scannerCtl.current?.abort()
+    const controller = (scannerCtl.current = new AbortController())
+    api.get<ScannerStatus>('/api/sessions/scanner-status', { signal: controller.signal })
+      .then(setScannerStatus)
+      .catch(() => {})
+  }, [])
   useEffect(() => {
-    let controller = new AbortController()
+    loadScanner()
+    return () => scannerCtl.current?.abort()
+  }, [loadScanner])
 
-    const tick = () => {
-      controller.abort()
-      controller = new AbortController()
-      api.get<ScannerStatus>('/api/sessions/scanner-status', { signal: controller.signal })
-        .then(setScannerStatus)
-        .catch(() => {})
-    }
+  // Read by the live handlers below, which are registered once.
+  const view = useRef({ selectedLib, selectedTitle, selectedGroup })
+  view.current = { selectedLib, selectedTitle, selectedGroup }
+  const selectedGuids = () => {
+    const { selectedGroup: g, selectedTitle: t } = view.current
+    return g ? g.titles.map(x => x.plex_guid) : t ? [t.plex_guid] : []
+  }
 
-    tick()
-    const id = setInterval(tick, 3000)
-    return () => {
-      clearInterval(id)
-      controller.abort()
-    }
+  const segmentsCtl = useRef<AbortController | null>(null)
+  const reloadSelection = useCallback(() => {
+    const guids = selectedGuids()
+    if (guids.length === 0) return
+    segmentsCtl.current?.abort()
+    const controller = (segmentsCtl.current = new AbortController())
+    const load = view.current.selectedGroup
+      ? api.post<{ segments: Segment[] }>('/api/titles/segments/batch', { guids })
+      : api.get<{ segments: Segment[] }>(`/api/titles/${encodeURIComponent(guids[0])}/segments`, {
+          signal: controller.signal,
+        })
+    load.then(d => !controller.signal.aborted && setSegments(d.segments)).catch(() => {})
   }, [])
 
-  // Keep the open title or group live while it is rescanned: refetch its segments
-  // on every scanner tick where one of its titles is scanning, plus once when that
-  // scan finishes (that is when the final segments land), and refresh the tree
-  // counts then too. Ends on its own once nothing selected is scanning.
-  const prevScanningRef = useRef<Set<string>>(new Set())
-  useEffect(() => {
-    if (!scannerStatus) return
-    const scanning = new Set(scannerStatus.active_scans.map(a => a.guid))
-    const finished = [...prevScanningRef.current].filter(g => !scanning.has(g))
-    prevScanningRef.current = scanning
+  const reloadTree = useCallback(() => {
+    const lib = view.current.selectedLib
+    if (!lib) return
+    api.get<{ titles: Title[] }>(`/api/libraries/${lib.id}/titles`)
+      .then(d => {
+        if (view.current.selectedLib?.id === lib.id) setTitles(d.titles.filter(t => t.segment_count > 0))
+      })
+      .catch(() => {})
+  }, [])
 
-    const selectedGuids = selectedGroup
-      ? selectedGroup.titles.map(t => t.plex_guid)
-      : selectedTitle ? [selectedTitle.plex_guid] : []
-    const touched = (gs: string[]) => gs.some(g => selectedGuids.includes(g))
-    const scanningSelected = touched([...scanning])
-    const finishedSelected = touched(finished)
-    if (!scanningSelected && !finishedSelected && finished.length === 0) return
-
-    const controller = new AbortController()
-    if (scanningSelected || finishedSelected) {
-      const load = selectedGroup
-        ? api.post<{ segments: Segment[] }>('/api/titles/segments/batch', { guids: selectedGuids })
-        : api.get<{ segments: Segment[] }>(`/api/titles/${encodeURIComponent(selectedGuids[0])}/segments`, {
-            signal: controller.signal,
-          })
-      load.then(d => !controller.signal.aborted && setSegments(d.segments)).catch(() => {})
-    }
-    if (finished.length > 0 && selectedLib) {
-      api.get<{ titles: Title[] }>(`/api/libraries/${selectedLib.id}/titles`, { signal: controller.signal })
-        .then(d => setTitles(d.titles.filter(t => t.segment_count > 0)))
-        .catch(() => {})
-    }
-    return () => controller.abort()
-  }, [scannerStatus])
+  // Live (#89): the banner follows the scanner; the open title or group reloads when
+  // its segments change (a rescan clears and rewrites them as it goes); the tree's
+  // counts reload when any segments or titles in this library change.
+  useLiveRefresh(['scan_started', 'scan_finished', 'scanner_changed'], loadScanner, { fallbackMs: 30_000 })
+  useLiveEvent(['scan_progress'], (_, d) => setScannerStatus(s => withScanProgress(s, d)))
+  useLiveRefresh(['segments_changed'], reloadSelection, {
+    debounceMs: 500,
+    relevant: (_, d) => !d.guid || selectedGuids().includes(d.guid),
+  })
+  useLiveRefresh(['segments_changed', 'titles_changed', 'scan_finished'], reloadTree, {
+    debounceMs: 1000,
+    relevant: (type, d) => type !== 'titles_changed' || !d.library_id || d.library_id === view.current.selectedLib?.id,
+  })
 
   const selectLib = async (lib: Library) => {
     setSelectedLib(lib)

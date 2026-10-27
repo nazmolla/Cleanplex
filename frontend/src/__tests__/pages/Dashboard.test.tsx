@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Dashboard from '../../pages/Dashboard'
+import { emitLive } from '../../test/fakeEventSource'
 
 // Mock the api module so tests don't make real HTTP calls
 vi.mock('../../api/client', () => ({
@@ -119,15 +120,31 @@ describe('Dashboard', () => {
     await waitFor(() => expect(screen.getByText(/Paused/)).toBeInTheDocument())
   })
 
-  it('polls API every 5 seconds', async () => {
+  it('refreshes streams when the backend reports a change, not on a 5 s poll', async () => {
     renderDashboard()
     await waitFor(() => expect(mockApi.get).toHaveBeenCalled())
-    const callsBefore = mockApi.get.mock.calls.length
+    const sessionCalls = () => mockApi.get.mock.calls.filter(([p]: [string]) => p === '/api/sessions').length
+    const before = sessionCalls()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+    expect(sessionCalls()).toBe(before)
 
     await act(async () => {
-      vi.advanceTimersByTime(5000)
+      emitLive('sessions_changed')
+      await vi.advanceTimersByTimeAsync(300)
     })
-    await waitFor(() => expect(mockApi.get.mock.calls.length).toBeGreaterThan(callsBefore))
+    expect(sessionCalls()).toBe(before + 1)
+  })
+
+  it('still refreshes on the slow fallback if the stream is quiet', async () => {
+    renderDashboard()
+    await waitFor(() => expect(mockApi.get).toHaveBeenCalled())
+    const sessionCalls = () => mockApi.get.mock.calls.filter(([p]: [string]) => p === '/api/sessions').length
+    const before = sessionCalls()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+
+    expect(sessionCalls()).toBe(before + 1)
   })
 
   it('aborts in-flight requests when component unmounts', async () => {

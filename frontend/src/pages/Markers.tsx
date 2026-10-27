@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { api } from '../api/client'
+import { useLiveRefresh } from '../api/events'
 import {
   Film, Tv, ChevronRight, ChevronDown, RefreshCw, Play, Save,
   AlertCircle, CheckCircle, Bookmark, Loader2, Trash2, Plus, Tv2,
@@ -836,6 +837,18 @@ export default function Markers() {
       })
       .finally(() => setLoadingTitles(false))
   }, [selectedLibrary])
+
+  // Live (#89): marker edits and syncs (here or in another tab) reload the list
+  // quietly, without resetting the loading or sync-progress state.
+  const selectedLibraryRef = useRef(selectedLibrary)
+  selectedLibraryRef.current = selectedLibrary
+  useLiveRefresh(['markers_changed'], () => {
+    const lib = selectedLibraryRef.current
+    if (!lib) return
+    api.get<{ titles: TitleRow[]; cached: boolean }>(`/api/markers/libraries/${lib}/titles`)
+      .then(data => { if (selectedLibraryRef.current === lib) setTitles(data.titles || []) })
+      .catch(() => {})
+  }, { debounceMs: 1000 })
 
   const handleRefreshLibrary = async () => {
     if (!selectedLibrary) return

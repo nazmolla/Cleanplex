@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Library from '../../pages/Library'
+import { emitLive } from '../../test/fakeEventSource'
 
 vi.mock('../../api/client', () => ({
   api: {
@@ -230,15 +231,7 @@ describe('Library', () => {
     })
   })
 
-  it('keeps refreshing titles while a scan runs (#88)', async () => {
-    const scanningStatus = { ...scannerIdle, active_scans: [{ guid: 'g2', title: 'Movie B', progress: 0.5, status: 'scanning' }] }
-    mockApi.get.mockImplementation((path: string) => {
-      // A fresh object per poll, as the real API returns; the old bug only shows then.
-      if (path.includes('scanner-status')) return Promise.resolve({ ...scanningStatus })
-      if (path.includes('libraries') && !path.includes('titles')) return Promise.resolve({ libraries })
-      if (path.includes('titles')) return Promise.resolve({ titles })
-      return Promise.resolve({})
-    })
+  it('reloads titles when a scan in this library finishes (#88, #89)', async () => {
     renderLibrary()
     await waitFor(() => screen.getAllByText('Movies')[0])
     await act(async () => {
@@ -248,13 +241,13 @@ describe('Library', () => {
     const titleCalls = () => mockApi.get.mock.calls.filter(([p]: [string]) => p.includes('/titles')).length
     const before = titleCalls()
 
-    // Several 3 s status polls land inside this window; the 5 s refresh must still fire.
-    // Step a second at a time so each status response lands between timers.
-    for (let i = 0; i < 11; i++) {
-      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
-    }
+    await act(async () => {
+      emitLive('scan_finished', { guid: 'g1' })
+      emitLive('scan_finished', { guid: 'not-in-this-library' })
+      await vi.advanceTimersByTimeAsync(600)
+    })
 
-    await waitFor(() => expect(titleCalls()).toBeGreaterThanOrEqual(before + 2))
+    expect(titleCalls()).toBe(before + 1)
   })
 
   it('refetches an open segment list when a scan changes its count (#90)', async () => {
@@ -284,9 +277,10 @@ describe('Library', () => {
     expect(screen.queryByText('00:02:00')).not.toBeInTheDocument()
 
     count = 2
-    for (let i = 0; i < 6; i++) {
-      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
-    }
+    await act(async () => {
+      emitLive('segments_changed', { guid: 'g1' })
+      await vi.advanceTimersByTimeAsync(600)
+    })
 
     await waitFor(() => expect(screen.getByText('00:02:00')).toBeInTheDocument())
     const batchCalls = mockApi.post.mock.calls.filter(([p]: [string]) => p.includes('segments/batch'))

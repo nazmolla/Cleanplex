@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
+import { useLiveRefresh } from '../api/events'
 import { Activity, MonitorSmartphone, Film } from 'lucide-react'
 
 interface CategoryCount {
@@ -28,7 +29,10 @@ export default function SkipAnalytics() {
   const [titles, setTitles] = useState<TitleCount[]>([])
   const [loading, setLoading] = useState(true)
 
-  // One fetch on mount; skip history is not live data worth polling for.
+  // Refetched when a skip or mute is recorded (#89); `loading` is only set by the
+  // first fetch, so live updates do not flash the loading text.
+  const [liveTick, setLiveTick] = useState(0)
+  useLiveRefresh(['skip_recorded'], () => setLiveTick(n => n + 1), { debounceMs: 1000 })
   useEffect(() => {
     const controller = new AbortController()
     Promise.all([
@@ -52,7 +56,7 @@ export default function SkipAnalytics() {
         if (err.name !== 'AbortError') setLoading(false)
       })
     return () => controller.abort()
-  }, [])
+  }, [liveTick])
 
   if (loading) return <div className="text-gray-500 text-sm">Loading skip history...</div>
 

@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
+import { useLiveRefresh } from '../api/events'
 import { SkipForward, Clock, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
 
 interface SkipEvent {
@@ -42,38 +43,36 @@ export default function RecentSkips() {
   const [to, setTo] = useState('')
   const [error, setError] = useState('')
 
-  // Refetch whenever the page or date window changes, and every 5s while mounted
-  // so new skips appear like the rest of the dashboard. Each tick aborts the last.
-  useEffect(() => {
-    let controller = new AbortController()
+  // Each load aborts the previous one so an older page or date window never wins.
+  const controllerRef = useRef<AbortController | null>(null)
+  const load = useCallback(async () => {
+    controllerRef.current?.abort()
+    const controller = (controllerRef.current = new AbortController())
     const params = new URLSearchParams({
       limit: String(PAGE_SIZE),
       offset: String(page * PAGE_SIZE),
     })
     if (from) params.set('start', dayStart(from))
     if (to) params.set('end', dayStart(to, 1))
-
-    const load = async () => {
-      controller.abort()
-      controller = new AbortController()
-      try {
-        const d = await api.get<HistoryResponse>(`/api/analytics/skips/history?${params}`, {
-          signal: controller.signal,
-        })
-        setData(d)
-        setError('')
-      } catch (err: any) {
-        if (err.name !== 'AbortError') setError('Could not load skip history.')
-      }
-    }
-
-    load()
-    const id = setInterval(load, 5000)
-    return () => {
-      clearInterval(id)
-      controller.abort()
+    try {
+      const d = await api.get<HistoryResponse>(`/api/analytics/skips/history?${params}`, {
+        signal: controller.signal,
+      })
+      setData(d)
+      setError('')
+    } catch (err: any) {
+      if (err.name !== 'AbortError') setError('Could not load skip history.')
     }
   }, [page, from, to])
+
+  // Reload when the page or date window changes.
+  useEffect(() => {
+    load()
+    return () => controllerRef.current?.abort()
+  }, [load])
+
+  // Live: a new skip or mute appears as soon as the filter engine records it.
+  useLiveRefresh(['skip_recorded'], load)
 
   const pages = Math.max(1, Math.ceil(data.total / PAGE_SIZE))
   const setRange = (setter: (v: string) => void) => (e: React.ChangeEvent<HTMLInputElement>) => {

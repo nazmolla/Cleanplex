@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { api } from '../api/client'
+import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import SkipFileImport from '../components/SkipFileImport'
 import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2 } from 'lucide-react'
@@ -200,57 +201,57 @@ export default function Library() {
       .catch(() => {})
   }, [])
 
-  // Poll scanner status every 3s.
-  // AbortController prevents stale responses from overwriting newer state.
-  useEffect(() => {
-    let controller = new AbortController()
-
-    const tick = () => {
-      controller.abort()
-      controller = new AbortController()
-      api.get<ScannerStatus>('/api/sessions/scanner-status', { signal: controller.signal })
-        .then(setScannerStatus)
-        .catch(() => {})
-    }
-
-    tick()
-    const id = setInterval(tick, 3000)
-    return () => {
-      clearInterval(id)
-      controller.abort()
-    }
+  // Each load aborts the previous one so a stale response never overwrites a newer one.
+  const scannerCtl = useRef<AbortController | null>(null)
+  const loadScanner = useCallback(() => {
+    scannerCtl.current?.abort()
+    const controller = (scannerCtl.current = new AbortController())
+    api.get<ScannerStatus>('/api/sessions/scanner-status', { signal: controller.signal })
+      .then(setScannerStatus)
+      .catch(() => {})
   }, [])
 
-  // Auto-refresh titles while anything is scanning. Keyed on a boolean, not the
-  // status object: the 3 s status poll replaces that object, and depending on it
-  // recreated this 5 s interval before it could ever fire (#88). When scanning
-  // stops, the cleanup reloads once more so finished titles show as done.
-  const anyScanActive = (scannerStatus?.active_scans.length ?? 0) > 0
+  const titlesCtl = useRef<AbortController | null>(null)
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  const reloadTitles = useCallback(() => {
+    const lib = selectedRef.current
+    if (!lib) return
+    titlesCtl.current?.abort()
+    const controller = (titlesCtl.current = new AbortController())
+    api.get<{ titles: Title[] }>(`/api/libraries/${lib.id}/titles`, { signal: controller.signal })
+      // Ignore a reply for a library the user has since switched away from.
+      .then(d => { if (selectedRef.current?.id === lib.id) setTitles(d.titles) })
+      .catch(() => {})
+  }, [])
+
   useEffect(() => {
-    if (!selected || !anyScanActive) return
-    let controller = new AbortController()
-
-    const tick = async () => {
-      controller.abort()
-      controller = new AbortController()
-      try {
-        const d = await api.get<{ titles: Title[] }>(
-          `/api/libraries/${selected.id}/titles`,
-          { signal: controller.signal },
-        )
-        setTitles(d.titles)
-      } catch {}
-    }
-
-    const id = setInterval(tick, 5000)
+    loadScanner()
     return () => {
-      clearInterval(id)
-      controller.abort()
-      api.get<{ titles: Title[] }>(`/api/libraries/${selected.id}/titles`)
-        .then(d => setTitles(d.titles))
-        .catch(() => {})
+      scannerCtl.current?.abort()
+      titlesCtl.current?.abort()
     }
-  }, [selected, anyScanActive])
+  }, [loadScanner])
+
+  // Live (#89): the banner follows the scanner; the list and tab counts reload when
+  // a scan starts or ends, titles change in this library, or segments change for a
+  // title it shows. Progress is patched in place, both in the banner and the rows.
+  useLiveRefresh(['scan_started', 'scan_finished', 'scanner_changed'], loadScanner, { fallbackMs: 30_000 })
+  const titleGuids = useRef<Set<string>>(new Set())
+  titleGuids.current = new Set(titles.map(t => t.plex_guid))
+  useLiveRefresh(['scan_started', 'scan_finished', 'titles_changed', 'segments_changed'], reloadTitles, {
+    debounceMs: 500,
+    relevant: (type, d) => {
+      if (type === 'titles_changed') return !d.library_id || d.library_id === selectedRef.current?.id
+      return !d.guid || titleGuids.current.has(d.guid)
+    },
+  })
+  useLiveEvent(['scan_progress'], (_, d) => {
+    setScannerStatus(s => withScanProgress(s, d))
+    setTitles(ts => (ts.some(t => t.plex_guid === d.guid)
+      ? ts.map(t => (t.plex_guid === d.guid ? { ...t, progress: d.progress } : t))
+      : ts))
+  })
 
   const loadTitles = useCallback(async (libId: string) => {
     const d = await api.get<{ titles: Title[] }>(`/api/libraries/${libId}/titles`)

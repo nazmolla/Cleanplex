@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { api } from '../api/client'
+import { useLiveRefresh } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import SkipAnalytics from '../components/SkipAnalytics'
 import { BarChart2, X, AlertTriangle, Trash2, Play, SkipForward, ChevronLeft, ChevronRight } from 'lucide-react'
@@ -122,12 +123,14 @@ export default function Analytics() {
   const [jumpingSegs, setJumpingSegs] = useState<Record<number, boolean>>({})
   const [previewSeg, setPreviewSeg] = useState<Segment | null>(null)
 
-  // Load label counts once on mount
-  useEffect(() => {
+  const loadLabels = useCallback(() => {
     api.get<{ labels: LabelCount[] }>('/api/analytics/labels')
       .then(d => setLabelCounts(d.labels))
       .finally(() => setLoadingLabels(false))
   }, [])
+
+  // Load label counts on mount
+  useEffect(() => { loadLabels() }, [loadLabels])
 
   // Load drill-down when a bar is clicked
   useEffect(() => {
@@ -170,6 +173,15 @@ export default function Analytics() {
       fetchSegments(selectedLabels, page)
     }
   }, [page, selectedLabels, fetchSegments])
+
+  // Live (#89): scans, imports and deletes change label counts and the segment
+  // list. Debounced generously: a scan writes segments in bursts.
+  const liveView = useRef({ selectedLabels, page })
+  liveView.current = { selectedLabels, page }
+  useLiveRefresh(['segments_changed'], () => {
+    loadLabels()
+    fetchSegments(liveView.current.selectedLabels, liveView.current.page)
+  }, { debounceMs: 2000 })
 
   const toggleLabel = (label: string) => {
     setSelectedLabels(prev =>
