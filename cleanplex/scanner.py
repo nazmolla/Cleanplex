@@ -36,10 +36,28 @@ MODELS_DIR: Path = Path.home() / ".cleanplex" / "models"
 # Minimum gap between scan_progress events per scan; the UI bar needs no finer.
 PROGRESS_EVENT_INTERVAL_S = 2.0
 NUDENET_640_MODEL_FILENAME = "640m.onnx"
+# The weights live under the v3.4-weights release. GitHub's browser download link
+# now redirects anonymous clients to a login page (200, HTML), which is how a web
+# page ended up saved as the model (#97); _valid_model_file() rejects that. The API
+# asset URL with Accept: application/octet-stream still serves the file anonymously.
 NUDENET_640_DOWNLOAD_URLS = [
-    "https://github.com/notAI-tech/NudeNet/releases/download/v3/640m.onnx",
-    "https://github.com/notAI-tech/NudeNet/releases/latest/download/640m.onnx",
+    "https://api.github.com/repos/notAI-tech/NudeNet/releases/assets/176832019",
+    "https://github.com/notAI-tech/NudeNet/releases/download/v3.4-weights/640m.onnx",
 ]
+# The real 640m.onnx is ~103 MB; anything far smaller is an error page or truncated.
+NUDENET_640_MIN_BYTES = 50 * 1024 * 1024
+
+
+def _valid_model_file(path: Path) -> bool:
+    """True if *path* looks like a complete 640m ONNX model rather than HTML or a stub."""
+    try:
+        if path.stat().st_size < NUDENET_640_MIN_BYTES:
+            return False
+        with open(path, "rb") as f:
+            head = f.read(64).lstrip()
+    except OSError:
+        return False
+    return not head.startswith(b"<")
 
 _scan_queue: asyncio.Queue[str] = asyncio.Queue()
 _force_scan_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -314,7 +332,7 @@ def _get_detector(model_name: str = "320n", model_path: str = ""):
     if requested_resolution == 640 and not selected_model_path:
         # Fallback: attempt sync check in case caller skipped pre-warm.
         candidate = MODELS_DIR / NUDENET_640_MODEL_FILENAME
-        if candidate.is_file() and candidate.stat().st_size > 0:
+        if _valid_model_file(candidate):
             selected_model_path = str(candidate)
         else:
             logger.warning("640m model not found locally; falling back to bundled 320n")
@@ -336,7 +354,21 @@ def _get_detector(model_name: str = "320n", model_path: str = ""):
             kwargs = {"inference_resolution": requested_resolution}
             if selected_model_path:
                 kwargs["model_path"] = selected_model_path
-            detector = NudeDetector(**kwargs)
+            try:
+                detector = NudeDetector(**kwargs)
+            except ImportError:
+                raise
+            except Exception as exc:
+                if not selected_model_path:
+                    raise
+                # A model file that will not load must not silently turn every frame
+                # into "nothing found" (#97): say so loudly and use the bundled 320n.
+                logger.error(
+                    "NudeNet could not load %s (%s); falling back to bundled 320n",
+                    selected_model_path, exc,
+                )
+                current_key = (320, "")
+                detector = NudeDetector(inference_resolution=320)
             _thread_local.nude_detector = detector
             _thread_local.nude_detector_key = current_key
             logger.info("NudeNet detector loaded in thread %s", threading.get_ident())
@@ -348,31 +380,40 @@ def _get_detector(model_name: str = "320n", model_path: str = ""):
 
 def _ensure_local_640m_model() -> str:
     """Blocking download of the 640m model. Must be called via asyncio.to_thread so the
-    event loop is not blocked; caller must hold _model_download_lock before dispatching."""
+    event loop is not blocked; caller must hold _model_download_lock before dispatching.
+
+    Returns the model path, or "" if no valid model could be obtained. An existing
+    invalid file (HTML page, truncated download) is deleted and fetched again.
+    """
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     target = MODELS_DIR / NUDENET_640_MODEL_FILENAME
-    if target.is_file() and target.stat().st_size > 0:
+    if _valid_model_file(target):
         return str(target)
+    if target.exists():
+        logger.warning("Discarding invalid NudeNet 640m model file %s (%d bytes)", target, target.stat().st_size)
+        target.unlink(missing_ok=True)
 
+    tmp = target.with_suffix(target.suffix + ".part")
     for url in NUDENET_640_DOWNLOAD_URLS:
         try:
             logger.info("Downloading NudeNet 640m model from %s", url)
             with httpx.Client(timeout=120.0, follow_redirects=True) as client:
-                with client.stream("GET", url) as resp:
+                with client.stream("GET", url, headers={"Accept": "application/octet-stream"}) as resp:
                     resp.raise_for_status()
-                    with open(target, "wb") as out:
+                    if resp.headers.get("content-type", "").startswith("text/"):
+                        raise ValueError(f"got {resp.headers['content-type']} instead of a model file")
+                    with open(tmp, "wb") as out:
                         for chunk in resp.iter_bytes():
                             if chunk:
                                 out.write(chunk)
-
-            if target.is_file() and target.stat().st_size > 0:
-                logger.info("Downloaded NudeNet 640m model to %s", target)
-                return str(target)
+            if not _valid_model_file(tmp):
+                raise ValueError(f"downloaded file is not a valid model ({tmp.stat().st_size} bytes)")
+            tmp.replace(target)
+            logger.info("Downloaded NudeNet 640m model to %s", target)
+            return str(target)
         except Exception as exc:
             logger.warning("Failed to download NudeNet 640m model from %s: %s", url, exc)
-
-    if target.exists() and target.stat().st_size == 0:
-        target.unlink(missing_ok=True)
+            tmp.unlink(missing_ok=True)
     return ""
 
 
@@ -384,14 +425,17 @@ async def _ensure_640m_model_async() -> str:
     """
     target = MODELS_DIR / NUDENET_640_MODEL_FILENAME
     # Fast path: model already on disk — no lock needed.
-    if target.is_file() and target.stat().st_size > 0:
+    if _valid_model_file(target):
         return str(target)
 
     async with _model_download_lock:
         # Re-check after acquiring lock: another coroutine may have just finished.
-        if target.is_file() and target.stat().st_size > 0:
+        if _valid_model_file(target):
             return str(target)
         return await asyncio.to_thread(_ensure_local_640m_model)
+
+
+_logged_classify_errors: set[str] = set()
 
 
 def _classify_frame(
@@ -441,7 +485,14 @@ def _classify_frame(
         # Return is_nude only if we found enabled labels above threshold
         return max_score >= threshold, max_score, detected
     except Exception as exc:
-        logger.debug("Classification error: %s", exc)
+        # The first occurrence of each distinct error is a warning: a failure that
+        # repeats on every frame would otherwise look like a title with no nudity.
+        message = str(exc)
+        if message not in _logged_classify_errors:
+            _logged_classify_errors.add(message)
+            logger.warning("NudeNet classification failed: %s", message)
+        else:
+            logger.debug("Classification error: %s", message)
         return False, 0.0, []
 
 
