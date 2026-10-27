@@ -60,6 +60,25 @@ CREATE TABLE IF NOT EXISTS segments (
 );
 CREATE INDEX IF NOT EXISTS idx_segments_guid ON segments(plex_guid);
 
+-- User verdicts on detected segments (#101). Kept apart from segments because a
+-- rescan deletes and rewrites those; these rows, and the frame copied at mark
+-- time, are the sample for tuning thresholds now and retraining models later.
+CREATE TABLE IF NOT EXISTS segment_feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    plex_guid   TEXT    NOT NULL,
+    segment_id  INTEGER,
+    verdict     TEXT    NOT NULL DEFAULT 'false_positive',
+    start_ms    INTEGER NOT NULL,
+    end_ms      INTEGER NOT NULL,
+    source      TEXT    DEFAULT '',
+    detector    TEXT    DEFAULT '',
+    labels      TEXT    DEFAULT '',
+    confidence  REAL    DEFAULT 0,
+    frame_path  TEXT    DEFAULT '',
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_segment_feedback_guid ON segment_feedback(plex_guid);
+
 CREATE TABLE IF NOT EXISTS skip_events (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     plex_guid         TEXT    NOT NULL,
@@ -286,6 +305,9 @@ async def init_db() -> None:
             # Which model produced a scanner segment, e.g. nudenet-640m or
             # siglip-base-224. Empty for imports and rows written before #92.
             "ALTER TABLE segments ADD COLUMN detector TEXT DEFAULT ''",
+            # 1 when the user marked the segment as not containing what it claims
+            # (#101). Such rows are kept for review but never act or count.
+            "ALTER TABLE segments ADD COLUMN false_positive INTEGER DEFAULT 0",
         ]
         for stmt in migrations:
             try:
@@ -521,7 +543,7 @@ async def get_segment_categories() -> list[dict]:
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
             "SELECT COALESCE(NULLIF(category, ''), 'other') AS category, COUNT(*) AS count "
-            "FROM segments GROUP BY category ORDER BY count DESC"
+            f"FROM segments WHERE {_ACTIVE} GROUP BY category ORDER BY count DESC"
         )
         return [dict(r) for r in rows]
 
@@ -620,22 +642,30 @@ async def upsert_user_filter(username: str, enabled: bool) -> None:
 
 # ── Segments ──────────────────────────────────────────────────────────────────
 
-async def get_segments_for_guid(plex_guid: str) -> list[dict]:
+# Segments the user marked as false positives stay in the table for review but are
+# excluded from playback, counts, analytics, exports and sync.
+_ACTIVE = "COALESCE(false_positive, 0) = 0"
+_ACTIVE_S = "COALESCE(s.false_positive, 0) = 0"
+
+async def get_segments_for_guid(plex_guid: str, include_false_positives: bool = False) -> list[dict]:
+    """Return a title's segments by start time; marked false positives only if asked."""
+    where = "plex_guid=?" if include_false_positives else f"plex_guid=? AND {_ACTIVE}"
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            "SELECT * FROM segments WHERE plex_guid=? ORDER BY start_ms", (plex_guid,)
+            f"SELECT * FROM segments WHERE {where} ORDER BY start_ms", (plex_guid,)
         )
         return [dict(r) for r in rows]
 
 
-async def get_segments_for_guids(plex_guids: list[str]) -> list[dict]:
+async def get_segments_for_guids(plex_guids: list[str], include_false_positives: bool = False) -> list[dict]:
     """Return all segments for multiple guids in a single query, ordered by plex_guid, start_ms."""
     if not plex_guids:
         return []
+    active = "" if include_false_positives else f" AND {_ACTIVE}"
     async with get_connection() as conn:
         placeholders = ",".join("?" * len(plex_guids))
         rows = await conn.execute_fetchall(
-            f"SELECT * FROM segments WHERE plex_guid IN ({placeholders}) ORDER BY plex_guid, start_ms",
+            f"SELECT * FROM segments WHERE plex_guid IN ({placeholders}){active} ORDER BY plex_guid, start_ms",
             plex_guids,
         )
         return [dict(r) for r in rows]
@@ -649,6 +679,7 @@ async def get_segments_for_guid_with_setting(
     Avoids the cost of opening two aiosqlite connections sequentially when
     both pieces of data are needed together (e.g. segments + scan_labels).
     """
+    # Review lists: marked false positives are included so they can be undone.
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
             "SELECT * FROM segments WHERE plex_guid=? ORDER BY start_ms", (plex_guid,)
@@ -666,7 +697,7 @@ async def get_segments_by_rating_key(rating_key: str) -> list[dict]:
         rows = await conn.execute_fetchall(
             """SELECT s.* FROM segments s
                JOIN scan_jobs j ON j.plex_guid = s.plex_guid
-               WHERE j.rating_key = ?
+               WHERE j.rating_key = ? AND COALESCE(s.false_positive, 0) = 0
                ORDER BY s.start_ms""",
             (rating_key,),
         )
@@ -677,7 +708,7 @@ async def count_segments_for_guid(plex_guid: str) -> int:
     """Return segment count for a title using SELECT COUNT — avoids loading full rows."""
     async with get_connection() as conn:
         row = await (
-            await conn.execute("SELECT COUNT(*) FROM segments WHERE plex_guid=?", (plex_guid,))
+            await conn.execute(f"SELECT COUNT(*) FROM segments WHERE plex_guid=? AND {_ACTIVE}", (plex_guid,))
         ).fetchone()
         return row[0] if row else 0
 
@@ -693,7 +724,7 @@ async def delete_segments_for_guid(plex_guid: str) -> int:
 async def get_all_segments(limit: int = 200, offset: int = 0) -> list[dict]:
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            "SELECT * FROM segments ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM segments WHERE {_ACTIVE} ORDER BY created_at DESC LIMIT ? OFFSET ?",
             (limit, offset),
         )
         return [dict(r) for r in rows]
@@ -727,8 +758,19 @@ async def insert_segment(
             (plex_guid, title, start_ms, end_ms, confidence, thumbnail_path, labels,
              category, severity, action, channel, source, detector),
         )
+        segment_id = cursor.lastrowid
+        # A rescan rewrites segments, so a window the user already marked as a false
+        # positive would come back. Detector output overlapping such a window starts
+        # out marked; imports are the user's own data and are left alone.
+        if source in ("scanner", "siglip"):
+            await conn.execute(
+                "UPDATE segments SET false_positive=1 WHERE id=? AND EXISTS ("
+                "SELECT 1 FROM segment_feedback f WHERE f.plex_guid=? AND f.verdict='false_positive' "
+                "AND f.start_ms < ? AND f.end_ms > ?)",
+                (segment_id, plex_guid, end_ms, start_ms),
+            )
         await conn.commit()
-        return cursor.lastrowid
+        return segment_id
 
 
 async def insert_segments_bulk(plex_guid: str, title: str, segments: list[dict], source: str) -> int:
@@ -773,6 +815,89 @@ async def delete_segment(segment_id: int) -> bool:
         return cursor.rowcount > 0
 
 
+async def mark_segment_false_positive(segment_id: int, frame_path: str = "") -> int | None:
+    """Flag a segment as a false positive and record the verdict; return the feedback id.
+
+    The feedback row copies the segment's detector, labels, score and window so it
+    outlives rescans. Returns None if the segment does not exist. Marking twice
+    keeps a single feedback row.
+    """
+    async with get_connection() as conn:
+        seg = await (await conn.execute("SELECT * FROM segments WHERE id=?", (segment_id,))).fetchone()
+        if seg is None:
+            return None
+        existing = await (await conn.execute(
+            "SELECT id FROM segment_feedback WHERE segment_id=? AND verdict='false_positive'", (segment_id,)
+        )).fetchone()
+        await conn.execute("UPDATE segments SET false_positive=1 WHERE id=?", (segment_id,))
+        if existing:
+            await conn.commit()
+            return existing["id"]
+        cursor = await conn.execute(
+            "INSERT INTO segment_feedback(plex_guid, segment_id, verdict, start_ms, end_ms, source, "
+            "detector, labels, confidence, frame_path) VALUES(?,?,'false_positive',?,?,?,?,?,?,?)",
+            (seg["plex_guid"], segment_id, seg["start_ms"], seg["end_ms"], seg["source"] or "scanner",
+             seg["detector"] or "", seg["labels"] or "", seg["confidence"] or 0, frame_path),
+        )
+        await conn.commit()
+        return cursor.lastrowid
+
+
+async def unmark_segment_false_positive(segment_id: int) -> list[str]:
+    """Clear a segment's false-positive flag and forget verdicts overlapping its window.
+
+    Returns the frame paths of the removed feedback rows so the caller can delete
+    the copied frames. Overlap, not segment id, is used: after a rescan the verdict
+    came from an earlier row of the same window.
+    """
+    async with get_connection() as conn:
+        seg = await (await conn.execute("SELECT * FROM segments WHERE id=?", (segment_id,))).fetchone()
+        if seg is None:
+            return []
+        rows = await conn.execute_fetchall(
+            "SELECT id, frame_path FROM segment_feedback WHERE plex_guid=? AND verdict='false_positive' "
+            "AND (segment_id=? OR (start_ms < ? AND end_ms > ?))",
+            (seg["plex_guid"], segment_id, seg["end_ms"], seg["start_ms"]),
+        )
+        if rows:
+            await conn.execute(
+                f"DELETE FROM segment_feedback WHERE id IN ({','.join('?' * len(rows))})",
+                [r["id"] for r in rows],
+            )
+        await conn.execute("UPDATE segments SET false_positive=0 WHERE id=?", (segment_id,))
+        await conn.commit()
+        return [r["frame_path"] for r in rows if r["frame_path"]]
+
+
+async def get_detection_accuracy() -> list[dict]:
+    """Per source/detector/label: segments found, how many were marked false, and scores.
+
+    One row per (source, detector, label) over detector output (scanner/siglip),
+    with total, false_positives, and the mean score of kept vs. marked segments, so
+    thresholds can be set from real verdicts. A segment with several labels counts
+    once per label.
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            """
+            SELECT COALESCE(NULLIF(s.source, ''), 'scanner') AS source,
+                   COALESCE(s.detector, '') AS detector,
+                   CASE WHEN TRIM(l.value) = '' THEN '(none)' ELSE TRIM(l.value) END AS label,
+                   COUNT(*) AS total,
+                   SUM(COALESCE(s.false_positive, 0)) AS false_positives,
+                   AVG(CASE WHEN COALESCE(s.false_positive, 0) = 0 THEN s.confidence END) AS avg_score_kept,
+                   AVG(CASE WHEN s.false_positive = 1 THEN s.confidence END) AS avg_score_false
+            FROM segments s,
+                 -- labels is a comma-separated list; split it into one row per label.
+                 json_each('["' || REPLACE(COALESCE(s.labels, ''), ',', '","') || '"]') l
+            WHERE COALESCE(NULLIF(s.source, ''), 'scanner') IN ('scanner', 'siglip')
+            GROUP BY 1, 2, 3
+            ORDER BY total DESC
+            """
+        )
+        return [dict(r) for r in rows]
+
+
 async def get_segment_by_id(segment_id: int) -> dict | None:
     async with get_connection() as conn:
         row = await (await conn.execute("SELECT * FROM segments WHERE id=?", (segment_id,))).fetchone()
@@ -783,7 +908,8 @@ async def get_segments_grouped_by_title() -> list[dict]:
     """Return distinct (plex_guid, title) pairs that have segments."""
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            "SELECT plex_guid, title, COUNT(*) as segment_count FROM segments GROUP BY plex_guid ORDER BY title"
+            f"SELECT plex_guid, title, COUNT(*) as segment_count FROM segments WHERE {_ACTIVE} "
+            "GROUP BY plex_guid ORDER BY title"
         )
         return [dict(r) for r in rows]
 
@@ -803,7 +929,7 @@ async def get_segment_counts_by_label() -> list[dict]:
             """
             SELECT s.labels FROM segments s
             JOIN scan_jobs j ON j.plex_guid = s.plex_guid
-            WHERE s.labels IS NOT NULL AND s.labels != ''
+            WHERE s.labels IS NOT NULL AND s.labels != '' AND COALESCE(s.false_positive, 0) = 0
             """
         )
     counts: dict[str, int] = {}
@@ -823,7 +949,7 @@ async def get_segment_counts_by_rating_for_label(label: str) -> list[dict]:
             SELECT j.content_rating, COUNT(*) as count
             FROM segments s
             JOIN scan_jobs j ON j.plex_guid = s.plex_guid
-            WHERE (',' || s.labels || ',') LIKE ?
+            WHERE (',' || s.labels || ',') LIKE ? AND COALESCE(s.false_positive, 0) = 0
             GROUP BY j.content_rating
             ORDER BY count DESC
             """,
@@ -852,7 +978,7 @@ async def get_segments_for_labels(
                    j.show_rating_key
             FROM segments s
             JOIN scan_jobs j ON j.plex_guid = s.plex_guid
-            WHERE {conditions}
+            WHERE ({conditions}) AND COALESCE(s.false_positive, 0) = 0
             ORDER BY s.confidence DESC
             LIMIT ? OFFSET ?
             """,
@@ -874,7 +1000,8 @@ async def count_segments_for_labels(labels: list[str]) -> int:
         conditions = " OR ".join(["(',' || s.labels || ',') LIKE ?"] * len(labels))
         params = [f"%,{lbl},%" for lbl in labels]
         row = await (await conn.execute(
-            f"SELECT COUNT(*) FROM segments s JOIN scan_jobs j ON j.plex_guid = s.plex_guid WHERE {conditions}",
+            f"SELECT COUNT(*) FROM segments s JOIN scan_jobs j ON j.plex_guid = s.plex_guid "
+            f"WHERE ({conditions}) AND {_ACTIVE_S}",
             params,
         )).fetchone()
         return row[0] if row else 0
@@ -1096,7 +1223,7 @@ async def get_segment_counts_for_library(library_id: str) -> dict[str, int]:
             SELECT s.plex_guid, COUNT(*) as cnt
             FROM segments s
             JOIN scan_jobs j ON j.plex_guid = s.plex_guid
-            WHERE j.library_id = ?
+            WHERE j.library_id = ? AND COALESCE(s.false_positive, 0) = 0
             GROUP BY s.plex_guid
             """,
             (library_id,),
@@ -1290,7 +1417,7 @@ async def get_local_library_for_sync() -> list[dict]:
             SELECT s.*, j.file_path, j.title AS job_title
             FROM segments s
             JOIN scan_jobs j ON j.plex_guid = s.plex_guid
-            WHERE j.status = 'done' AND j.file_path IS NOT NULL
+            WHERE j.status = 'done' AND j.file_path IS NOT NULL AND COALESCE(s.false_positive, 0) = 0
             ORDER BY j.title, s.start_ms
             """
         )
