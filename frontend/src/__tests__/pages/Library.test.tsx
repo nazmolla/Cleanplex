@@ -186,4 +186,47 @@ describe('Library', () => {
     unmount()
     expect(abortSpy).toHaveBeenCalled()
   })
+
+  describe('status tabs (#84, #85)', () => {
+    const extra = [
+      // Pending with a rating the scanner skips: should not be listed anywhere.
+      { ...titles[1], plex_guid: 'g3', title: 'Kids Movie', content_rating: 'G' },
+      // Already scanned with an excluded rating: results stay visible.
+      { ...titles[0], plex_guid: 'g4', title: 'Old G Movie', content_rating: 'G' },
+      // Stuck in scanning but ignored: hidden, and must not be counted either.
+      { ...titles[0], plex_guid: 'g5', title: 'Ignored Movie', status: 'scanning', ignored: true },
+    ]
+
+    async function openLibrary() {
+      mockApi.get.mockImplementation((path: string) => {
+        if (path.includes('scanner-status')) return Promise.resolve(scannerIdle)
+        if (path === '/api/settings') return Promise.resolve({ plex_url: '', scan_ratings: '["R","PG"]' })
+        if (path.includes('libraries') && !path.includes('titles')) return Promise.resolve({ libraries })
+        if (path.includes('titles')) return Promise.resolve({ titles: [...titles, ...extra] })
+        return Promise.resolve({})
+      })
+      renderLibrary()
+      await waitFor(() => screen.getAllByText('Movies')[0])
+      await act(async () => {
+        fireEvent.change(screen.getByRole('combobox'), { target: { value: 'lib1' } })
+      })
+      await waitFor(() => screen.getByText('Movie A'))
+    }
+
+    it('hides pending titles whose rating the scanner excludes', async () => {
+      await openLibrary()
+
+      await waitFor(() => expect(screen.queryByText('Kids Movie')).not.toBeInTheDocument())
+      expect(screen.getByText('Old G Movie')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /^Pending/ })).toHaveTextContent('(1)')
+    })
+
+    it('does not count titles the list hides', async () => {
+      await openLibrary()
+
+      expect(screen.queryByText('Ignored Movie')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /^Scanning/ })).not.toHaveTextContent('(1)')
+      expect(screen.getByRole('button', { name: /^All/ })).toHaveTextContent('(3)')
+    })
+  })
 })
