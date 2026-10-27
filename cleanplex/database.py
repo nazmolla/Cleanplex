@@ -11,11 +11,15 @@ from typing import Any
 
 import aiosqlite
 
+from .importers._common import CATEGORIES
 from .logger import get_logger
 
 logger = get_logger(__name__)
 
 _DB_PATH: Path | None = None
+# Level a category filters at when a user has no row for it: 3 is "Everything".
+# Turning a category down is always an explicit user choice.
+DEFAULT_CATEGORY_LEVEL = 3
 # Serializes concurrent upsert_plex_markers calls so DELETE+INSERT never interleave.
 _marker_upsert_lock = asyncio.Lock()
 
@@ -328,6 +332,9 @@ async def init_db() -> None:
                 (key, value),
             )
         await conn.commit()
+    added = await backfill_user_category_prefs()
+    if added:
+        logger.info("Backfilled %d missing category prefs at level %d", added, DEFAULT_CATEGORY_LEVEL)
     logger.info("Database initialised at %s", db_path)
 
 
@@ -499,6 +506,43 @@ async def upsert_user_category_pref(username: str, category: str, level: int, ac
             (username, category, level, action),
         )
         await conn.commit()
+
+
+async def get_missing_user_category_prefs() -> list[dict]:
+    """Return [{"plex_username", "category"}] for categories a user with prefs has no row for."""
+    values = ",".join("(?)" for _ in CATEGORIES)
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "WITH users AS (SELECT DISTINCT plex_username FROM user_category_prefs), "
+            f"cats(category) AS (VALUES {values}) "
+            "SELECT u.plex_username, c.category FROM users u CROSS JOIN cats c "
+            "LEFT JOIN user_category_prefs p "
+            "  ON p.plex_username = u.plex_username AND p.category = c.category "
+            "WHERE p.category IS NULL ORDER BY u.plex_username, c.category",
+            CATEGORIES,
+        )
+        return [dict(r) for r in rows]
+
+
+async def backfill_user_category_prefs() -> int:
+    """Give users with prefs an explicit DEFAULT_CATEGORY_LEVEL row for every missing category.
+
+    Before issue #77 a missing row meant Off, so a user who changed one category
+    silently stopped filtering the rest. Rows that already exist are untouched and
+    the insert is idempotent. Users with no prefs at all are left alone: an empty
+    set already means "filter everything". Returns the number of rows added.
+    """
+    missing = await get_missing_user_category_prefs()
+    if not missing:
+        return 0
+    async with get_connection() as conn:
+        await conn.executemany(
+            "INSERT OR IGNORE INTO user_category_prefs(plex_username, category, level, action) "
+            "VALUES(?,?,?,'')",
+            [(m["plex_username"], m["category"], DEFAULT_CATEGORY_LEVEL) for m in missing],
+        )
+        await conn.commit()
+    return len(missing)
 
 
 async def delete_user_category_prefs(username: str) -> int:

@@ -30,6 +30,7 @@ _VERIFY_TOLERANCE_MS = 2000
 # threshold model VideoSkip uses, so imported severities behave as their authors
 # intended.
 _SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3}
+DEFAULT_CATEGORY_LEVEL = db.DEFAULT_CATEGORY_LEVEL
 
 # Actions we can carry out through the Plex playback API. blank/blur appear in
 # imported files but need stream manipulation we do not have, so they are recorded
@@ -84,14 +85,12 @@ def _matches_language(segment: dict, audio_language: str) -> bool:
 
 def _is_filtered(segment: dict, prefs: dict[str, dict]) -> bool:
     """Return True if this segment should be acted on for a viewer with these prefs."""
-    if not prefs:
-        # No stored preferences: filter everything, matching pre-category behaviour.
-        return True
-    pref = prefs.get(segment.get("category") or "other")
-    if pref is None:
-        return False
+    pref = prefs.get(segment.get("category") or "other") if prefs else None
+    # A category the viewer never set filters at full strictness: enabling the
+    # filter means everything is on, and loosening a category is an explicit act.
+    level = pref["level"] if pref else DEFAULT_CATEGORY_LEVEL
     rank = _SEVERITY_RANK.get(segment.get("severity") or "high", 3)
-    return (pref["level"] + rank) > 3
+    return (level + rank) > 3
 
 
 def _resolve_action(segment: dict, prefs: dict[str, dict]) -> str:

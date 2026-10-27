@@ -420,16 +420,17 @@ async def test_zero_level_ignores_high_severity_segment():
     client.seek.assert_not_called()
 
 
-async def test_category_absent_from_prefs_is_not_filtered():
+async def test_category_absent_from_prefs_filters_at_full_strictness():
+    """Regression for #77: setting one category must not switch the others off."""
     session = _session(position_ms=35000)
     client = _make_client()
-    prefs = {"nudity": {"level": 3, "action": ""}}
+    prefs = {"language": {"level": 1, "action": ""}}
 
     with patch("cleanplex.filter_engine.db") as mock_db:
-        _mock_db(mock_db, _segs(30000, 40000, category="drugs"), prefs=prefs)
+        _mock_db(mock_db, _segs(30000, 40000, category="drugs", severity="low"), prefs=prefs)
         await fe.process(session, client)
 
-    client.seek.assert_not_called()
+    client.seek.assert_awaited_once()
 
 
 async def test_user_action_override_turns_skip_into_mute():

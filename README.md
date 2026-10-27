@@ -115,8 +115,9 @@ Segments carry a **category** (nudity, sex, violence, language, drugs, fear, com
 | `mute` | Drops the volume for the segment and restores it after — used for profanity |
 
 Each user gets a 0–3 level per category. A segment fires when *level + severity* exceeds 3, so
-level 3 filters everything in that category and level 0 filters nothing. Users with no saved
-preferences have everything filtered, matching the previous behaviour.
+level 3 filters everything in that category and level 0 filters nothing. Every category starts
+at level 3 when filtering is on; lowering or turning one off is always an explicit choice, and
+changing one category never affects the others.
 
 `blank` and `blur` appear in some imported files but are **not supported**: Plex exposes playback
 position and volume, not the video stream. Those segments are logged and ignored rather than

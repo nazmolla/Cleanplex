@@ -79,7 +79,7 @@ async def get_user_categories(username: str):
         "categories": [
             {
                 "category": name,
-                "level": prefs.get(name, {}).get("level", 3 if not prefs else 0),
+                "level": prefs.get(name, {}).get("level", db.DEFAULT_CATEGORY_LEVEL),
                 "action": prefs.get(name, {}).get("action", ""),
                 "has_segments": name in populated,
             }

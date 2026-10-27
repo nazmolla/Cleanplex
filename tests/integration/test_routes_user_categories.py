@@ -27,7 +27,18 @@ async def test_stored_prefs_are_returned(http_client):
 
     assert body["uses_defaults"] is False
     assert levels["nudity"] == 3
-    assert levels["violence"] == 0
+    # Unset categories stay at Everything once another one is saved (#77).
+    assert levels["violence"] == 3
+
+
+async def test_unset_categories_report_everything_after_a_change(http_client):
+    await db.upsert_user_category_pref("alice", "language", 1)
+
+    body = (await http_client.get("/api/users/alice/categories")).json()
+    levels = {c["category"]: c["level"] for c in body["categories"]}
+
+    assert levels["language"] == 1
+    assert all(level == 3 for cat, level in levels.items() if cat != "language")
 
 
 async def test_categories_report_whether_segments_exist(http_client):

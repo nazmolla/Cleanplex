@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from cleanplex import database as db
+from cleanplex.importers._common import CATEGORIES
 
 
 pytestmark = pytest.mark.usefixtures("setup_db")
@@ -460,3 +461,51 @@ async def test_get_segment_library_entries_by_hashes():
 async def test_get_segment_library_entries_by_hashes_empty_returns_empty():
     rows = await db.get_segment_library_entries_by_hashes([])
     assert rows == []
+
+
+# ── Category pref backfill (issue #77) ─────────────────────────────────────────
+
+async def test_backfill_adds_missing_categories_at_everything():
+    await db.upsert_user_category_pref("alice", "language", 1, "mute")
+
+    added = await db.backfill_user_category_prefs()
+    prefs = await db.get_user_category_prefs("alice")
+
+    assert added == len(CATEGORIES) - 1
+    assert set(prefs) == set(CATEGORIES)
+    assert prefs["language"] == {"level": 1, "action": "mute"}
+    assert all(p["level"] == 3 for c, p in prefs.items() if c != "language")
+
+
+async def test_backfill_keeps_explicit_off_rows():
+    await db.upsert_user_category_pref("alice", "violence", 0)
+
+    await db.backfill_user_category_prefs()
+
+    assert (await db.get_user_category_prefs("alice"))["violence"]["level"] == 0
+
+
+async def test_backfill_is_idempotent():
+    await db.upsert_user_category_pref("alice", "nudity", 2)
+
+    await db.backfill_user_category_prefs()
+
+    assert await db.backfill_user_category_prefs() == 0
+    assert await db.get_missing_user_category_prefs() == []
+
+
+async def test_backfill_leaves_users_without_prefs_alone():
+    await db.upsert_user_filter("bob", True)
+
+    assert await db.backfill_user_category_prefs() == 0
+    assert await db.get_user_category_prefs("bob") == {}
+
+
+async def test_init_db_backfills_existing_users():
+    await db.upsert_user_category_pref("alice", "nudity", 2)
+
+    await db.init_db()
+
+    assert set(await db.get_user_category_prefs("alice")) == set(CATEGORIES)
+
+
