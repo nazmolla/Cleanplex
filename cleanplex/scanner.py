@@ -8,6 +8,7 @@ import os
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -35,6 +36,30 @@ THUMBNAILS_DIR: Path = Path.home() / ".cleanplex" / "thumbnails"
 MODELS_DIR: Path = Path.home() / ".cleanplex" / "models"
 # Minimum gap between scan_progress events per scan; the UI bar needs no finer.
 PROGRESS_EVENT_INTERVAL_S = 2.0
+
+# Detection models are cached per thread (threading.local), so the number of
+# threads running inference is the number of model copies held in memory. A pool
+# sized to scan_workers keeps that at one copy per worker (#103); the default
+# asyncio pool has min(32, cpus + 4) threads and ended up loading 16 copies.
+_inference_pool: ThreadPoolExecutor | None = None
+
+
+async def _infer(fn, *args):
+    """Run a blocking detection call on the inference pool (default pool if none yet)."""
+    pool = _inference_pool
+    if pool is None:
+        return await asyncio.to_thread(fn, *args)
+    return await asyncio.get_running_loop().run_in_executor(pool, fn, *args)
+
+
+def _replace_inference_pool(size: int | None) -> None:
+    """Swap in a pool of *size* threads (None: none), letting the old one wind down."""
+    global _inference_pool
+    old, _inference_pool = _inference_pool, (
+        ThreadPoolExecutor(max_workers=size, thread_name_prefix="cleanplex-infer") if size else None
+    )
+    if old is not None:
+        old.shutdown(wait=False, cancel_futures=True)
 NUDENET_640_MODEL_FILENAME = "640m.onnx"
 # The weights live under the v3.4-weights release. GitHub's browser download link
 # now redirects anonymous clients to a login page (200, HTML), which is how a web
@@ -793,7 +818,7 @@ async def scan_video(plex_guid: str, config) -> None:
                 if jpeg:
                     # asyncio.to_thread releases the event loop, allowing ffmpeg's pipe
                     # buffer to continue filling while NudeNet runs in the thread pool.
-                    is_nude, score, detected_labels = await asyncio.to_thread(
+                    is_nude, score, detected_labels = await _infer(
                         _classify_frame,
                         jpeg,
                         threshold,
@@ -805,7 +830,7 @@ async def scan_video(plex_guid: str, config) -> None:
                     # the scenes NudeNet misses, not a second opinion on its hits.
                     siglip_hit = False
                     if not is_nude and siglip_on:
-                        siglip_score, siglip_label = await asyncio.to_thread(
+                        siglip_score, siglip_label = await _infer(
                             siglip_detector.score_frame, jpeg, enabled_labels
                         )
                         siglip_hit = siglip_score >= siglip_threshold
@@ -951,6 +976,7 @@ async def scanner_loop(get_config_fn) -> None:
         _worker_pool_size = worker_count
         _restart_requested = False
         logger.info("Starting scanner pool with %d worker(s)", worker_count)
+        _replace_inference_pool(worker_count)
 
         # Create worker tasks
         worker_tasks = [

@@ -286,4 +286,22 @@ describe('Library', () => {
     const batchCalls = mockApi.post.mock.calls.filter(([p]: [string]) => p.includes('segments/batch'))
     expect(batchCalls).toHaveLength(1)
   })
+
+  it('reloads titles when something is queued, so it shows as Pending (#104)', async () => {
+    renderLibrary()
+    await waitFor(() => screen.getAllByText('Movies')[0])
+    await act(async () => {
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: 'lib1' } })
+    })
+    await waitFor(() => screen.getByText('Movie A'))
+    const titleCalls = () => mockApi.get.mock.calls.filter(([p]: [string]) => p.includes('/titles')).length
+    const before = titleCalls()
+
+    await act(async () => {
+      emitLive('scanner_changed')
+      await vi.advanceTimersByTimeAsync(600)
+    })
+
+    expect(titleCalls()).toBe(before + 1)
+  })
 })

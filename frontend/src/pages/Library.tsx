@@ -241,7 +241,9 @@ export default function Library() {
   useLiveRefresh(['scan_started', 'scan_finished', 'scanner_changed'], loadScanner, { fallbackMs: 30_000 })
   const titleGuids = useRef<Set<string>>(new Set())
   titleGuids.current = new Set(titles.map(t => t.plex_guid))
-  useLiveRefresh(['scan_started', 'scan_finished', 'titles_changed', 'segments_changed'], reloadTitles, {
+  // scanner_changed covers Scan Now / Scan Tonight: queued titles turn Pending at
+  // once instead of at the next scan start (#104).
+  useLiveRefresh(['scan_started', 'scan_finished', 'scanner_changed', 'titles_changed', 'segments_changed'], reloadTitles, {
     debounceMs: 500,
     relevant: (type, d) => {
       if (type === 'titles_changed') return !d.library_id || d.library_id === selectedRef.current?.id
