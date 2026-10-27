@@ -12,8 +12,9 @@ for labels the user enabled in scan_labels. Prompts for labels the user left out
 (e.g. MALE_BREAST_EXPOSED) and neutral scene prompts compete for that probability,
 so a shirtless man or a talking-heads shot pulls the score down rather than up.
 
-Every phrase belongs to exactly one NudeNet label, so a SigLIP hit is tagged with an
-existing label (the enabled one with the largest share) and never a label of its own.
+Body-part phrases belong to exactly one NudeNet label, so a SigLIP hit is tagged with
+an existing label (the enabled one whose own phrases have the largest share) and never
+a label of its own. Whole-scene phrases only add to the score.
 """
 
 from __future__ import annotations
@@ -54,38 +55,44 @@ LOGIT_SCALE = math.exp(4.764997)
 
 _DOWNLOAD_ATTEMPTS = 2
 
-# Phrases per NudeNet label. Enabled labels score as hits; the rest compete as
-# counter-examples, so the prompt set follows the user's scan_labels. Whole-scene
-# phrases (sex scenes rarely show one body part clearly) sit under the label they
-# most imply rather than forming a group of their own.
+# Phrases per NudeNet label, each describing exactly that body part and nothing
+# else, so the tag on a SigLIP hit names what the frame resembles part by part
+# (#96). Enabled labels score as hits; the rest compete as counter-examples, so
+# the prompt set follows the user's scan_labels.
 LABEL_PROMPTS: dict[str, list[str]] = {
-    "FEMALE_BREAST_EXPOSED": ["a topless woman", "a woman with bare breasts", "a naked woman in bed"],
-    "FEMALE_GENITALIA_EXPOSED": [
-        "a fully naked woman", "a nude woman showing her genitals", "full frontal female nudity",
-        "a woman having sex",
-    ],
-    "MALE_GENITALIA_EXPOSED": [
-        "a fully naked man", "a nude man showing his genitals", "full frontal male nudity",
-        "a man having sex",
-    ],
-    "BUTTOCKS_EXPOSED": [
-        "a person with bare buttocks", "a naked person seen from behind", "a naked couple having sex",
-    ],
-    "ANUS_EXPOSED": ["a naked person bending over showing their anus"],
-    "MALE_BREAST_EXPOSED": ["a shirtless man", "a man with a bare chest"],
-    "BELLY_EXPOSED": ["a person showing a bare belly", "a woman in a crop top"],
-    "ARMPITS_EXPOSED": ["a person with raised bare arms"],
-    "FEET_EXPOSED": ["bare feet", "a person barefoot"],
-    "FEMALE_BREAST_COVERED": ["a woman in a bikini top", "a woman in a low-cut top"],
-    "FEMALE_GENITALIA_COVERED": ["a woman in underwear", "a woman in a bikini"],
-    "BUTTOCKS_COVERED": ["a person in tight shorts", "a person in a swimsuit seen from behind"],
-    "ANUS_COVERED": ["a person in a swimsuit bending over"],
-    "BELLY_COVERED": ["a person in a t-shirt"],
-    "ARMPITS_COVERED": ["a person in a long-sleeved shirt"],
-    "FEET_COVERED": ["a person wearing shoes"],
-    "FACE_FEMALE": ["a close-up of a woman's face"],
-    "FACE_MALE": ["a close-up of a man's face"],
+    "FEMALE_BREAST_EXPOSED": ["bare female breasts", "exposed female nipples"],
+    "FEMALE_GENITALIA_EXPOSED": ["a vulva", "exposed female genitals"],
+    "MALE_GENITALIA_EXPOSED": ["a penis", "exposed male genitals"],
+    "BUTTOCKS_EXPOSED": ["bare buttocks", "a naked bottom"],
+    "ANUS_EXPOSED": ["an exposed anus"],
+    "MALE_BREAST_EXPOSED": ["a man's bare chest", "exposed male nipples"],
+    "BELLY_EXPOSED": ["a bare belly", "an exposed navel"],
+    "ARMPITS_EXPOSED": ["bare armpits"],
+    "FEET_EXPOSED": ["bare feet"],
+    "FEMALE_BREAST_COVERED": ["breasts covered by a bra", "breasts covered by a bikini top"],
+    "FEMALE_GENITALIA_COVERED": ["a woman's crotch covered by underwear"],
+    "BUTTOCKS_COVERED": ["buttocks covered by shorts", "buttocks covered by a swimsuit"],
+    "ANUS_COVERED": ["a covered bottom seen from behind"],
+    "BELLY_COVERED": ["a belly covered by a shirt"],
+    "ARMPITS_COVERED": ["armpits covered by sleeves"],
+    "FEET_COVERED": ["feet in shoes"],
+    "FACE_FEMALE": ["a woman's face"],
+    "FACE_MALE": ["a man's face"],
 }
+
+# Whole-scene phrases. Sex scenes often show no single body part clearly enough for
+# a part phrase to win, so these raise the hit score when any exposed-nudity label
+# is enabled, but they belong to no label and are never used as the tag.
+SCENE_PROMPTS = [
+    "people having sex",
+    "a naked couple in bed",
+    "a fully naked person",
+    "full frontal nudity",
+]
+SCENE_LABELS = frozenset({
+    "FEMALE_BREAST_EXPOSED", "FEMALE_GENITALIA_EXPOSED", "MALE_GENITALIA_EXPOSED",
+    "BUTTOCKS_EXPOSED", "ANUS_EXPOSED",
+})
 
 # Always counter-examples: the ordinary frames a film is mostly made of.
 NEUTRAL_PROMPTS = [
@@ -111,20 +118,28 @@ _prompt_cache: dict[str, np.ndarray] = {}
 _download_lock = asyncio.Lock()
 
 
-def build_prompts(enabled_labels: set[str]) -> tuple[list[str], list[str]]:
-    """Return (prompts, owner) where owner[i] is prompt i's label if enabled, else "".
+def build_prompts(enabled_labels: set[str]) -> tuple[list[str], list[str], list[bool]]:
+    """Return (prompts, owner, positive) for this set of enabled NudeNet labels.
 
-    Prompts never change with enabled_labels, only which of them count as hits, so
-    the cached text embeddings stay valid when the user edits scan_labels.
+    owner[i] is prompt i's label if that label is enabled, else "" (scene and
+    neutral phrases never have one); positive[i] says whether prompt i counts
+    toward the hit score. Prompts never change with enabled_labels, only these
+    flags, so the cached text embeddings stay valid when scan_labels is edited.
     """
     prompts: list[str] = []
     owner: list[str] = []
     for label, phrases in LABEL_PROMPTS.items():
         prompts += phrases
         owner += [label if label in enabled_labels else ""] * len(phrases)
+    positive = [bool(o) for o in owner]
+    scenes_on = bool(SCENE_LABELS & enabled_labels)
+    prompts += SCENE_PROMPTS
+    owner += [""] * len(SCENE_PROMPTS)
+    positive += [scenes_on] * len(SCENE_PROMPTS)
     prompts += NEUTRAL_PROMPTS
     owner += [""] * len(NEUTRAL_PROMPTS)
-    return prompts, owner
+    positive += [False] * len(NEUTRAL_PROMPTS)
+    return prompts, owner, positive
 
 
 def models_present() -> bool:
@@ -243,11 +258,13 @@ def preprocess(jpeg_bytes: bytes) -> np.ndarray:
 def score_frame(jpeg_bytes: bytes, enabled_labels: set[str]) -> tuple[float, str]:
     """Return (score, label) for one frame.
 
-    score is the probability share on enabled-label prompts (0..1); label is the
-    enabled NudeNet label holding the largest share of it. Blocking; call via
-    asyncio.to_thread. Returns (0.0, "") if the frame cannot be scored.
+    score is the probability share on hit prompts, enabled body parts plus scene
+    phrases (0..1); label is the enabled NudeNet label whose own body-part phrases
+    hold the largest share, so a scene phrase can raise the score but never pick
+    the tag. Blocking; call via asyncio.to_thread. Returns (0.0, "") if the frame
+    cannot be scored.
     """
-    prompts, owner = build_prompts(enabled_labels)
+    prompts, owner, positive = build_prompts(enabled_labels)
     if not any(owner):
         return 0.0, ""
     try:
@@ -264,4 +281,5 @@ def score_frame(jpeg_bytes: bytes, enabled_labels: set[str]) -> tuple[float, str
         if label:
             by_label[label] = by_label.get(label, 0.0) + float(prob)
     label = max(by_label, key=by_label.get)
-    return sum(by_label.values()), label
+    score = float(sum(p for p, hit in zip(probs, positive) if hit))
+    return score, label
