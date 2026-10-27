@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
+import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
 import RecentSkips from '../components/RecentSkips'
 import { Monitor, Clock, Wifi, WifiOff, ChevronDown, ChevronRight, Film, Tv, Zap } from 'lucide-react'
 
@@ -74,35 +75,35 @@ export default function Dashboard() {
     }
   }
 
-  useEffect(() => {
-    // AbortController is created per tick so stale responses from a previous
-    // tick cannot overwrite state after a newer tick has already updated it.
-    let controller = new AbortController()
-
-    const tick = async () => {
-      controller.abort()
-      controller = new AbortController()
-      try {
-        const [s, sc] = await Promise.all([
-          api.get<{ sessions: Session[] }>('/api/sessions', { signal: controller.signal }),
-          api.get<ScannerStatus>('/api/sessions/scanner-status', { signal: controller.signal }),
-        ])
-        setSessions(s.sessions)
-        setScanner(sc)
-      } catch {
-        // Ignore — includes intentional abort
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    tick()
-    const id = setInterval(tick, 5000)
-    return () => {
-      clearInterval(id)
-      controller.abort()
+  // Each load aborts the previous one, so a slow response can never overwrite a
+  // newer one.
+  const controllerRef = useRef<AbortController | null>(null)
+  const load = useCallback(async () => {
+    controllerRef.current?.abort()
+    const controller = (controllerRef.current = new AbortController())
+    try {
+      const [s, sc] = await Promise.all([
+        api.get<{ sessions: Session[] }>('/api/sessions', { signal: controller.signal }),
+        api.get<ScannerStatus>('/api/sessions/scanner-status', { signal: controller.signal }),
+      ])
+      setSessions(s.sessions)
+      setScanner(sc)
+    } catch {
+      // Ignore — includes intentional abort
+    } finally {
+      setLoading(false)
     }
   }, [])
+
+  useEffect(() => {
+    load()
+    return () => controllerRef.current?.abort()
+  }, [load])
+
+  // Live: streams starting, stopping or moving, and the scanner starting, finishing
+  // or being paused. Progress is patched in place rather than refetched.
+  useLiveRefresh(['sessions_changed', 'scan_started', 'scan_finished', 'scanner_changed'], load, { fallbackMs: 30_000 })
+  useLiveEvent(['scan_progress'], (_, d) => setScanner(s => withScanProgress(s, d)))
 
   const skipNow = async (sessionKey: string) => {
     try {

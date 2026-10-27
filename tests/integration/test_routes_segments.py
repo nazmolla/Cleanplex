@@ -198,36 +198,76 @@ async def _segment_with_file(tmp_path, start_ms=60000, end_ms=70000):
     return await db.insert_segment("guid-prev", "Movie", start_ms=start_ms, end_ms=end_ms), media
 
 
-async def test_preview_streams_padded_clip_from_the_server(http_client, tmp_path):
+@pytest.fixture
+def fake_render(tmp_path, monkeypatch):
+    """Replace ffmpeg with a recorder that writes a small fake clip."""
+    import asyncio
+    from types import SimpleNamespace
+    from cleanplex.web.routes import segments as seg_routes
+
+    monkeypatch.setattr(seg_routes, "PREVIEWS_DIR", tmp_path / "previews")
+    state = SimpleNamespace(calls=[], ok=True)
+
+    async def render(path, start_ms, duration_ms, out_path):
+        state.calls.append((path, start_ms, duration_ms))
+        await asyncio.sleep(0.05)  # long enough for concurrent requests to overlap
+        if state.ok:
+            out_path.write_bytes(b"0123456789" * 10)
+        return state.ok
+
+    monkeypatch.setattr(seg_routes.frame_extractor, "render_clip", render)
+    return state
+
+
+async def test_preview_renders_the_padded_clip_once_and_serves_it(http_client, tmp_path, fake_render):
     seg_id, media = await _segment_with_file(tmp_path)
-    calls = []
 
-    async def fake_clip(path, start_ms, duration_ms):
-        calls.append((path, start_ms, duration_ms))
-        yield b"mp4-bytes"
+    first = await http_client.get(f"/api/segments/{seg_id}/preview")
+    second = await http_client.get(f"/api/segments/{seg_id}/preview")
 
-    with patch("cleanplex.web.routes.segments.frame_extractor.stream_clip", fake_clip):
-        resp = await http_client.get(f"/api/segments/{seg_id}/preview")
-
-    assert resp.status_code == 200
-    assert resp.headers["content-type"] == "video/mp4"
-    assert resp.headers["x-clip-start-ms"] == "55000"
-    assert resp.content == b"mp4-bytes"
-    assert calls == [(str(media), 55000, 20000)]
+    assert first.status_code == second.status_code == 200
+    assert first.headers["content-type"] == "video/mp4"
+    assert first.headers["x-clip-start-ms"] == "55000"
+    assert first.content == b"0123456789" * 10
+    assert fake_render.calls == [(str(media), 55000, 20000)]
 
 
-async def test_preview_clamps_padding_at_the_start_and_caps_length(http_client, tmp_path):
+async def test_preview_answers_byte_range_requests_for_safari(http_client, tmp_path, fake_render):
+    """Regression for #93: Safari plays nothing unless a range request gets a 206."""
+    seg_id, _ = await _segment_with_file(tmp_path)
+
+    resp = await http_client.get(f"/api/segments/{seg_id}/preview", headers={"Range": "bytes=0-1"})
+
+    assert resp.status_code == 206
+    assert resp.headers["content-range"] == "bytes 0-1/100"
+    assert resp.headers["accept-ranges"] == "bytes"
+    assert resp.content == b"01"
+
+
+async def test_concurrent_first_requests_render_once(http_client, tmp_path, fake_render):
+    import asyncio
+
+    seg_id, _ = await _segment_with_file(tmp_path)
+
+    results = await asyncio.gather(*(http_client.get(f"/api/segments/{seg_id}/preview") for _ in range(3)))
+
+    assert [r.status_code for r in results] == [200, 200, 200]
+    assert len(fake_render.calls) == 1
+
+
+async def test_preview_returns_502_when_rendering_fails(http_client, tmp_path, fake_render):
+    seg_id, _ = await _segment_with_file(tmp_path)
+    fake_render.ok = False
+
+    assert (await http_client.get(f"/api/segments/{seg_id}/preview")).status_code == 502
+
+
+async def test_preview_clamps_padding_at_the_start_and_caps_length(http_client, tmp_path, fake_render):
     seg_id, _ = await _segment_with_file(tmp_path, start_ms=2000, end_ms=2 * 60 * 60 * 1000)
-    calls = []
 
-    async def fake_clip(path, start_ms, duration_ms):
-        calls.append((start_ms, duration_ms))
-        yield b""
+    await http_client.get(f"/api/segments/{seg_id}/preview")
 
-    with patch("cleanplex.web.routes.segments.frame_extractor.stream_clip", fake_clip):
-        await http_client.get(f"/api/segments/{seg_id}/preview")
-
-    assert calls == [(0, 10 * 60 * 1000)]
+    assert [(s, d) for _, s, d in fake_render.calls] == [(0, 10 * 60 * 1000)]
 
 
 async def test_preview_404_for_unknown_segment(http_client):
@@ -260,3 +300,13 @@ async def test_segment_lists_are_never_browser_cached(http_client):
 
     assert single.headers["cache-control"] == "no-store"
     assert batch.headers["cache-control"] == "no-store"
+
+
+async def test_segment_list_reports_its_detector(http_client):
+    """#92: the UI labels each segment with the model that found it."""
+    await db.insert_segment("guid-det", "Movie", start_ms=0, end_ms=1000, detector="nudenet-640m")
+    await db.insert_segment("guid-det", "Movie", start_ms=2000, end_ms=3000, source="skp")
+
+    segs = (await http_client.get("/api/titles/guid-det/segments")).json()["segments"]
+
+    assert [(s["source"], s["detector"]) for s in segs] == [("scanner", "nudenet-640m"), ("skp", "")]

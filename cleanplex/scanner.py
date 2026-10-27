@@ -15,7 +15,7 @@ import httpx
 import cleanplex.plex_client as plex_mod
 
 from .frame_extractor import extract_frames_batch, get_duration_ms
-from . import siglip_detector
+from . import events, siglip_detector
 from .logger import get_logger
 from . import database as db
 
@@ -33,6 +33,8 @@ _model_download_lock = asyncio.Lock()
 
 THUMBNAILS_DIR: Path = Path.home() / ".cleanplex" / "thumbnails"
 MODELS_DIR: Path = Path.home() / ".cleanplex" / "models"
+# Minimum gap between scan_progress events per scan; the UI bar needs no finer.
+PROGRESS_EVENT_INTERVAL_S = 2.0
 NUDENET_640_MODEL_FILENAME = "640m.onnx"
 NUDENET_640_DOWNLOAD_URLS = [
     "https://github.com/notAI-tech/NudeNet/releases/download/v3/640m.onnx",
@@ -49,7 +51,10 @@ _queued_force: set[str] = set()
 # Force items always execute before normal items; within each group order is FIFO.
 _queued_force_ordered: list[str] = []
 _queued_normal_ordered: list[str] = []
-_queue_wakeup_event: asyncio.Event = asyncio.Event()
+# Idle workers sleep on this until a queue has work; every producer notifies all.
+# A Condition with a predicate, not an Event: the first worker to wake used to
+# clear a shared Event and leave the other idle workers asleep for a minute (#87).
+_queue_cond = asyncio.Condition()
 _skip_requested_guids: set[str] = set()
 _worker_pool_size: int = 1
 _restart_requested: bool = False
@@ -118,12 +123,14 @@ def pause_scanner() -> None:
     global _paused
     _paused = True
     logger.info("Scanner paused")
+    events.publish("scanner_changed")
 
 
 def resume_scanner() -> None:
     global _paused
     _paused = False
     logger.info("Scanner resumed")
+    events.publish("scanner_changed")
 
 
 async def force_scan_job(plex_guid: str) -> None:
@@ -149,8 +156,49 @@ async def force_scan_job(plex_guid: str) -> None:
         await _force_scan_queue.put(plex_guid)
         _queued_force.add(plex_guid)
         _queued_force_ordered.append(plex_guid)
-        _queue_wakeup_event.set()
+    await _notify_workers()
+    events.publish("scanner_changed")
     logger.warning("Force scan activated for %s — will scan immediately", plex_guid)
+
+
+async def _notify_workers() -> None:
+    """Wake every idle worker so each re-checks the queues."""
+    async with _queue_cond:
+        _queue_cond.notify_all()
+
+
+async def _wait_for_work(force_only: bool, timeout: float) -> None:
+    """Sleep until there is work this worker may take, or *timeout* passes.
+
+    force_only: outside the scan window only force-scan jobs may run, so normal
+    jobs must not wake the worker (they would just be re-queued in a loop).
+    """
+    def has_work() -> bool:
+        return not _force_scan_queue.empty() or (not force_only and not _scan_queue.empty())
+
+    async with _queue_cond:
+        try:
+            await asyncio.wait_for(_queue_cond.wait_for(has_work), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _take_next_job() -> str | None:
+    """Pop the next job without waiting, force-scan queue first; None if both are empty."""
+    async with _state_lock:
+        for queue, members, ordered in (
+            (_force_scan_queue, _queued_force, _queued_force_ordered),
+            (_scan_queue, _queued_normal, _queued_normal_ordered),
+        ):
+            try:
+                plex_guid = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                continue
+            members.discard(plex_guid)
+            if plex_guid in ordered:
+                ordered.remove(plex_guid)
+            return plex_guid
+    return None
 
 
 def is_paused() -> bool:
@@ -170,7 +218,7 @@ async def enqueue(plex_guid: str) -> None:
         await _scan_queue.put(plex_guid)
         _queued_normal.add(plex_guid)
         _queued_normal_ordered.append(plex_guid)
-        _queue_wakeup_event.set()
+    await _notify_workers()
 
 
 async def enqueue_pending() -> None:
@@ -531,8 +579,13 @@ async def scan_video(plex_guid: str, config) -> None:
     deleted = await db.delete_segments_for_guid(plex_guid)
     if deleted:
         logger.info("Cleared %d previous segment(s) for %s", deleted, title)
+        events.publish("segments_changed", guid=plex_guid)
     await db.update_scan_job_status(plex_guid, "scanning", progress=0.0)
     logger.info("Scanning: %s (%d part(s))", title, len(all_parts))
+    events.publish("scan_started", guid=plex_guid)
+    # Progress events are throttled by wall time, not frames: frame rate varies with
+    # the file and model, and the UI only needs a steady bar.
+    last_progress_event = 0.0
 
     try:
         # Smaller interval improves recall for short scenes; configurable in settings.
@@ -566,6 +619,8 @@ async def scan_video(plex_guid: str, config) -> None:
         enabled_labels = set(config.scan_labels) if config.scan_labels else set()
         nudenet_model = str(getattr(config, "nudenet_model", "320n"))
         nudenet_model_path = str(getattr(config, "nudenet_model_path", ""))
+        # A user-supplied model file; checked before the 640m download fills the path.
+        custom_model = bool(nudenet_model_path)
 
         # Pre-warm 640m model under asyncio.Lock before dispatching threads so
         # parallel workers do not race to download the same file concurrently.
@@ -581,6 +636,10 @@ async def scan_video(plex_guid: str, config) -> None:
         if siglip_on and not await siglip_detector.ensure_models_async():
             logger.warning("SigLIP models unavailable; scanning %s with NudeNet only", title)
             siglip_on = False
+
+        # Recorded on each segment so the UI can say which model found it. Taken
+        # after the 640m fallback above, so it names the model actually used.
+        nudenet_detector = f"nudenet-{nudenet_model}" + ("-custom" if custom_model else "")
 
         THUMBNAILS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -623,8 +682,10 @@ async def scan_video(plex_guid: str, config) -> None:
                     # came from; users can tell them apart and threshold them.
                     severity="high" if source == "scanner" else "medium",
                     source=source,
+                    detector=nudenet_detector if source == "scanner" else siglip_detector.DETECTOR_ID,
                 )
                 segments_inserted += 1
+                events.publish("segments_changed", guid=plex_guid)
 
             cluster_start_ms = None
             cluster_prev_ms = 0
@@ -730,6 +791,10 @@ async def scan_video(plex_guid: str, config) -> None:
                 progress = (idx + 1) / total_steps
                 if idx % 30 == 0:  # Update DB every ~2.5 min of video at 5 s steps
                     await db.update_scan_job_status(plex_guid, "scanning", progress=progress)
+                now = time.monotonic()
+                if now - last_progress_event >= PROGRESS_EVENT_INTERVAL_S:
+                    last_progress_event = now
+                    events.publish("scan_progress", guid=plex_guid, progress=round(progress, 4))
 
             # Flush any open cluster before the next part starts; the time gap
             # between parts would prevent natural flushing via the gap_ms check.
@@ -757,6 +822,9 @@ async def scan_video(plex_guid: str, config) -> None:
     finally:
         async with _state_lock:
             _current_guids.discard(plex_guid)
+        # Covers every exit (done, failed, skipped, paused, window ended): the UI
+        # refetches the job to learn which.
+        events.publish("scan_finished", guid=plex_guid)
 
 
 async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
@@ -764,33 +832,19 @@ async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
     while True:
         config = await get_config_fn()
 
-        try:
-            # Prioritize explicit force-scan requests ahead of normal queue items.
-            try:
-                plex_guid = _force_scan_queue.get_nowait()
-                async with _state_lock:
-                    _queued_force.discard(plex_guid)
-                    if plex_guid in _queued_force_ordered:
-                        _queued_force_ordered.remove(plex_guid)
-            except asyncio.QueueEmpty:
-                plex_guid = await asyncio.wait_for(_scan_queue.get(), timeout=30)
-                async with _state_lock:
-                    _queued_normal.discard(plex_guid)
-                    if plex_guid in _queued_normal_ordered:
-                        _queued_normal_ordered.remove(plex_guid)
-        except asyncio.TimeoutError:
+        plex_guid = await _take_next_job()
+        if plex_guid is None:
             # Queue is empty, respect scan window
-            if not config.is_scan_window():
+            in_window = config.is_scan_window()
+            if not in_window:
                 if not _paused:
                     pause_scanner()
             else:
                 if _paused:
                     resume_scanner()
-            try:
-                await asyncio.wait_for(_queue_wakeup_event.wait(), timeout=60)
-            except asyncio.TimeoutError:
-                pass
-            _queue_wakeup_event.clear()
+            # The timeout only bounds how long the window check above goes stale;
+            # new work wakes the worker immediately.
+            await _wait_for_work(force_only=not in_window, timeout=30)
             continue
 
         job = await db.get_scan_job_by_guid(plex_guid)
@@ -808,14 +862,8 @@ async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
             await enqueue(plex_guid)
             if not _paused:
                 pause_scanner()
-            # If a force-scan job arrived, don't sleep; process it immediately.
-            if not _force_scan_queue.empty():
-                continue
-            try:
-                await asyncio.wait_for(_queue_wakeup_event.wait(), timeout=60)
-            except asyncio.TimeoutError:
-                pass
-            _queue_wakeup_event.clear()
+            # Only a force-scan job can run now; sleep until one arrives.
+            await _wait_for_work(force_only=True, timeout=60)
             continue
 
         if _paused:

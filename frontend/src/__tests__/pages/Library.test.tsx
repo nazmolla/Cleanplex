@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Library from '../../pages/Library'
+import { emitLive } from '../../test/fakeEventSource'
 
 vi.mock('../../api/client', () => ({
   api: {
@@ -228,5 +229,61 @@ describe('Library', () => {
       expect(screen.getByRole('button', { name: /^Scanning/ })).not.toHaveTextContent('(1)')
       expect(screen.getByRole('button', { name: /^All/ })).toHaveTextContent('(3)')
     })
+  })
+
+  it('reloads titles when a scan in this library finishes (#88, #89)', async () => {
+    renderLibrary()
+    await waitFor(() => screen.getAllByText('Movies')[0])
+    await act(async () => {
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: 'lib1' } })
+    })
+    await waitFor(() => screen.getByText('Movie A'))
+    const titleCalls = () => mockApi.get.mock.calls.filter(([p]: [string]) => p.includes('/titles')).length
+    const before = titleCalls()
+
+    await act(async () => {
+      emitLive('scan_finished', { guid: 'g1' })
+      emitLive('scan_finished', { guid: 'not-in-this-library' })
+      await vi.advanceTimersByTimeAsync(600)
+    })
+
+    expect(titleCalls()).toBe(before + 1)
+  })
+
+  it('refetches an open segment list when a scan changes its count (#90)', async () => {
+    const seg = (id: number) => ({
+      id, plex_guid: 'g1', title: 'Movie A', start_ms: id * 60_000, end_ms: id * 60_000 + 5000,
+      confidence: 0.9, thumbnail_url: '', created_at: '', labels: '', category: 'nudity',
+      severity: 'high', action: 'skip', channel: 'both', language: '', source: 'scanner',
+    })
+    let count = 1
+    const scanningStatus = { ...scannerIdle, active_scans: [{ guid: 'g1', title: 'Movie A', progress: 0.5, status: 'scanning' }] }
+    mockApi.get.mockImplementation((path: string) => {
+      if (path.includes('scanner-status')) return Promise.resolve({ ...scanningStatus })
+      if (path.includes('libraries') && !path.includes('titles')) return Promise.resolve({ libraries })
+      if (path.startsWith('/api/titles/')) return Promise.resolve({ segments: [seg(1)] })
+      if (path.includes('titles')) return Promise.resolve({ titles: [{ ...titles[0], segment_count: count }] })
+      return Promise.resolve({})
+    })
+    mockApi.post.mockImplementation((path: string) =>
+      Promise.resolve(path.includes('segments/batch') ? { segments: [seg(1), seg(2)] } : { ok: true }))
+    renderLibrary()
+    await waitFor(() => screen.getAllByText('Movies')[0])
+    await act(async () => {
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: 'lib1' } })
+    })
+    fireEvent.click(await screen.findByTitle('Toggle segments'))
+    await waitFor(() => expect(screen.getByText('00:01:00')).toBeInTheDocument())
+    expect(screen.queryByText('00:02:00')).not.toBeInTheDocument()
+
+    count = 2
+    await act(async () => {
+      emitLive('segments_changed', { guid: 'g1' })
+      await vi.advanceTimersByTimeAsync(600)
+    })
+
+    await waitFor(() => expect(screen.getByText('00:02:00')).toBeInTheDocument())
+    const batchCalls = mockApi.post.mock.calls.filter(([p]: [string]) => p.includes('segments/batch'))
+    expect(batchCalls).toHaveLength(1)
   })
 })

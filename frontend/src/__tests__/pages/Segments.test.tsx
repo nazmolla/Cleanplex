@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Segments from '../../pages/Segments'
+import { emitLive } from '../../test/fakeEventSource'
 
 vi.mock('../../api/client', () => ({
   api: { get: vi.fn(), post: vi.fn(), delete: vi.fn() },
@@ -50,7 +51,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('Segments live refresh (#81)', () => {
+describe('Segments live refresh (#81, #89)', () => {
   it('reloads the open title once its rescan finishes', async () => {
     render(<MemoryRouter><Segments /></MemoryRouter>)
     fireEvent.click((await screen.findAllByRole('button', { name: /Movies/ }))[0])
@@ -58,15 +59,15 @@ describe('Segments live refresh (#81)', () => {
     await waitFor(() => expect(screen.getAllByText('2').length).toBeGreaterThan(0))
     const segCallsBefore = mockApi.get.mock.calls.filter(c => String(c[0]).startsWith('/api/titles/')).length
 
-    scanner = { ...idle, active_scans: [{ guid: 'g1', title: 'Movie A', progress: 0.5, status: 'scanning' }] }
-    await act(async () => { vi.advanceTimersByTime(3000) })
     segmentCount = 30
-    scanner = idle
-    await act(async () => { vi.advanceTimersByTime(3000) })
+    await act(async () => {
+      emitLive('segments_changed', { guid: 'g1' })
+      await vi.advanceTimersByTimeAsync(1100)
+    })
 
     await waitFor(() => {
       const segCalls = mockApi.get.mock.calls.filter(c => String(c[0]).startsWith('/api/titles/')).length
-      expect(segCalls).toBeGreaterThan(segCallsBefore + 1)
+      expect(segCalls).toBeGreaterThan(segCallsBefore)
       expect(screen.getAllByText('30').length).toBeGreaterThan(0)
     })
   })

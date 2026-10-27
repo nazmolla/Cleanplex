@@ -22,6 +22,7 @@ from .routes.mcp_routes import router as mcp_router
 from .routes.analytics_routes import router as analytics_router
 from .routes.marker_routes import router as marker_router
 from .routes.import_routes import router as import_router
+from .routes.events_routes import router as events_router
 
 STATIC_DIR = Path(__file__).parent / "static"
 logger = get_logger(__name__)
@@ -63,6 +64,7 @@ def create_app() -> FastAPI:
     app.include_router(analytics_router)
     app.include_router(marker_router)
     app.include_router(import_router)
+    app.include_router(events_router)
 
     # Serve built React frontend (if present)
     if STATIC_DIR.exists():

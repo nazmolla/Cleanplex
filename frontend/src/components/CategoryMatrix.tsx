@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
+import { useLiveRefresh } from '../api/events'
 import { RotateCcw, Volume2, SkipForward } from 'lucide-react'
 
 interface CategoryPref {
@@ -45,11 +46,20 @@ export default function CategoryMatrix({ username, enabled }: Props) {
   const [saving, setSaving] = useState<Record<string, boolean>>({})
   const [error, setError] = useState('')
 
+  // Reloaded when this user's levels change elsewhere, e.g. another tab (#89).
+  const [liveTick, setLiveTick] = useState(0)
+  useLiveRefresh(['users_changed'], () => setLiveTick(n => n + 1), {
+    relevant: (_, d) => !d.username || d.username === username,
+  })
+
   // Refetch when the selected user changes; an in-flight request for the previous
-  // user would otherwise overwrite this one's state.
+  // user would otherwise overwrite this one's state. Live reloads keep the current
+  // matrix on screen instead of flashing the loading state.
+  const shownUser = useRef<string | null>(null)
   useEffect(() => {
     const controller = new AbortController()
-    setLoading(true)
+    if (shownUser.current !== username) setLoading(true)
+    shownUser.current = username
     api
       .get<CategoriesResponse>(`/api/users/${encodeURIComponent(username)}/categories`, {
         signal: controller.signal,
@@ -65,7 +75,7 @@ export default function CategoryMatrix({ username, enabled }: Props) {
         }
       })
     return () => controller.abort()
-  }, [username])
+  }, [username, liveTick])
 
   const update = async (category: string, level: number, action: string) => {
     setSaving(s => ({ ...s, [category]: true }))

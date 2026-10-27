@@ -1,4 +1,4 @@
-"""Unit tests for frame_extractor.stream_clip against a real ffmpeg (issue #80)."""
+"""Unit tests for frame_extractor preview clips (#80, #93) and scan frame sizing (#82), using real ffmpeg."""
 
 from __future__ import annotations
 
@@ -12,24 +12,29 @@ from cleanplex import frame_extractor
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
 
 
-async def test_stream_clip_turns_mkv_into_fragmented_mp4(tmp_path):
+async def test_render_clip_turns_mkv_into_a_seekable_mp4(tmp_path):
     src = tmp_path / "src.mkv"
     subprocess.run(
         ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10",
          "-f", "lavfi", "-i", "sine", "-t", "4", "-c:v", "mpeg4", "-c:a", "mp2", str(src)],
         check=True,
     )
+    out = tmp_path / "clip.mp4"
 
-    data = b"".join([c async for c in frame_extractor.stream_clip(str(src), 1000, 2000)])
+    assert await frame_extractor.render_clip(str(src), 1000, 2000, out) is True
 
+    data = out.read_bytes()
     assert data[4:8] == b"ftyp"
-    assert b"moof" in data
+    # +faststart: the index (moov) comes before the media data (mdat).
+    assert data.index(b"moov") < data.index(b"mdat")
+    assert not (tmp_path / "clip.mp4.part").exists()
 
 
-async def test_stream_clip_yields_nothing_for_an_unreadable_file(tmp_path):
-    data = b"".join([c async for c in frame_extractor.stream_clip(str(tmp_path / "nope.mkv"), 0, 1000)])
+async def test_render_clip_reports_failure_and_leaves_no_file(tmp_path):
+    out = tmp_path / "clip.mp4"
 
-    assert data == b""
+    assert await frame_extractor.render_clip(str(tmp_path / "nope.mkv"), 0, 1000, out) is False
+    assert not out.exists() and not (tmp_path / "clip.mp4.part").exists()
 
 
 # ── Scan frame sizing (issue #82) ─────────────────────────────────────────────

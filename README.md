@@ -20,6 +20,8 @@ While someone watches, the service polls Plex every few seconds:
 - This is just a database lookup — no ML at playback time
 
 ### 3. Web UI Dashboard
+
+Every page updates live: the server pushes changes (scans starting, progressing and finishing, new segments, titles synced from Plex, skips, active streams, user and marker changes) over Server-Sent Events, so nothing needs a manual refresh.
 Full browser interface at `http://your-server:7979` for:
 - Configuring Plex connection and scan settings
 - Reviewing and editing detected segments
@@ -188,7 +190,7 @@ only. Those categories are populated by importing skip files, where humans have 
 #### Segments
 - **Three-panel browser**: Library tree → Select title → Browse its segments
 - **Live scanner banner** — shows which titles are currently being scanned with progress bars
-- **Segment details** — Timestamp range, confidence score, and a thumbnail from the detected scene
+- **Segment details** — Timestamp range, confidence score, a thumbnail from the detected scene, and what found it (e.g. *NudeNet 640m*, *SigLIP*, *Subtitles*, *VideoSkip (.skp)*)
 - **Delete false positives** — Remove incorrectly flagged segments
 - **Right-click to rescan** — On a movie, episode, season or show: *Rescan now* or *Rescan tonight* (queued for the scan window)
 - **Live updates** — The open title's segments and the tree counts refresh as a rescan runs and when it finishes

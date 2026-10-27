@@ -72,6 +72,8 @@ async def _fetch_segments_and_total(
             "end_ms": seg["end_ms"],
             "confidence": seg["confidence"],
             "labels": seg.get("labels") or "",
+            "source": seg.get("source") or "scanner",
+            "detector": seg.get("detector") or "",
             "has_thumbnail": bool(seg.get("thumbnail_path")),
             "thumbnail_url": f"/api/thumbnails/{seg['id']}" if seg.get("thumbnail_path") else "",
             "poster_url": poster_url,

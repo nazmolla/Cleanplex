@@ -1,5 +1,7 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { api } from '../api/client'
+import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
+import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import SkipFileImport from '../components/SkipFileImport'
 import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2 } from 'lucide-react'
 
@@ -40,6 +42,8 @@ interface Segment {
   thumbnail_url: string
   created_at: string
   labels?: string
+  source?: string
+  detector?: string
 }
 
 interface ScannerStatus {
@@ -168,6 +172,10 @@ export default function Library() {
   const [expandedSeasons, setExpandedSeasons] = useState<Set<string>>(new Set())
   const [expandedSegments, setExpandedSegments] = useState<Set<string>>(new Set())
   const [loadedSegments, setLoadedSegments] = useState<Record<string, Segment[]>>({})
+  // The title's segment_count when its list was fetched. Compared with later counts
+  // rather than the list length, because the list hides disabled labels and the
+  // count does not; a length check would refetch forever.
+  const loadedCounts = useRef<Record<string, number>>({})
   const [loadingSegments, setLoadingSegments] = useState<Set<string>>(new Set())
   const [deletingSegs, setDeletingSegs] = useState<Record<number, boolean>>({})
   const [deletingAllSegs, setDeletingAllSegs] = useState<Record<string, boolean>>({})
@@ -193,50 +201,57 @@ export default function Library() {
       .catch(() => {})
   }, [])
 
-  // Poll scanner status every 3s.
-  // AbortController prevents stale responses from overwriting newer state.
-  useEffect(() => {
-    let controller = new AbortController()
-
-    const tick = () => {
-      controller.abort()
-      controller = new AbortController()
-      api.get<ScannerStatus>('/api/sessions/scanner-status', { signal: controller.signal })
-        .then(setScannerStatus)
-        .catch(() => {})
-    }
-
-    tick()
-    const id = setInterval(tick, 3000)
-    return () => {
-      clearInterval(id)
-      controller.abort()
-    }
+  // Each load aborts the previous one so a stale response never overwrites a newer one.
+  const scannerCtl = useRef<AbortController | null>(null)
+  const loadScanner = useCallback(() => {
+    scannerCtl.current?.abort()
+    const controller = (scannerCtl.current = new AbortController())
+    api.get<ScannerStatus>('/api/sessions/scanner-status', { signal: controller.signal })
+      .then(setScannerStatus)
+      .catch(() => {})
   }, [])
 
-  // Auto-refresh titles while scanning; cancel in-flight request before each new tick.
+  const titlesCtl = useRef<AbortController | null>(null)
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  const reloadTitles = useCallback(() => {
+    const lib = selectedRef.current
+    if (!lib) return
+    titlesCtl.current?.abort()
+    const controller = (titlesCtl.current = new AbortController())
+    api.get<{ titles: Title[] }>(`/api/libraries/${lib.id}/titles`, { signal: controller.signal })
+      // Ignore a reply for a library the user has since switched away from.
+      .then(d => { if (selectedRef.current?.id === lib.id) setTitles(d.titles) })
+      .catch(() => {})
+  }, [])
+
   useEffect(() => {
-    if (!selected || !scannerStatus || scannerStatus.active_scans.length === 0) return
-    let controller = new AbortController()
-
-    const tick = async () => {
-      controller.abort()
-      controller = new AbortController()
-      try {
-        const d = await api.get<{ titles: Title[] }>(
-          `/api/libraries/${selected.id}/titles`,
-          { signal: controller.signal },
-        )
-        setTitles(d.titles)
-      } catch {}
-    }
-
-    const id = setInterval(tick, 5000)
+    loadScanner()
     return () => {
-      clearInterval(id)
-      controller.abort()
+      scannerCtl.current?.abort()
+      titlesCtl.current?.abort()
     }
-  }, [selected, scannerStatus])
+  }, [loadScanner])
+
+  // Live (#89): the banner follows the scanner; the list and tab counts reload when
+  // a scan starts or ends, titles change in this library, or segments change for a
+  // title it shows. Progress is patched in place, both in the banner and the rows.
+  useLiveRefresh(['scan_started', 'scan_finished', 'scanner_changed'], loadScanner, { fallbackMs: 30_000 })
+  const titleGuids = useRef<Set<string>>(new Set())
+  titleGuids.current = new Set(titles.map(t => t.plex_guid))
+  useLiveRefresh(['scan_started', 'scan_finished', 'titles_changed', 'segments_changed'], reloadTitles, {
+    debounceMs: 500,
+    relevant: (type, d) => {
+      if (type === 'titles_changed') return !d.library_id || d.library_id === selectedRef.current?.id
+      return !d.guid || titleGuids.current.has(d.guid)
+    },
+  })
+  useLiveEvent(['scan_progress'], (_, d) => {
+    setScannerStatus(s => withScanProgress(s, d))
+    setTitles(ts => (ts.some(t => t.plex_guid === d.guid)
+      ? ts.map(t => (t.plex_guid === d.guid ? { ...t, progress: d.progress } : t))
+      : ts))
+  })
 
   const loadTitles = useCallback(async (libId: string) => {
     const d = await api.get<{ titles: Title[] }>(`/api/libraries/${libId}/titles`)
@@ -255,9 +270,10 @@ export default function Library() {
       isOpen ? next.delete(guid) : next.add(guid)
       return next
     })
-    // Lazy-fetch on first expand only.
+    // Fetch on expand unless the cached list is still current (see the effect below).
     if (!isOpen && !(guid in loadedSegments)) {
       setLoadingSegments(prev => new Set(prev).add(guid))
+      loadedCounts.current[guid] = titles.find(t => t.plex_guid === guid)?.segment_count ?? 0
       try {
         const d = await api.get<{ segments: Segment[] }>(`/api/titles/${encodeURIComponent(guid)}/segments`)
         setLoadedSegments(prev => ({ ...prev, [guid]: d.segments }))
@@ -268,6 +284,35 @@ export default function Library() {
       }
     }
   }
+
+  // When refreshed titles report a different segment count than a cached list was
+  // fetched at (a scan or import added or removed segments), refetch the open ones
+  // in one batch request and drop the rest so they refetch on their next expand.
+  // Keyed on titles only: expanding a title must not trigger a refetch here.
+  useEffect(() => {
+    const stale = titles.filter(t => t.plex_guid in loadedCounts.current && loadedCounts.current[t.plex_guid] !== t.segment_count)
+    if (stale.length === 0) return
+    const open = stale.filter(t => expandedSegments.has(t.plex_guid)).map(t => t.plex_guid)
+    const closed = stale.filter(t => !expandedSegments.has(t.plex_guid)).map(t => t.plex_guid)
+    for (const t of stale) loadedCounts.current[t.plex_guid] = t.segment_count
+    if (closed.length) {
+      setLoadedSegments(prev => {
+        const next = { ...prev }
+        for (const g of closed) delete next[g]
+        return next
+      })
+      for (const g of closed) delete loadedCounts.current[g]
+    }
+    if (open.length) {
+      api.post<{ segments: Segment[] }>('/api/titles/segments/batch', { guids: open })
+        .then(d => {
+          const byGuid: Record<string, Segment[]> = Object.fromEntries(open.map(g => [g, []]))
+          for (const seg of d.segments) byGuid[seg.plex_guid]?.push(seg)
+          setLoadedSegments(prev => ({ ...prev, ...byGuid }))
+        })
+        .catch(() => {})
+    }
+  }, [titles])
 
   const deleteAllTitleSegs = async (guid: string) => {
     setDeletingAllSegs(d => ({ ...d, [guid]: true }))
@@ -368,6 +413,7 @@ export default function Library() {
                   <span className="text-gray-600 text-xs">→</span>
                   <span className="font-mono text-xs text-plex-orange">{msToTimecode(seg.end_ms)}</span>
                   <span className="text-xs text-gray-600">({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)</span>
+                  <SegmentOriginBadge seg={seg} />
                 </div>
                 {renderLabels(seg.labels)}
               </div>

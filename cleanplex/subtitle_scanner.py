@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .logger import get_logger
 from . import database as db
+from . import events
 from .frame_extractor import _FFMPEG_BIN, _FFPROBE_BIN
 
 logger = get_logger(__name__)
@@ -203,5 +204,6 @@ async def scan_title(plex_guid: str, title: str, file_path: str, language: str =
         return 0
 
     count = await db.insert_segments_bulk(plex_guid, title, segments, source="subtitles")
+    events.publish("segments_changed", guid=plex_guid)
     logger.info("Found %d language segment(s) in '%s'", count, title)
     return count

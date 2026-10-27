@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import RecentSkips from '../../components/RecentSkips'
+import { emitLive } from '../../test/fakeEventSource'
 
 vi.mock('../../api/client', () => ({ api: { get: vi.fn() } }))
 
@@ -71,5 +72,14 @@ describe('RecentSkips', () => {
     fireEvent.change(screen.getByLabelText('From date'), { target: { value: '2026-10-01' } })
 
     await waitFor(() => expect(screen.getByText('No skips in this date range')).toBeInTheDocument())
+  })
+
+  it('reloads when the backend records a skip (#89)', async () => {
+    render(<RecentSkips />)
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1))
+
+    emitLive('skip_recorded', { guid: 'g' })
+
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2))
   })
 })

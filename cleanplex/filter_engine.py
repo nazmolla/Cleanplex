@@ -6,6 +6,7 @@ import time
 
 from .logger import get_logger
 from . import database as db
+from . import events
 from .plex_client import ActiveSession, PlexClient
 
 logger = get_logger(__name__)
@@ -223,6 +224,7 @@ async def verify_pending_seek(session: ActiveSession, client: PlexClient) -> Non
         success=False,
         latency_ms=pending["latency_ms"],
     )
+    events.publish("skip_recorded", guid=session.plex_guid)
 
 
 async def _apply_skip(session: ActiveSession, client: PlexClient, seg: dict, pos: int) -> None:
@@ -276,6 +278,7 @@ async def _apply_skip(session: ActiveSession, client: PlexClient, seg: dict, pos
         success=success,
         latency_ms=latency_ms,
     )
+    events.publish("skip_recorded", guid=session.plex_guid)
 
 
 async def _apply_mute(session: ActiveSession, client: PlexClient, seg: dict) -> None:
@@ -323,6 +326,7 @@ async def _apply_mute(session: ActiveSession, client: PlexClient, seg: dict) -> 
         success=muted_ok,
         latency_ms=int((time.monotonic() - started) * 1000),
     )
+    events.publish("skip_recorded", guid=session.plex_guid)
 
 
 async def _restore_expired_mute(session: ActiveSession, client: PlexClient, pos: int) -> None:

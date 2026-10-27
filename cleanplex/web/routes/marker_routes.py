@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, Response
 from ...logger import get_logger
 import cleanplex.plex_client as plex_mod
 from ... import database as db
+from ... import events
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/markers", tags=["markers"])
@@ -140,6 +141,7 @@ async def refresh_library_titles(library_id: str):
 
     await db.upsert_plex_title_cache(library_id, cache_rows)
     logger.info("Refreshed title cache for library %s — %d items", library_id, len(cache_rows))
+    events.publish("markers_changed")
     return {"ok": True, "count": len(cache_rows)}
 
 
@@ -161,6 +163,7 @@ async def sync_markers_for_title(rating_key: str, body: MarkerSyncRequest):
         markers = await client.get_markers(rating_key)
         await db.upsert_plex_markers(body.plex_guid, rating_key, markers)
         logger.debug("Synced rating_key=%s — %d marker(s)", rating_key, len(markers))
+        events.publish("markers_changed")
         return {"ok": True, "markers": markers, "count": len(markers)}
     except Exception as exc:
         logger.error("Marker sync failed rating_key=%s guid=%s — %s", rating_key, body.plex_guid, exc)
@@ -196,6 +199,7 @@ async def create_marker(rating_key: str, body: MarkerCreateRequest):
         plex_error = str(exc)
         logger.warning("Could not write new marker to Plex (rating_key=%s): %s", rating_key, exc)
 
+    events.publish("markers_changed")
     return {"ok": True, "marker": marker, "plex_error": plex_error}
 
 
@@ -207,6 +211,7 @@ async def delete_marker(marker_id: int):
     deleted = await db.delete_plex_marker(marker_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Marker not found")
+    events.publish("markers_changed")
     return {"ok": True}
 
 
@@ -243,6 +248,7 @@ async def update_marker(marker_id: int, body: MarkerUpdateRequest):
     await db.update_plex_marker_timestamps(marker_id, body.start_ms, body.end_ms)
 
     updated = await db.get_plex_marker(marker_id)
+    events.publish("markers_changed")
     return {"ok": True, "marker": updated}
 
 

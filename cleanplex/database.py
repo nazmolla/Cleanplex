@@ -283,6 +283,9 @@ async def init_db() -> None:
             # Audio-track language a segment was authored against. Empty means it
             # applies to every track, which is right for image-derived segments.
             "ALTER TABLE segments ADD COLUMN language TEXT DEFAULT ''",
+            # Which model produced a scanner segment, e.g. nudenet-640m or
+            # siglip-base-224. Empty for imports and rows written before #92.
+            "ALTER TABLE segments ADD COLUMN detector TEXT DEFAULT ''",
         ]
         for stmt in migrations:
             try:
@@ -709,6 +712,7 @@ async def insert_segment(
     action: str = "skip",
     channel: str = "both",
     source: str = "scanner",
+    detector: str = "",
 ) -> int:
     """Insert one segment and return its row id.
 
@@ -718,10 +722,10 @@ async def insert_segment(
     async with get_connection() as conn:
         cursor = await conn.execute(
             "INSERT INTO segments(plex_guid, title, start_ms, end_ms, confidence, thumbnail_path, "
-            "labels, category, severity, action, channel, source) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "labels, category, severity, action, channel, source, detector) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (plex_guid, title, start_ms, end_ms, confidence, thumbnail_path, labels,
-             category, severity, action, channel, source),
+             category, severity, action, channel, source, detector),
         )
         await conn.commit()
         return cursor.lastrowid
@@ -843,7 +847,7 @@ async def get_segments_for_labels(
         rows = await conn.execute_fetchall(
             f"""
             SELECT s.id, s.plex_guid, s.title, s.start_ms, s.end_ms,
-                   s.confidence, s.labels, s.thumbnail_path,
+                   s.confidence, s.labels, s.thumbnail_path, s.source, s.detector,
                    j.content_rating, j.media_type, j.rating_key,
                    j.show_rating_key
             FROM segments s

@@ -72,6 +72,7 @@ async def test_two_consecutive_siglip_frames_make_a_medium_siglip_segment(tmp_pa
     assert segs[0]["severity"] == "medium"
     # Tagged with the winning existing label, never a SigLIP-specific one.
     assert segs[0]["labels"] == "BUTTOCKS_EXPOSED"
+    assert segs[0]["detector"] == "siglip-base-224"
     assert segs[0]["confidence"] == pytest.approx(0.8)
     assert segs[0]["start_ms"] == 10 * STEP
 
@@ -94,6 +95,8 @@ async def test_cluster_with_a_nudenet_hit_stays_a_scanner_segment(tmp_path):
     assert segs[0]["severity"] == "high"
     assert segs[0]["labels"] == "FEMALE_BREAST_EXPOSED"
     assert segs[0]["start_ms"] == 5 * STEP
+    # Records the NudeNet model in use (#92); Config() defaults to 320n.
+    assert segs[0]["detector"] == "nudenet-320n"
 
 
 async def test_disabled_siglip_is_never_called(tmp_path):
@@ -109,3 +112,18 @@ def test_segment_source_rules():
     assert scanner._segment_source(1, 1, 0, 2, 2) is None
     assert scanner._segment_source(0, 3, 2, 1, 2) == "siglip"
     assert scanner._segment_source(0, 3, 1, 1, 2) is None
+
+
+async def test_scan_announces_start_segments_and_finish(tmp_path):
+    """#89: the UI follows a scan through events instead of polling."""
+    from cleanplex import events
+
+    await _job(tmp_path)
+    with events.subscribe() as q:
+        await _scan(nudenet_hits={6}, siglip_hits=set())
+        seen = [q.get_nowait() for _ in range(q.qsize())]
+
+    types = [t for t, _ in seen]
+    assert types[0] == "scan_started" and types[-1] == "scan_finished"
+    assert ("segments_changed", {"guid": "g"}) in seen
+    assert all(d.get("guid") == "g" for _, d in seen)

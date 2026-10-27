@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
+import { useLiveRefresh } from '../api/events'
 import { UserCircle2, ShieldCheck, ShieldOff, ChevronDown, ChevronRight } from 'lucide-react'
 import CategoryMatrix from '../components/CategoryMatrix'
 
@@ -17,12 +18,15 @@ export default function UsersPage() {
   // several category requests in flight at once.
   const [expanded, setExpanded] = useState<string | null>(null)
 
+  // Reloaded when any user's filter changes elsewhere, e.g. another tab (#89).
+  const [liveTick, setLiveTick] = useState(0)
+  useLiveRefresh(['users_changed'], () => setLiveTick(n => n + 1))
   useEffect(() => {
     api.get<{ users: User[] }>('/api/users').then(d => {
       setUsers(d.users)
       setLoading(false)
     })
-  }, [])
+  }, [liveTick])
 
   const toggle = async (username: string, enabled: boolean) => {
     setSaving(s => ({ ...s, [username]: true }))

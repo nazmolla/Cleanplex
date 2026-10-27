@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 from ...logger import get_logger
 import cleanplex.plex_client as plex_mod
 from ... import database as db
+from ... import events
 from ...importers._common import CATEGORIES
 
 logger = get_logger(__name__)
@@ -52,6 +53,7 @@ async def get_users():
 @router.put("/{username}")
 async def update_user_filter(username: str, payload: UserFilterUpdate):
     await db.upsert_user_filter(username, payload.enabled)
+    events.publish("users_changed", username=username)
     return {"ok": True}
 
 
@@ -98,6 +100,7 @@ async def update_user_category(username: str, category: str, payload: CategoryPr
             detail=f"Unsupported action: {payload.action}. Expected 'skip' or 'mute'.",
         )
     await db.upsert_user_category_pref(username, category, payload.level, payload.action)
+    events.publish("users_changed", username=username)
     return {"ok": True}
 
 
@@ -105,4 +108,5 @@ async def update_user_category(username: str, category: str, payload: CategoryPr
 async def reset_user_categories(username: str):
     """Clear a user's category preferences, reverting them to the defaults."""
     removed = await db.delete_user_category_prefs(username)
+    events.publish("users_changed", username=username)
     return {"ok": True, "removed": removed}

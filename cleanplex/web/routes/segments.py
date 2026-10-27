@@ -8,12 +8,13 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from ...logger import get_logger
 import cleanplex.plex_client as plex_mod
 from ... import database as db
+from ... import events
 from ... import frame_extractor
 
 logger = get_logger(__name__)
@@ -162,6 +163,7 @@ async def sync_library(library_id: str):
             added += 1
 
         logger.info(f"Library {library_id} synced: {added} new titles added")
+        events.publish("titles_changed", library_id=library_id)
         return {"ok": True, "synced": len(items), "new": added, "removed": removed}
     except RuntimeError as e:
         logger.error(f"Plex client error during library sync: {e}")
@@ -382,6 +384,7 @@ async def get_segments_batch(data: dict):
             "channel": seg.get("channel") or "both",
             "language": seg.get("language") or "",
             "source": seg.get("source") or "scanner",
+            "detector": seg.get("detector") or "",
         })
     return Response(
         content=json.dumps({"segments": result}),
@@ -435,6 +438,7 @@ async def get_segments_for_title(plex_guid: str):
             "channel": seg.get("channel") or "both",
             "language": seg.get("language") or "",
             "source": seg.get("source") or "scanner",
+            "detector": seg.get("detector") or "",
         })
     return Response(
         content=json.dumps({"segments": result}),
@@ -504,6 +508,13 @@ async def jump_to_segment(segment_id: int):
 PREVIEW_PAD_MS = 5000
 # Upper bound on one preview transcode; long segments are cut, not refused.
 PREVIEW_MAX_MS = 10 * 60 * 1000
+# Rendered clips are cached so replays, seeks and Safari's range requests are
+# served from disk. Bounded by count; the oldest clips are deleted first.
+PREVIEWS_DIR: Path = Path.home() / ".cleanplex" / "previews"
+PREVIEW_CACHE_FILES = 50
+# One render per clip at a time: Safari opens several requests for one <video>.
+# Entries are removed once nobody is waiting, so the dict does not grow.
+_preview_locks: dict[str, asyncio.Lock] = {}
 
 
 async def _segment_source(segment_id: int) -> tuple[dict, str]:
@@ -546,19 +557,46 @@ async def vlc_segment(segment_id: int, request: Request):
                     headers={"Content-Disposition": f'attachment; filename="segment_{segment_id}.m3u"'})
 
 
+def _prune_preview_cache(keep: Path) -> None:
+    clips = sorted(PREVIEWS_DIR.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in clips[PREVIEW_CACHE_FILES:]:
+        if old != keep:
+            old.unlink(missing_ok=True)
+
+
 @router.get("/segments/{segment_id}/preview")
 async def preview_segment(segment_id: int):
-    """Stream a browser-playable MP4 clip of the segment plus PREVIEW_PAD_MS either side.
+    """Serve a browser-playable MP4 clip of the segment plus PREVIEW_PAD_MS either side.
 
-    The clip timeline starts at 0, i.e. at segment start minus the padding.
+    The clip timeline starts at 0, i.e. at segment start minus the padding. It is
+    rendered once and served as a file, so byte-range requests work (Safari will
+    not play a video without them).
     """
     seg, file_path = await _segment_source(segment_id)
     start_ms = max(int(seg["start_ms"]) - PREVIEW_PAD_MS, 0)
     duration_ms = min(int(seg["end_ms"]) + PREVIEW_PAD_MS - start_ms, PREVIEW_MAX_MS)
-    return StreamingResponse(
-        frame_extractor.stream_clip(file_path, start_ms, duration_ms),
+    # The source's mtime is in the key so a replaced file is never served stale.
+    mtime = int(os.stat(file_path).st_mtime)
+    key = f"{segment_id}_{start_ms}_{duration_ms}_{mtime}"
+    clip = PREVIEWS_DIR / f"{key}.mp4"
+
+    if not clip.is_file():
+        lock = _preview_locks.setdefault(key, asyncio.Lock())
+        try:
+            async with lock:
+                if not clip.is_file():
+                    PREVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+                    if not await frame_extractor.render_clip(file_path, start_ms, duration_ms, clip):
+                        raise HTTPException(status_code=502, detail="Could not render a preview of this segment")
+                    _prune_preview_cache(keep=clip)
+        finally:
+            if not lock.locked():
+                _preview_locks.pop(key, None)
+
+    return FileResponse(
+        clip,
         media_type="video/mp4",
-        headers={"Cache-Control": "no-store", "X-Clip-Start-Ms": str(start_ms)},
+        headers={"Cache-Control": "private, max-age=3600", "X-Clip-Start-Ms": str(start_ms)},
     )
 
 
@@ -581,6 +619,7 @@ async def delete_segment(segment_id: int):
         raise HTTPException(status_code=404, detail="Segment not found")
 
     _refresh_cleanplex_summary_for_guid(seg["plex_guid"])
+    events.publish("segments_changed", guid=seg["plex_guid"])
 
     return {"ok": True}
 
@@ -590,6 +629,7 @@ async def delete_all_segments_for_title(plex_guid: str):
     """Delete all segments for a specific title."""
     deleted = await db.delete_segments_for_guid(plex_guid)
     _refresh_cleanplex_summary_for_guid(plex_guid)
+    events.publish("segments_changed", guid=plex_guid)
     return {"ok": True, "deleted": deleted}
 
 
