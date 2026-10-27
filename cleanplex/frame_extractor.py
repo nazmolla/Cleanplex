@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import sys
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -44,45 +45,66 @@ def check_ffmpeg() -> bool:
     return Path(_FFMPEG_BIN).exists() or shutil.which("ffmpeg") is not None
 
 
-async def stream_clip(file_path: str, start_ms: int, duration_ms: int) -> AsyncGenerator[bytes, None]:
-    """Yield a browser-playable fragmented MP4 (H.264/AAC, <=720p) of one window of *file_path*.
+# Upper bound on one preview render; a 10-minute 4K clip in software still fits.
+CLIP_TIMEOUT_S = 300
 
-    The source is transcoded rather than remuxed: containers (mkv) and codecs
-    (HEVC, AC3, DTS) vary per file and browsers support only some of them, while
-    H.264/AAC in MP4 plays everywhere. The ffmpeg process is killed if the client
-    disconnects before the clip finishes.
-    """
-    cmd = [
-        _FFMPEG_BIN,
-        "-loglevel", "error",
+
+def _clip_cmd(file_path: str, start_ms: int, duration_ms: int, out_path: str, hardware: bool) -> list[str]:
+    """ffmpeg arguments for one preview clip: H.264/AAC MP4, at most 720p."""
+    decode = ["-hwaccel", "videotoolbox"] if hardware else []
+    # VideoToolbox is rate-controlled by bitrate; 3 Mbit/s is ample for 720p.
+    encode = (["-c:v", "h264_videotoolbox", "-b:v", "3M"] if hardware
+              else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"])
+    return [
+        _FFMPEG_BIN, "-loglevel", "error", "-y",
+        *decode,
         "-ss", f"{max(start_ms, 0) / 1000.0:.3f}",
         "-i", file_path,
         "-t", f"{duration_ms / 1000.0:.3f}",
         "-map", "0:v:0", "-map", "0:a:0?",
         "-vf", "scale=-2:'min(720,ih)'",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+        *encode, "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-ac", "2", "-b:a", "128k",
-        # Fragmented MP4 needs no seekable output, so it can stream from a pipe.
-        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-        "-f", "mp4",
-        "pipe:1",
+        # moov atom first, so a browser can start playing and seek by byte range.
+        "-movflags", "+faststart",
+        "-f", "mp4", out_path,
     ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    try:
-        assert proc.stdout is not None
-        while chunk := await proc.stdout.read(64 * 1024):
-            yield chunk
-        await proc.wait()
-        if proc.returncode:
-            logger.warning("ffmpeg preview exited %s for %s", proc.returncode, file_path)
-    finally:
-        if proc.returncode is None:
+
+
+async def render_clip(file_path: str, start_ms: int, duration_ms: int, out_path: Path) -> bool:
+    """Write a browser-playable MP4 of one window of *file_path* to *out_path*.
+
+    The source is transcoded rather than remuxed: containers (mkv) and codecs
+    (HEVC, AC3, DTS) vary per file and browsers support only some of them, while
+    H.264/AAC in MP4 plays everywhere. On macOS the VideoToolbox hardware decoder
+    and encoder are tried first (about 3x faster on 4K HEVC), then libx264.
+    Written to a temporary name and renamed, so a half-written clip is never served.
+    """
+    tmp = out_path.with_name(out_path.name + ".part")
+    attempts = [True, False] if sys.platform == "darwin" else [False]
+    for hardware in attempts:
+        cmd = _clip_cmd(file_path, start_ms, duration_ms, str(tmp), hardware)
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=CLIP_TIMEOUT_S)
+        except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
+            logger.warning("Preview render timed out for %s", file_path)
+            tmp.unlink(missing_ok=True)
+            return False
+        if proc.returncode == 0 and tmp.is_file() and tmp.stat().st_size > 0:
+            tmp.replace(out_path)
+            return True
+        logger.info(
+            "Preview render (%s) failed for %s: %s",
+            "videotoolbox" if hardware else "libx264", file_path,
+            stderr.decode(errors="replace")[:200],
+        )
+        tmp.unlink(missing_ok=True)
+    return False
 
 
 async def extract_frame(file_path: str, offset_ms: int) -> bytes | None:
