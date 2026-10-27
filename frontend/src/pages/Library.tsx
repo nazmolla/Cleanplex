@@ -214,9 +214,13 @@ export default function Library() {
     }
   }, [])
 
-  // Auto-refresh titles while scanning; cancel in-flight request before each new tick.
+  // Auto-refresh titles while anything is scanning. Keyed on a boolean, not the
+  // status object: the 3 s status poll replaces that object, and depending on it
+  // recreated this 5 s interval before it could ever fire (#88). When scanning
+  // stops, the cleanup reloads once more so finished titles show as done.
+  const anyScanActive = (scannerStatus?.active_scans.length ?? 0) > 0
   useEffect(() => {
-    if (!selected || !scannerStatus || scannerStatus.active_scans.length === 0) return
+    if (!selected || !anyScanActive) return
     let controller = new AbortController()
 
     const tick = async () => {
@@ -235,8 +239,11 @@ export default function Library() {
     return () => {
       clearInterval(id)
       controller.abort()
+      api.get<{ titles: Title[] }>(`/api/libraries/${selected.id}/titles`)
+        .then(d => setTitles(d.titles))
+        .catch(() => {})
     }
-  }, [selected, scannerStatus])
+  }, [selected, anyScanActive])
 
   const loadTitles = useCallback(async (libId: string) => {
     const d = await api.get<{ titles: Title[] }>(`/api/libraries/${libId}/titles`)

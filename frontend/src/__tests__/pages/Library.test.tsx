@@ -229,4 +229,30 @@ describe('Library', () => {
       expect(screen.getByRole('button', { name: /^All/ })).toHaveTextContent('(3)')
     })
   })
+  it('keeps refreshing titles while a scan runs (#88)', async () => {
+    const scanningStatus = { ...scannerIdle, active_scans: [{ guid: 'g2', title: 'Movie B', progress: 0.5, status: 'scanning' }] }
+    mockApi.get.mockImplementation((path: string) => {
+      // A fresh object per poll, as the real API returns; the old bug only shows then.
+      if (path.includes('scanner-status')) return Promise.resolve({ ...scanningStatus })
+      if (path.includes('libraries') && !path.includes('titles')) return Promise.resolve({ libraries })
+      if (path.includes('titles')) return Promise.resolve({ titles })
+      return Promise.resolve({})
+    })
+    renderLibrary()
+    await waitFor(() => screen.getAllByText('Movies')[0])
+    await act(async () => {
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: 'lib1' } })
+    })
+    await waitFor(() => screen.getByText('Movie A'))
+    const titleCalls = () => mockApi.get.mock.calls.filter(([p]: [string]) => p.includes('/titles')).length
+    const before = titleCalls()
+
+    // Several 3 s status polls land inside this window; the 5 s refresh must still fire.
+    // Step a second at a time so each status response lands between timers.
+    for (let i = 0; i < 11; i++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    }
+
+    await waitFor(() => expect(titleCalls()).toBeGreaterThanOrEqual(before + 2))
+  })
 })
