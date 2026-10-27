@@ -30,15 +30,35 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks())
 
 describe('RecentSkips', () => {
-  it('lists every returned event with the total and no date bounds by default', async () => {
+  it('lists the returned events with the total, for the last 7 days by default (#99)', async () => {
     render(<RecentSkips />)
 
     await waitFor(() => expect(screen.getByText('Movie A')).toBeInTheDocument())
     expect(screen.getByText('Movie B')).toBeInTheDocument()
     expect(screen.getByText('(2)')).toBeInTheDocument()
-    const url = mockGet.mock.calls[0][0] as string
-    expect(url).not.toContain('start=')
-    expect(url).not.toContain('end=')
+    const day = (offset: number) => {
+      const d = new Date()
+      d.setDate(d.getDate() + offset)
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    }
+    expect((screen.getByLabelText('From date') as HTMLInputElement).value).toBe(day(-6))
+    expect((screen.getByLabelText('To date') as HTMLInputElement).value).toBe(day(0))
+    const params = new URLSearchParams((mockGet.mock.calls[0][0] as string).split('?')[1])
+    expect(params.get('start')).toBe(new Date(`${day(-6)}T00:00:00`).toISOString())
+    expect(params.get('end')).toBe(new Date(`${day(1)}T00:00:00`).toISOString())
+  })
+
+  it('Clear lists all history with no date bounds', async () => {
+    render(<RecentSkips />)
+    await waitFor(() => expect(mockGet).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByText('Clear'))
+
+    await waitFor(() => {
+      const url = mockGet.mock.calls.at(-1)![0] as string
+      expect(url).not.toContain('start=')
+      expect(url).not.toContain('end=')
+    })
   })
 
   it('sends the chosen local days as a start-inclusive, end-exclusive window', async () => {

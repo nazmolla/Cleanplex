@@ -36,11 +36,23 @@ function dayStart(day: string, offsetDays = 0): string {
   return d.toISOString()
 }
 
+// A local calendar day as YYYY-MM-DD, the value format of <input type="date">.
+// Built from local fields: toISOString() would give the UTC day, which is
+// tomorrow for evenings west of UTC.
+function localDay(offsetDays = 0): string {
+  const d = new Date()
+  d.setDate(d.getDate() + offsetDays)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// Default window: the last 7 days including today. Clear widens it to all history.
+const DEFAULT_DAYS = 7
+
 export default function RecentSkips() {
   const [data, setData] = useState<HistoryResponse>({ events: [], total: 0 })
   const [page, setPage] = useState(0)
-  const [from, setFrom] = useState('')
-  const [to, setTo] = useState('')
+  const [from, setFrom] = useState(() => localDay(-(DEFAULT_DAYS - 1)))
+  const [to, setTo] = useState(() => localDay())
   const [error, setError] = useState('')
 
   // Each load aborts the previous one so an older page or date window never wins.

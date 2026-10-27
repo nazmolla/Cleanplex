@@ -67,9 +67,9 @@ describe('Dashboard', () => {
     await waitFor(() => expect(screen.getByText('No active streams')).toBeInTheDocument())
   })
 
-  it('shows "No skips yet" when events list is empty', async () => {
+  it('shows an empty state for the default 7-day window when there are no skips', async () => {
     renderDashboard()
-    await waitFor(() => expect(screen.getByText('No skips yet')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('No skips in this date range')).toBeInTheDocument())
   })
 
   it('displays active session info', async () => {
