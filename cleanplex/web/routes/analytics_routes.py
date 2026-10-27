@@ -93,6 +93,15 @@ async def _parallel_fetch(labels: list[str], limit: int, offset: int):
     return segs, total
 
 
+@router.get("/detection-accuracy")
+async def get_detection_accuracy():
+    """Per detector and label: segments found, marked false positives, mean scores."""
+    rows = await db.get_detection_accuracy()
+    for r in rows:
+        r["false_positive_rate"] = round(r["false_positives"] / r["total"], 3) if r["total"] else 0.0
+    return {"rows": rows, "marked": sum(r["false_positives"] for r in rows)}
+
+
 @router.get("/skips/by-category")
 async def get_skip_counts_by_category():
     """Return how many filter actions fired per content category."""

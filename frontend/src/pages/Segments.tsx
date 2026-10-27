@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
+import FalsePositiveButton, { FalsePositiveTag } from '../components/FalsePositiveButton'
 import ScanContextMenu, { ScanTarget } from '../components/ScanContextMenu'
 import { Film, Tv, ChevronRight, ChevronDown, Trash2, AlertTriangle, SkipForward, Play, Tv2 } from 'lucide-react'
 
@@ -33,6 +34,7 @@ interface Segment {
   labels?: string
   source?: string
   detector?: string
+  false_positive?: boolean
 }
 
 interface ScannerStatus {
@@ -127,6 +129,7 @@ function SegmentCard({
   onPreview,
   onJump,
   onDelete,
+  onFalsePositive,
 }: {
   seg: Segment
   jumping: Record<number, boolean>
@@ -134,9 +137,10 @@ function SegmentCard({
   onPreview: (s: Segment) => void
   onJump: (id: number) => void
   onDelete: (id: number) => void
+  onFalsePositive: (id: number, falsePositive: boolean) => void
 }) {
   return (
-    <div className="bg-plex-card border border-plex-border rounded-xl overflow-hidden flex flex-col sm:flex-row">
+    <div className={`bg-plex-card border border-plex-border rounded-xl overflow-hidden flex flex-col sm:flex-row ${seg.false_positive ? 'opacity-50' : ''}`}>
       <div className="w-full sm:w-40 flex-shrink-0 bg-black relative">
         {seg.has_thumbnail ? (
           <img src={seg.thumbnail_url} alt="Flagged frame" loading="lazy" className="w-full h-full object-cover" style={{ minHeight: '90px', maxHeight: '160px' }} />
@@ -155,6 +159,7 @@ function SegmentCard({
             <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.end_ms)}</span>
             <span className="text-xs text-gray-600">({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)</span>
             <SegmentOriginBadge seg={seg} />
+            {seg.false_positive && <FalsePositiveTag />}
           </div>
           <p className="text-xs text-gray-500">Detected {new Date(seg.created_at).toLocaleDateString()}</p>
           {renderLabels(seg.labels)}
@@ -169,7 +174,8 @@ function SegmentCard({
           <button onClick={() => onJump(seg.id)} disabled={jumping[seg.id]} title="Jump active Plex playback for this title to this segment" className="p-2 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors disabled:opacity-40">
             <SkipForward size={16} />
           </button>
-          <button onClick={() => onDelete(seg.id)} disabled={deleting[seg.id]} title="Remove this segment (false positive)" className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-40">
+          <FalsePositiveButton seg={seg} onChange={onFalsePositive} />
+          <button onClick={() => onDelete(seg.id)} disabled={deleting[seg.id]} title="Delete this segment" className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-40">
             <Trash2 size={16} />
           </button>
         </div>
@@ -354,6 +360,11 @@ export default function Segments() {
     debounceMs: 1000,
     relevant: (type, d) => type !== 'titles_changed' || !d.library_id || d.library_id === view.current.selectedLib?.id,
   })
+
+  // Update the open list in place; the live segments_changed event then refreshes
+  // the tree counts, which leave marked segments out.
+  const setFalsePositive = (id: number, falsePositive: boolean) =>
+    setSegments(prev => prev.map(s => (s.id === id ? { ...s, false_positive: falsePositive } : s)))
 
   const selectLib = async (lib: Library) => {
     setSelectedLib(lib)
@@ -921,7 +932,7 @@ export default function Segments() {
                     </div>
                     <div className="ml-4 space-y-2">
                       {group.segments.map(seg => (
-                        <SegmentCard key={seg.id} seg={seg} jumping={jumping} deleting={deleting} onPreview={openPreview} onJump={jumpToSegment} onDelete={deleteSegment} />
+                        <SegmentCard key={seg.id} seg={seg} jumping={jumping} deleting={deleting} onPreview={openPreview} onJump={jumpToSegment} onDelete={deleteSegment} onFalsePositive={setFalsePositive} />
                       ))}
                     </div>
                   </div>
@@ -931,7 +942,7 @@ export default function Segments() {
               // Single episode or movie — flat list, no grouping
               <div className="grid gap-3">
                 {filteredSegments.map(seg => (
-                  <SegmentCard key={seg.id} seg={seg} jumping={jumping} deleting={deleting} onPreview={openPreview} onJump={jumpToSegment} onDelete={deleteSegment} />
+                  <SegmentCard key={seg.id} seg={seg} jumping={jumping} deleting={deleting} onPreview={openPreview} onJump={jumpToSegment} onDelete={deleteSegment} onFalsePositive={setFalsePositive} />
                 ))}
               </div>
             )}

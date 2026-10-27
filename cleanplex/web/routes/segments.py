@@ -3,6 +3,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import shutil
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -341,7 +342,8 @@ async def get_segments_batch(data: dict):
     global _scan_labels_cache
     now = time.monotonic()
     if _scan_labels_cache and now - _scan_labels_cache[0] < _SCAN_LABELS_CACHE_TTL:
-        segments = await db.get_segments_for_guids(guids)
+        # Review list: include marked false positives so they can be undone.
+        segments = await db.get_segments_for_guids(guids, include_false_positives=True)
         scan_labels_raw_str = _scan_labels_cache[1]
     else:
         # Fetch segments + setting in one connection.
@@ -385,6 +387,7 @@ async def get_segments_batch(data: dict):
             "language": seg.get("language") or "",
             "source": seg.get("source") or "scanner",
             "detector": seg.get("detector") or "",
+            "false_positive": bool(seg.get("false_positive")),
         })
     return Response(
         content=json.dumps({"segments": result}),
@@ -402,7 +405,8 @@ async def get_segments_for_title(plex_guid: str):
     now = time.monotonic()
     if _scan_labels_cache and now - _scan_labels_cache[0] < _SCAN_LABELS_CACHE_TTL:
         # Cache hit: fetch segments only — single DB connection open.
-        segments = await db.get_segments_for_guid(plex_guid)
+        # Review list: include marked false positives so they can be undone.
+        segments = await db.get_segments_for_guid(plex_guid, include_false_positives=True)
         scan_labels_raw_str = _scan_labels_cache[1]
     else:
         # Cache miss: fetch segments + setting together in one connection open.
@@ -439,6 +443,7 @@ async def get_segments_for_title(plex_guid: str):
             "language": seg.get("language") or "",
             "source": seg.get("source") or "scanner",
             "detector": seg.get("detector") or "",
+            "false_positive": bool(seg.get("false_positive")),
         })
     return Response(
         content=json.dumps({"segments": result}),
@@ -606,6 +611,38 @@ async def stream_segment_source(segment_id: int):
     _, file_path = await _segment_source(segment_id)
     media_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
     return FileResponse(path=file_path, media_type=media_type)
+
+
+class FalsePositiveUpdate(BaseModel):
+    false_positive: bool
+
+
+# Frames of segments marked as false positives, copied at mark time: rescans
+# overwrite thumbnails, and these frames are the sample for retraining later.
+FEEDBACK_DIR: Path = Path.home() / ".cleanplex" / "feedback"
+
+
+@router.post("/segments/{segment_id}/false-positive")
+async def set_segment_false_positive(segment_id: int, body: FalsePositiveUpdate):
+    """Mark or unmark a segment as a false positive; it stays listed but stops acting."""
+    seg = await db.get_segment_by_id(segment_id)
+    if not seg:
+        raise HTTPException(status_code=404, detail="Segment not found")
+    if body.false_positive:
+        frame_path = ""
+        thumb = seg.get("thumbnail_path") or ""
+        if thumb and os.path.isfile(thumb) and not seg.get("false_positive"):
+            FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
+            dest = FEEDBACK_DIR / f"{segment_id}_{int(time.time())}.jpg"
+            await asyncio.to_thread(shutil.copyfile, thumb, dest)
+            frame_path = str(dest)
+        await db.mark_segment_false_positive(segment_id, frame_path)
+    else:
+        for frame in await db.unmark_segment_false_positive(segment_id):
+            Path(frame).unlink(missing_ok=True)
+    _refresh_cleanplex_summary_for_guid(seg["plex_guid"])
+    events.publish("segments_changed", guid=seg["plex_guid"])
+    return {"ok": True, "segment_id": segment_id, "false_positive": body.false_positive}
 
 
 @router.delete("/segments/{segment_id}")
