@@ -386,8 +386,9 @@ async def get_segments_batch(data: dict):
     return Response(
         content=json.dumps({"segments": result}),
         media_type="application/json",
-        # Short browser cache so toggling the same panel within 30 s skips the round-trip.
-        headers={"Cache-Control": "private, max-age=30"},
+        # Never cached: scans and deletes change this list, and a cached copy made
+        # the Segments page show pre-rescan results until a hard reload (#81).
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -438,8 +439,9 @@ async def get_segments_for_title(plex_guid: str):
     return Response(
         content=json.dumps({"segments": result}),
         media_type="application/json",
-        # Short browser cache so toggling the same panel within 30 s skips the round-trip.
-        headers={"Cache-Control": "private, max-age=30"},
+        # Never cached: scans and deletes change this list, and a cached copy made
+        # the Segments page show pre-rescan results until a hard reload (#81).
+        headers={"Cache-Control": "no-store"},
     )
 
 

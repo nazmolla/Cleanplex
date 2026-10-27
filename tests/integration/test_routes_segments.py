@@ -251,3 +251,12 @@ async def test_vlc_playlist_starts_and_stops_around_the_segment(http_client, tmp
     assert body.strip().endswith(f"/api/segments/{seg_id}/stream")
 
 
+async def test_segment_lists_are_never_browser_cached(http_client):
+    """Regression for #81: a cached list hid rescan results until a hard reload."""
+    await db.insert_segment("guid-nc", "Movie", start_ms=0, end_ms=1000)
+
+    single = await http_client.get("/api/titles/guid-nc/segments")
+    batch = await http_client.post("/api/titles/segments/batch", json={"guids": ["guid-nc"]})
+
+    assert single.headers["cache-control"] == "no-store"
+    assert batch.headers["cache-control"] == "no-store"

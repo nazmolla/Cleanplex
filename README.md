@@ -187,7 +187,9 @@ only. Those categories are populated by importing skip files, where humans have 
 - **Live scanner banner** — shows which titles are currently being scanned with progress bars
 - **Segment details** — Timestamp range, confidence score, and a thumbnail from the detected scene
 - **Delete false positives** — Remove incorrectly flagged segments
-- **Preview video** — In-app player to review the segment before deletion
+- **Right-click to rescan** — On a movie, episode, season or show: *Rescan now* or *Rescan tonight* (queued for the scan window)
+- **Live updates** — The open title's segments and the tree counts refresh as a rescan runs and when it finishes
+- **Preview video** — In-app player; the server cuts a short H.264/AAC clip (5 s either side) so it plays in any browser, reading the file as the service account. *Open in VLC* starts and stops at the segment
 - **Jump to segment** — Send Plex seek command to that spot in the video
 - **Scan completion info** — Timestamp when the title finished scanning
 

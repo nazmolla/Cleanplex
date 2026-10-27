@@ -312,6 +312,42 @@ export default function Segments() {
     }
   }, [])
 
+  // Keep the open title or group live while it is rescanned: refetch its segments
+  // on every scanner tick where one of its titles is scanning, plus once when that
+  // scan finishes (that is when the final segments land), and refresh the tree
+  // counts then too. Ends on its own once nothing selected is scanning.
+  const prevScanningRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (!scannerStatus) return
+    const scanning = new Set(scannerStatus.active_scans.map(a => a.guid))
+    const finished = [...prevScanningRef.current].filter(g => !scanning.has(g))
+    prevScanningRef.current = scanning
+
+    const selectedGuids = selectedGroup
+      ? selectedGroup.titles.map(t => t.plex_guid)
+      : selectedTitle ? [selectedTitle.plex_guid] : []
+    const touched = (gs: string[]) => gs.some(g => selectedGuids.includes(g))
+    const scanningSelected = touched([...scanning])
+    const finishedSelected = touched(finished)
+    if (!scanningSelected && !finishedSelected && finished.length === 0) return
+
+    const controller = new AbortController()
+    if (scanningSelected || finishedSelected) {
+      const load = selectedGroup
+        ? api.post<{ segments: Segment[] }>('/api/titles/segments/batch', { guids: selectedGuids })
+        : api.get<{ segments: Segment[] }>(`/api/titles/${encodeURIComponent(selectedGuids[0])}/segments`, {
+            signal: controller.signal,
+          })
+      load.then(d => !controller.signal.aborted && setSegments(d.segments)).catch(() => {})
+    }
+    if (finished.length > 0 && selectedLib) {
+      api.get<{ titles: Title[] }>(`/api/libraries/${selectedLib.id}/titles`, { signal: controller.signal })
+        .then(d => setTitles(d.titles.filter(t => t.segment_count > 0)))
+        .catch(() => {})
+    }
+    return () => controller.abort()
+  }, [scannerStatus])
+
   const selectLib = async (lib: Library) => {
     setSelectedLib(lib)
     setSelectedTitle(null)
