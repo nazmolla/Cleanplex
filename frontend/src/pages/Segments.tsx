@@ -1025,20 +1025,10 @@ export default function Segments() {
                   controls
                   autoPlay
                   className="w-full rounded-lg bg-black max-h-[70vh]"
-                  src={`/api/segments/${previewSeg.id}/stream`}
-                  onLoadedMetadata={e => {
-                    const el = e.currentTarget
-                    el.currentTime = previewSeg.start_ms / 1000
-                  }}
-                  onTimeUpdate={e => {
-                    const el = e.currentTarget
-                    if (el.currentTime >= previewSeg.end_ms / 1000) {
-                      el.pause()
-                    }
-                  }}
+                  src={`/api/segments/${previewSeg.id}/preview`}
                 />
                 <p className="text-xs text-gray-500 mt-2">
-                  Playback uses your browser codecs. If this file does not play, use the jump button to seek in Plex instead.
+                  The server cuts this clip from the source with 5s either side, so it plays in any browser.
                 </p>
               </div>
             </div>

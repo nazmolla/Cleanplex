@@ -1,4 +1,4 @@
-"""Extract video frames using ffmpeg — single-frame and batch modes."""
+"""Run ffmpeg over source media: frame extraction for the scanner and preview clips for the UI."""
 
 from __future__ import annotations
 
@@ -42,6 +42,47 @@ _FFPROBE_BIN = _find_bin("ffprobe", _FFPROBE_SEARCH_PATHS)
 
 def check_ffmpeg() -> bool:
     return Path(_FFMPEG_BIN).exists() or shutil.which("ffmpeg") is not None
+
+
+async def stream_clip(file_path: str, start_ms: int, duration_ms: int) -> AsyncGenerator[bytes, None]:
+    """Yield a browser-playable fragmented MP4 (H.264/AAC, <=720p) of one window of *file_path*.
+
+    The source is transcoded rather than remuxed: containers (mkv) and codecs
+    (HEVC, AC3, DTS) vary per file and browsers support only some of them, while
+    H.264/AAC in MP4 plays everywhere. The ffmpeg process is killed if the client
+    disconnects before the clip finishes.
+    """
+    cmd = [
+        _FFMPEG_BIN,
+        "-loglevel", "error",
+        "-ss", f"{max(start_ms, 0) / 1000.0:.3f}",
+        "-i", file_path,
+        "-t", f"{duration_ms / 1000.0:.3f}",
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-vf", "scale=-2:'min(720,ih)'",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-ac", "2", "-b:a", "128k",
+        # Fragmented MP4 needs no seekable output, so it can stream from a pipe.
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        "-f", "mp4",
+        "pipe:1",
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        assert proc.stdout is not None
+        while chunk := await proc.stdout.read(64 * 1024):
+            yield chunk
+        await proc.wait()
+        if proc.returncode:
+            logger.warning("ffmpeg preview exited %s for %s", proc.returncode, file_path)
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
 
 
 async def extract_frame(file_path: str, offset_ms: int) -> bytes | None:

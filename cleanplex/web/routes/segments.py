@@ -8,12 +8,13 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from ...logger import get_logger
 import cleanplex.plex_client as plex_mod
 from ... import database as db
+from ... import frame_extractor
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["segments"])
@@ -497,23 +498,18 @@ async def jump_to_segment(segment_id: int):
     }
 
 
-@router.get("/segments/{segment_id}/vlc")
-async def vlc_segment(segment_id: int, request: Request):
-    """Return an M3U playlist that opens the segment source in VLC."""
-    seg = await db.get_segment_by_id(segment_id)
-    if not seg:
-        raise HTTPException(status_code=404, detail="Segment not found")
-    base = str(request.base_url).rstrip("/")
-    stream_url = f"{base}/api/segments/{segment_id}/stream"
-    title = seg.get("title") or "Segment"
-    m3u = f"#EXTM3U\n#EXTINF:-1,{title}\n{stream_url}\n"
-    return Response(content=m3u, media_type="audio/x-mpegurl",
-                    headers={"Content-Disposition": f'attachment; filename="segment_{segment_id}.m3u"'})
+# Preview context around a segment, so the viewer sees what leads into it.
+PREVIEW_PAD_MS = 5000
+# Upper bound on one preview transcode; long segments are cut, not refused.
+PREVIEW_MAX_MS = 10 * 60 * 1000
 
 
-@router.get("/segments/{segment_id}/stream")
-async def stream_segment_source(segment_id: int):
-    """Stream the source media file for a segment so the web UI can preview it directly."""
+async def _segment_source(segment_id: int) -> tuple[dict, str]:
+    """Return (segment, readable source path) or raise 404.
+
+    The path is opened by this server process, i.e. the service account, which
+    is the account with access to the media shares; the browser never touches it.
+    """
     seg = await db.get_segment_by_id(segment_id)
     if not seg:
         raise HTTPException(status_code=404, detail="Segment not found")
@@ -525,7 +521,49 @@ async def stream_segment_source(segment_id: int):
     file_path = job["file_path"]
     if not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="Source media file does not exist on disk")
+    return seg, file_path
 
+
+@router.get("/segments/{segment_id}/vlc")
+async def vlc_segment(segment_id: int, request: Request):
+    """Return an M3U playlist that opens the segment source in VLC at the segment."""
+    seg = await db.get_segment_by_id(segment_id)
+    if not seg:
+        raise HTTPException(status_code=404, detail="Segment not found")
+    base = str(request.base_url).rstrip("/")
+    stream_url = f"{base}/api/segments/{segment_id}/stream"
+    title = seg.get("title") or "Segment"
+    start_s = max(int(seg["start_ms"]) - PREVIEW_PAD_MS, 0) / 1000
+    stop_s = (int(seg["end_ms"]) + PREVIEW_PAD_MS) / 1000
+    m3u = (
+        f"#EXTM3U\n#EXTINF:-1,{title}\n"
+        f"#EXTVLCOPT:start-time={start_s:.1f}\n#EXTVLCOPT:stop-time={stop_s:.1f}\n"
+        f"{stream_url}\n"
+    )
+    return Response(content=m3u, media_type="audio/x-mpegurl",
+                    headers={"Content-Disposition": f'attachment; filename="segment_{segment_id}.m3u"'})
+
+
+@router.get("/segments/{segment_id}/preview")
+async def preview_segment(segment_id: int):
+    """Stream a browser-playable MP4 clip of the segment plus PREVIEW_PAD_MS either side.
+
+    The clip timeline starts at 0, i.e. at segment start minus the padding.
+    """
+    seg, file_path = await _segment_source(segment_id)
+    start_ms = max(int(seg["start_ms"]) - PREVIEW_PAD_MS, 0)
+    duration_ms = min(int(seg["end_ms"]) + PREVIEW_PAD_MS - start_ms, PREVIEW_MAX_MS)
+    return StreamingResponse(
+        frame_extractor.stream_clip(file_path, start_ms, duration_ms),
+        media_type="video/mp4",
+        headers={"Cache-Control": "no-store", "X-Clip-Start-Ms": str(start_ms)},
+    )
+
+
+@router.get("/segments/{segment_id}/stream")
+async def stream_segment_source(segment_id: int):
+    """Stream the original source file (range requests supported), e.g. for VLC."""
+    _, file_path = await _segment_source(segment_id)
     media_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
     return FileResponse(path=file_path, media_type=media_type)
 
