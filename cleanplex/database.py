@@ -242,6 +242,10 @@ DEFAULT_SETTINGS = {
     "hw_decode": "1",
     "scan_window_start": "23:00",
     "scan_window_end": "06:00",
+    # Overnight job rendering hover previews (#114); its own window, set in Settings.
+    "hover_previews_enabled": "1",
+    "hover_window_start": "00:00",
+    "hover_window_end": "07:00",
     "log_level": "INFO",
     "excluded_library_ids": "[]",
     "scan_ratings": "[]",  # empty = scan all ratings
@@ -310,6 +314,10 @@ async def init_db() -> None:
             # 1 when the user marked the segment as not containing what it claims
             # (#101). Such rows are kept for review but never act or count.
             "ALTER TABLE segments ADD COLUMN false_positive INTEGER DEFAULT 0",
+            # Hover preview state (#114): '' not rendered yet, then done, failed or
+            # missing (source file unreachable; retried on the next run).
+            "ALTER TABLE segments ADD COLUMN hover_status TEXT DEFAULT ''",
+            "CREATE INDEX IF NOT EXISTS idx_segments_hover_status ON segments(hover_status)",
         ]
         for stmt in migrations:
             try:
@@ -906,6 +914,49 @@ async def get_segment_by_id(segment_id: int) -> dict | None:
         return dict(row) if row else None
 
 
+async def get_hover_preview_candidates(limit: int) -> list[dict]:
+    """Return up to *limit* active segments without a hover preview, oldest first.
+
+    Each row: id, start_ms, end_ms and the title's file_path. False positives are
+    left out; they are not worth the render time.
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            f"""
+            SELECT s.id, s.start_ms, s.end_ms, j.file_path
+            FROM segments s
+            JOIN scan_jobs j ON j.plex_guid = s.plex_guid
+            WHERE COALESCE(s.hover_status, '') = '' AND {_ACTIVE_S}
+            ORDER BY s.id
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [dict(r) for r in rows]
+
+
+async def set_hover_status(segment_id: int, status: str) -> None:
+    """Record a segment's hover preview state: '', 'done', 'failed' or 'missing'."""
+    async with get_connection() as conn:
+        await conn.execute("UPDATE segments SET hover_status=? WHERE id=?", (status, segment_id))
+        await conn.commit()
+
+
+async def reset_missing_hover_previews() -> int:
+    """Make segments whose source was unreachable pending again; return how many."""
+    async with get_connection() as conn:
+        cur = await conn.execute("UPDATE segments SET hover_status='' WHERE hover_status='missing'")
+        await conn.commit()
+        return cur.rowcount
+
+
+async def get_segment_ids() -> set[int]:
+    """Return the id of every segment, false positives included."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall("SELECT id FROM segments")
+        return {row["id"] for row in rows}
+
+
 async def get_segments_grouped_by_title() -> list[dict]:
     """Return distinct (plex_guid, title) pairs that have segments."""
     async with get_connection() as conn:
@@ -976,7 +1027,7 @@ async def get_segments_for_labels(
             f"""
             SELECT s.id, s.plex_guid, s.title, s.start_ms, s.end_ms,
                    s.confidence, s.labels, s.thumbnail_path, s.source, s.detector,
-                   j.content_rating, j.media_type, j.rating_key,
+                   s.hover_status, j.content_rating, j.media_type, j.rating_key,
                    j.show_rating_key
             FROM segments s
             JOIN scan_jobs j ON j.plex_guid = s.plex_guid

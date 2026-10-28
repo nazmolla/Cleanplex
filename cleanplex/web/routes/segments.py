@@ -17,6 +17,7 @@ import cleanplex.plex_client as plex_mod
 from ... import database as db
 from ... import events
 from ... import frame_extractor
+from ... import hover_previews
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["segments"])
@@ -377,6 +378,7 @@ async def get_segments_batch(data: dict):
             "confidence": seg["confidence"],
             "has_thumbnail": bool(seg.get("thumbnail_path")),
             "thumbnail_url": f"/api/thumbnails/{seg['id']}" if seg.get("thumbnail_path") else "",
+            "hover_url": f"/api/segments/{seg['id']}/hover" if seg.get("hover_status") == "done" else "",
             "created_at": seg["created_at"],
             "labels": labels,
             # Classification, so the UI can show what a segment is and how it is
@@ -433,6 +435,7 @@ async def get_segments_for_title(plex_guid: str):
             "confidence": seg["confidence"],
             "has_thumbnail": bool(seg.get("thumbnail_path")),
             "thumbnail_url": f"/api/thumbnails/{seg['id']}" if seg.get("thumbnail_path") else "",
+            "hover_url": f"/api/segments/{seg['id']}/hover" if seg.get("hover_status") == "done" else "",
             "created_at": seg["created_at"],
             "labels": labels,
             # Classification, so the UI can show what a segment is and how it is
@@ -605,6 +608,17 @@ async def preview_segment(segment_id: int):
         media_type="video/mp4",
         headers={"Cache-Control": "private, max-age=3600", "X-Clip-Start-Ms": str(start_ms)},
     )
+
+
+@router.get("/segments/{segment_id}/hover")
+async def hover_preview(segment_id: int):
+    """Serve the segment's hover preview (a short silent MP4), or 404 if none yet."""
+    path = hover_previews.hover_path(segment_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="No hover preview for this segment yet")
+    # Named by segment id and never rewritten (a rescan makes new ids), so it can
+    # be cached hard.
+    return FileResponse(path, media_type="video/mp4", headers={"Cache-Control": "private, max-age=604800"})
 
 
 @router.get("/segments/{segment_id}/stream")

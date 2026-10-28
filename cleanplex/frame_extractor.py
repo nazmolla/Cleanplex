@@ -107,6 +107,72 @@ async def render_clip(file_path: str, start_ms: int, duration_ms: int, out_path:
     return False
 
 
+# Hover previews (#114): a silent loop of at most HOVER_LOOP_S, made by speeding
+# the segment up. 320 px / 12 fps / CRF 30 H.264 averages ~20 KB, against ~470 KB
+# for a 240 px GIF of the same segment.
+HOVER_LOOP_S = 5.0
+HOVER_WIDTH = 320
+HOVER_FPS = 12
+# Long segments are cut to their first minute: decoding more costs time and the
+# loop is already sped up past the point of following it.
+HOVER_SOURCE_MAX_MS = 60_000
+HOVER_TIMEOUT_S = 180
+# Keeps one render from competing with running scans for every core.
+HOVER_THREADS = 2
+
+
+def _hover_cmd(file_path: str, start_ms: int, duration_ms: int, out_path: str, hardware: bool) -> list[str]:
+    """ffmpeg arguments for one hover preview: silent, sped-up, small H.264 MP4."""
+    duration_ms = min(max(duration_ms, 1000), HOVER_SOURCE_MAX_MS)
+    speed = max(1.0, duration_ms / 1000.0 / HOVER_LOOP_S)
+    return [
+        _FFMPEG_BIN, "-loglevel", "error", "-y",
+        "-threads", str(HOVER_THREADS),
+        *(["-hwaccel", "auto"] if hardware else []),
+        "-ss", f"{max(start_ms, 0) / 1000.0:.3f}",
+        "-t", f"{duration_ms / 1000.0:.3f}",
+        "-i", file_path,
+        "-an", "-sn",
+        "-vf", f"setpts=PTS/{speed:.3f},fps={HOVER_FPS},scale={HOVER_WIDTH}:-2",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+        "-threads", str(HOVER_THREADS),
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+        "-f", "mp4", out_path,
+    ]
+
+
+async def render_hover_clip(file_path: str, start_ms: int, duration_ms: int, out_path: Path) -> bool:
+    """Write the hover preview of one segment to *out_path*; False if it failed.
+
+    Hardware decoding is tried first and software second, as for scans. Written
+    to a temporary name and renamed, so a half-written file is never served.
+    """
+    tmp = out_path.with_name(out_path.name + ".part")
+    for hardware in (True, False):
+        cmd = _hover_cmd(file_path, start_ms, duration_ms, str(tmp), hardware)
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=HOVER_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            logger.warning("Hover preview timed out for %s", file_path)
+            tmp.unlink(missing_ok=True)
+            return False
+        if proc.returncode == 0 and tmp.is_file() and tmp.stat().st_size > 0:
+            tmp.replace(out_path)
+            return True
+        logger.info(
+            "Hover preview (%s decode) failed for %s: %s",
+            "hardware" if hardware else "software", file_path,
+            stderr.decode(errors="replace")[:200],
+        )
+        tmp.unlink(missing_ok=True)
+    return False
+
+
 async def extract_frame(file_path: str, offset_ms: int) -> bytes | None:
     """Return JPEG bytes of one frame at *offset_ms*, or None on failure."""
     offset_s = offset_ms / 1000.0

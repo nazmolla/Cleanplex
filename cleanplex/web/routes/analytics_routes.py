@@ -76,6 +76,7 @@ async def _fetch_segments_and_total(
             "detector": seg.get("detector") or "",
             "has_thumbnail": bool(seg.get("thumbnail_path")),
             "thumbnail_url": f"/api/thumbnails/{seg['id']}" if seg.get("thumbnail_path") else "",
+            "hover_url": f"/api/segments/{seg['id']}/hover" if seg.get("hover_status") == "done" else "",
             "poster_url": poster_url,
             "content_rating": seg.get("content_rating") or "",
             "media_type": media_type,

@@ -24,6 +24,9 @@ interface Settings {
   siglip_threshold: string
   siglip_min_hits: string
   hw_decode: string
+  hover_previews_enabled: string
+  hover_window_start: string
+  hover_window_end: string
 }
 
 type SectionId = 'connection' | 'playback' | 'schedule' | 'nudenet' | 'siglip' | 'segments' | 'sync'
@@ -66,6 +69,9 @@ const DEFAULT: Settings = {
   siglip_threshold: '0.3',
   siglip_min_hits: '2',
   hw_decode: '1',
+  hover_previews_enabled: '1',
+  hover_window_start: '00:00',
+  hover_window_end: '07:00',
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -401,6 +407,31 @@ export default function SettingsPage() {
                   </Field>
                 </div>
       </section>
+              <section>
+                <h2 className={h2Cls}>Hover Previews</h2>
+                <p className="text-xs text-gray-500 mb-4">
+                  A separate job renders a short silent loop of each segment (about 20 KB each), played when you hover its
+                  thumbnail. It runs only in this window, one segment at a time, and picks up segments it has not done yet.
+                  The window may cross midnight (e.g. 22:00 to 07:00).
+                </p>
+                <label className="flex items-start gap-3 cursor-pointer mb-4">
+                  <input
+                    type="checkbox"
+                    checked={form.hover_previews_enabled !== '0'}
+                    onChange={e => setForm(f => ({ ...f, hover_previews_enabled: e.target.checked ? '1' : '0' }))}
+                    className="w-4 h-4 mt-0.5 accent-plex-orange"
+                  />
+                  <span className="text-sm text-gray-300">Render hover previews</span>
+                </label>
+                <div className="flex gap-4">
+                  <Field label="Start Time">
+                    <input type="time" value={form.hover_window_start} onChange={set('hover_window_start')} className={inputCls} />
+                  </Field>
+                  <Field label="End Time">
+                    <input type="time" value={form.hover_window_end} onChange={set('hover_window_end')} className={inputCls} />
+                  </Field>
+                </div>
+              </section>
               <section>
                 <h2 className={h2Cls}>Workers</h2>
                 <div className="space-y-4">
