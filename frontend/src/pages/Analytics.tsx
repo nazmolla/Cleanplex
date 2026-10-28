@@ -6,6 +6,7 @@ import FalsePositiveButton from '../components/FalsePositiveButton'
 import SkipAnalytics from '../components/SkipAnalytics'
 import DetectionAccuracy from '../components/DetectionAccuracy'
 import { BarChart2, X, AlertTriangle, Trash2, Play, SkipForward, ChevronLeft, ChevronRight } from 'lucide-react'
+import HoverPreview from '../components/HoverPreview'
 
 interface LabelCount {
   label: string
@@ -27,6 +28,8 @@ interface Segment {
   labels: string
   has_thumbnail: boolean
   thumbnail_url: string
+  /** Short silent loop played on hover; empty until rendered (#114). */
+  hover_url?: string
   poster_url: string
   content_rating: string
   media_type: string
@@ -405,7 +408,7 @@ export default function Analytics() {
                     )}
                   </div>
                   {/* Thumbnail */}
-                  <div className="w-full sm:w-36 flex-shrink-0 bg-black relative">
+                  <HoverPreview src={seg.hover_url} className="w-full sm:w-36 flex-shrink-0 bg-black">
                     {seg.has_thumbnail ? (
                       <img
                         src={seg.thumbnail_url}
@@ -422,7 +425,7 @@ export default function Analytics() {
                     <div className="absolute bottom-0.5 left-0.5 bg-black/70 text-[10px] text-gray-300 px-1 py-0.5 rounded">
                       {Math.round(seg.confidence * 100)}%
                     </div>
-                  </div>
+                  </HoverPreview>
 
                   {/* Info + actions */}
                   <div className="flex-1 p-3 flex flex-col justify-between min-w-0">

@@ -91,6 +91,8 @@ All configuration is done via the **web UI** at `http://your-server:7979/setting
 | Profanity Wordlist | built-in | JSON array of words the subtitle scanner mutes. Empty uses the bundled list |
 | Skip Event Retention | 90 days | How long skip history is kept before being pruned at startup |
 | Scan Window | 23:00–06:00 | Time window when background scanning runs |
+| Hover Previews | on | Render a short silent loop of each active segment, played when you hover its thumbnail (~20–40 KB each, stored in `~/.cleanplex/hover`) |
+| Hover Preview Window | 18:00–23:00 | When the hover preview job runs. It renders one segment at a time, picks up segments it has not done yet, and removes files of deleted segments |
 | Scanner Workers | 2 | Number of parallel scans (higher = more CPU/memory usage) |
 | Detector Labels | — | Select which nudity types to detect (and skip). Only selected labels trigger skips |
 | SigLIP Fallback | off | Second, whole-frame check that runs only on frames NudeNet did not flag, to catch scenes it misses. Follows Detector Labels. Downloads ~815 MB of model files on first use. Its segments have source `siglip` and medium severity |
@@ -194,6 +196,7 @@ only. Those categories are populated by importing skip files, where humans have 
 - **Delete false positives** — Remove incorrectly flagged segments
 - **Right-click to rescan** — On a movie, episode, season or show: *Rescan now* or *Rescan tonight* (queued for the scan window)
 - **Live updates** — The open title's segments and the tree counts refresh as a rescan runs and when it finishes
+- **Hover preview** — Hovering a segment's thumbnail plays a 5 s silent loop of it (sped up for long segments), in Library, Segments and Analytics. Rendered by the evening hover-preview job, so new segments get one the next evening
 - **Preview video** — In-app player; the server cuts a short H.264/AAC clip (5 s either side) so it plays in any browser, reading the file as the service account. *Open in VLC* starts and stops at the segment
 - **Jump to segment** — Send Plex seek command to that spot in the video
 - **Scan completion info** — Timestamp when the title finished scanning

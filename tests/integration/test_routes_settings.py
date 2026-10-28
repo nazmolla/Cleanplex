@@ -218,3 +218,13 @@ async def test_hw_decode_defaults_on_and_can_be_turned_off(http_client):
     assert (await http_client.put("/api/settings", json={"hw_decode": "0"})).status_code == 200
     assert (await http_client.get("/api/settings")).json()["hw_decode"] == "0"
     assert (await http_client.put("/api/settings", json={"hw_decode": "yes"})).status_code == 422
+
+
+async def test_hover_preview_settings_default_to_the_evening_and_validate(http_client):
+    s = (await http_client.get("/api/settings")).json()
+    assert (s["hover_previews_enabled"], s["hover_window_start"], s["hover_window_end"]) == ("1", "18:00", "23:00")
+
+    assert (await http_client.put("/api/settings", json={"hover_window_start": "19:30"})).status_code == 200
+    assert (await http_client.get("/api/settings")).json()["hover_window_start"] == "19:30"
+    assert (await http_client.put("/api/settings", json={"hover_window_end": "25:00"})).status_code == 422
+    assert (await http_client.put("/api/settings", json={"hover_previews_enabled": "on"})).status_code == 422

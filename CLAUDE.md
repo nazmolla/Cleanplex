@@ -41,6 +41,7 @@ Every change — regardless of size — must follow these rules. No exceptions.
 | `database.py` | All SQL — no raw queries outside this file |
 | `scanner.py` | Frame extraction, NudeNet inference, segment writing |
 | `siglip_detector.py` | SigLIP zero-shot fallback for frames NudeNet did not flag — model download, prompts from `scan_labels`, scoring |
+| `hover_previews.py` | Evening job rendering each active segment's hover preview (small silent MP4) in its own window; never runs inside scans |
 | `subtitle_scanner.py` | Subtitle parsing and profanity matching — emits muted language segments |
 | `importers/` | Skip file parsers and exporters (`.skp`, `.edl`, `.mcf`, pasted lists). One module per format; all return the same normalized segment dict |
 | `plex_client.py` | All Plex API calls — no `plexapi` imports elsewhere |

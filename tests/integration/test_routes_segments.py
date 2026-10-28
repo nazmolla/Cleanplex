@@ -327,3 +327,28 @@ async def test_segment_list_reports_its_detector(http_client):
     segs = (await http_client.get("/api/titles/guid-det/segments")).json()["segments"]
 
     assert [(s["source"], s["detector"]) for s in segs] == [("scanner", "nudenet-640m"), ("skp", "")]
+
+
+# ── GET /api/segments/{id}/hover (#114) ───────────────────────────────────────
+
+async def test_hover_preview_is_404_until_rendered_then_served(http_client, tmp_path, monkeypatch):
+    from cleanplex import hover_previews
+    monkeypatch.setattr(hover_previews, "HOVER_DIR", tmp_path)
+    await db.upsert_scan_job(
+        plex_guid="title-guid", title="Test Movie", file_path="/test.mkv",
+        rating_key="1", library_id="lib1", library_title="Movies",
+    )
+    seg = await db.insert_segment("title-guid", "Test Movie", start_ms=0, end_ms=1000)
+
+    assert (await http_client.get(f"/api/segments/{seg}/hover")).status_code == 404
+    listed = (await http_client.get("/api/titles/title-guid/segments")).json()["segments"][0]
+    assert listed["hover_url"] == ""
+
+    (tmp_path / f"{seg}.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    await db.set_hover_status(seg, "done")
+
+    resp = await http_client.get(f"/api/segments/{seg}/hover")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "video/mp4"
+    listed = (await http_client.get("/api/titles/title-guid/segments")).json()["segments"][0]
+    assert listed["hover_url"] == f"/api/segments/{seg}/hover"

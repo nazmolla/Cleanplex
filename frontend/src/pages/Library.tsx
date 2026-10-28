@@ -5,6 +5,7 @@ import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import FalsePositiveButton, { FalsePositiveTag } from '../components/FalsePositiveButton'
 import SkipFileImport from '../components/SkipFileImport'
 import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2, Eye, EyeOff, X, ThumbsDown } from 'lucide-react'
+import HoverPreview from '../components/HoverPreview'
 
 interface Library {
   id: string
@@ -43,6 +44,8 @@ interface Segment {
   confidence: number
   has_thumbnail: boolean
   thumbnail_url: string
+  /** Short silent loop played on hover; empty until rendered (#114). */
+  hover_url?: string
   created_at: string
   labels?: string
   source?: string
@@ -455,7 +458,7 @@ export default function Library() {
         ) : segs.map(seg => (
           <div key={seg.id} className={`flex flex-col sm:flex-row gap-0 bg-plex-darker border border-plex-border rounded-lg overflow-hidden ${seg.false_positive ? 'opacity-50' : ''}`}>
             {/* Thumbnail: full-width on mobile, fixed sidebar on desktop */}
-            <div className="w-full sm:w-40 sm:flex-shrink-0 bg-black relative">
+            <HoverPreview src={seg.hover_url} className="w-full sm:w-40 sm:flex-shrink-0 bg-black">
               {seg.has_thumbnail ? (
                 <img src={seg.thumbnail_url} alt="Flagged frame" loading="lazy" className="w-full object-cover" style={{ height: '140px' }} />
               ) : (
@@ -464,7 +467,7 @@ export default function Library() {
               <div className="absolute bottom-0.5 left-0.5 bg-black/70 text-xs text-gray-300 px-1 py-0.5 rounded text-[10px]">
                 {Math.round(seg.confidence * 100)}%
               </div>
-            </div>
+            </HoverPreview>
             <div className="flex-1 p-2 flex items-center justify-between gap-2 min-w-0">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-1.5">

@@ -5,6 +5,7 @@ import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import FalsePositiveButton, { FalsePositiveTag } from '../components/FalsePositiveButton'
 import ScanContextMenu, { ScanTarget } from '../components/ScanContextMenu'
 import { Film, Tv, ChevronRight, ChevronDown, Trash2, AlertTriangle, SkipForward, Play, Tv2 } from 'lucide-react'
+import HoverPreview from '../components/HoverPreview'
 
 interface Library {
   id: string
@@ -30,6 +31,8 @@ interface Segment {
   confidence: number
   has_thumbnail: boolean
   thumbnail_url: string
+  /** Short silent loop played on hover; empty until rendered (#114). */
+  hover_url?: string
   created_at: string
   labels?: string
   source?: string
@@ -141,7 +144,7 @@ function SegmentCard({
 }) {
   return (
     <div className={`bg-plex-card border border-plex-border rounded-xl overflow-hidden flex flex-col sm:flex-row ${seg.false_positive ? 'opacity-50' : ''}`}>
-      <div className="w-full sm:w-40 flex-shrink-0 bg-black relative">
+      <HoverPreview src={seg.hover_url} className="w-full sm:w-40 flex-shrink-0 bg-black">
         {seg.has_thumbnail ? (
           <img src={seg.thumbnail_url} alt="Flagged frame" loading="lazy" className="w-full h-full object-cover" style={{ minHeight: '90px', maxHeight: '160px' }} />
         ) : (
@@ -150,7 +153,7 @@ function SegmentCard({
         <div className="absolute bottom-1 left-1 bg-black/70 text-xs text-gray-300 px-1.5 py-0.5 rounded">
           {Math.round(seg.confidence * 100)}%
         </div>
-      </div>
+      </HoverPreview>
       <div className="flex-1 p-3 sm:p-4 flex items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2 mb-1">
