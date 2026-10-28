@@ -4,7 +4,7 @@ import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import FalsePositiveButton, { FalsePositiveTag } from '../components/FalsePositiveButton'
 import SkipFileImport from '../components/SkipFileImport'
-import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2 } from 'lucide-react'
+import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2, Eye, EyeOff, X } from 'lucide-react'
 
 interface Library {
   id: string
@@ -100,6 +100,32 @@ function parseEpisodeTitle(title: string): ParsedEpisodeTitle {
     season: 'Unknown Season',
     episode: title,
   }
+}
+
+/** Icon-only action button; the label doubles as tooltip and accessible name. */
+function ActionIcon({ label, title, onClick, disabled, tone, children }: {
+  label: string
+  title?: string
+  onClick: () => void
+  disabled?: boolean
+  tone?: 'orange' | 'yellow' | 'red'
+  children: React.ReactNode
+}) {
+  const hover = tone === 'orange' ? 'text-plex-orange hover:bg-plex-orange/15'
+    : tone === 'yellow' ? 'text-yellow-500 hover:bg-yellow-500/15'
+    : tone === 'red' ? 'text-gray-500 hover:text-red-400 hover:bg-red-400/10'
+    : 'text-gray-400 hover:text-white hover:bg-white/5'
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title ?? label}
+      aria-label={label}
+      className={`p-1.5 rounded-lg transition-colors disabled:opacity-40 ${hover}`}
+    >
+      {children}
+    </button>
+  )
 }
 
 function StatusBadge({ status, progress }: { status: string; progress: number }) {
@@ -500,16 +526,6 @@ export default function Library() {
     }
   }
 
-  const refreshTitles = async () => {
-    if (!selected) return
-    setRefreshing(true)
-    try {
-      setTitles(await loadTitles(selected.id))
-    } finally {
-      setRefreshing(false)
-    }
-  }
-
   const scanTitle = async (guid: string, now: boolean) => {
     setScanning(s => ({ ...s, [guid]: true }))
     try {
@@ -802,104 +818,82 @@ export default function Library() {
           </div>
         ) : (
           <>
-            {/* Header row */}
-            <div className="flex flex-wrap items-center justify-between mb-3 gap-2">
-              <h2 className="text-xl font-semibold text-gray-100 truncate">{selected.title}</h2>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={syncLibraryNow}
-                  disabled={refreshing}
-                  title="Sync new titles from Plex into the database"
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-plex-orange/50 transition-colors disabled:opacity-50"
-                >
-                  <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} /> Sync from Plex
-                </button>
-                <button
-                  onClick={refreshTitles}
-                  disabled={refreshing}
-                  title="Reload titles from local database"
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-50"
-                >
-                  <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} /> Refresh
-                </button>
-                <button
-                  onClick={() => scanLibrary(selected.id, false)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-plex-orange/50 transition-colors"
-                >
-                  <Moon size={13} /> Scan Tonight
-                </button>
-                <button
-                  onClick={() => scanLibrary(selected.id, true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-plex-orange/20 border border-plex-orange/30 rounded-lg text-plex-orange hover:bg-plex-orange/30 transition-colors"
-                >
-                  <Zap size={13} /> Scan Now
-                </button>
-              </div>
+            {/* Header row: library name, bulk actions while titles are selected, library actions */}
+            <div className="flex items-center gap-1 mb-2 min-w-0">
+              <h2 className="text-xl font-semibold text-gray-100 truncate mr-auto">{selected.title}</h2>
+              {selectedGuids.length > 0 && (
+                <div className="flex items-center gap-0.5 mr-2 pl-2.5 pr-0.5 bg-plex-card border border-plex-border rounded-lg">
+                  <span className="text-xs text-gray-400 mr-1 whitespace-nowrap">{selectedGuids.length} selected</span>
+                  <ActionIcon label="Scan selected tonight" onClick={() => scanSelected(false)}><Moon size={15} /></ActionIcon>
+                  <ActionIcon label="Scan selected now" onClick={() => scanSelected(true)} tone="orange"><Zap size={15} /></ActionIcon>
+                  <ActionIcon label="Ignore selected" onClick={() => setIgnoredForGuids(selectedGuids, true)} tone="yellow"><EyeOff size={15} /></ActionIcon>
+                  <ActionIcon label="Un-ignore selected" onClick={() => setIgnoredForGuids(selectedGuids, false)}><Eye size={15} /></ActionIcon>
+                  <ActionIcon label="Clear selection" onClick={() => setSelectedGuids([])}><X size={15} /></ActionIcon>
+                </div>
+              )}
+              <ActionIcon label="Sync from Plex" title="Sync from Plex: pick up titles added, removed or changed in Plex" onClick={syncLibraryNow} disabled={refreshing}>
+                <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} />
+              </ActionIcon>
+              <ActionIcon label="Scan library tonight" onClick={() => scanLibrary(selected.id, false)}><Moon size={15} /></ActionIcon>
+              <ActionIcon label="Scan library now" onClick={() => scanLibrary(selected.id, true)} tone="orange"><Zap size={15} /></ActionIcon>
             </div>
 
-            {/* Scanner progress banner */}
+            {/* One thin line for running scans (#110); the per-scan bars are on the Dashboard. */}
             {scannerStatus && scannerStatus.active_scans.length > 0 && (
-              <div className="mb-3 bg-plex-card border border-plex-orange/30 rounded-xl px-4 py-3">
-                <div className="flex items-center justify-between text-xs mb-2 text-gray-400">
-                  <span>Scanning now</span>
-                  <span>{scannerStatus.workers_active}/{scannerStatus.workers_configured} workers active</span>
-                </div>
-                <div className="space-y-2">
-                  {scannerStatus.active_scans.map(scan => (
-                    <div key={scan.guid}>
-                      <div className="flex items-center justify-between text-xs mb-1.5">
-                        <span className="text-plex-orange font-medium flex items-center gap-1.5">
-                          <span className="animate-pulse">●</span> Scanning
-                        </span>
-                        <span className="text-gray-300 truncate mx-3 flex-1">{scan.title}</span>
-                        <span className="text-gray-400 flex-shrink-0">{Math.round(scan.progress * 100)}%</span>
-                      </div>
-                      <div className="h-1.5 bg-plex-border rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-plex-orange rounded-full transition-all duration-1000"
-                          style={{ width: `${scan.progress * 100}%` }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
+              <div
+                className="mb-2 flex items-center gap-3 text-xs text-gray-500 whitespace-nowrap overflow-hidden"
+                title={scannerStatus.active_scans.map(s => `${s.title} ${Math.round(s.progress * 100)}%`).join('\n')}
+              >
+                <span className="text-plex-orange animate-pulse flex-shrink-0">●</span>
+                {scannerStatus.active_scans.map(scan => (
+                  <span key={scan.guid} className="flex items-baseline gap-1 min-w-0">
+                    <span className="text-gray-300 truncate max-w-[14rem]">{scan.title}</span>
+                    <span className="text-plex-orange flex-shrink-0">{Math.round(scan.progress * 100)}%</span>
+                  </span>
+                ))}
               </div>
             )}
 
-            {/* Status filter tabs */}
-            <div className="flex gap-1 mb-3 flex-wrap">
-              {STATUS_TABS.map(s => (
-                <button
-                  key={s}
-                  onClick={() => setStatusFilter(s)}
-                  className={`px-3 py-1 text-xs rounded-full transition-colors capitalize ${
-                    statusFilter === s
-                      ? 'bg-plex-orange text-black font-semibold'
-                      : 'bg-plex-card border border-plex-border text-gray-400 hover:text-gray-200'
-                  }`}
-                >
-                  {s === 'all' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}
-                  {counts[s] != null && (
-                    <span className="ml-1 opacity-70">({counts[s] ?? 0})</span>
-                  )}
-                </button>
-              ))}
-            </div>
-
-            {/* Text + rating filters */}
-            <div className="flex flex-wrap gap-2 mb-4">
+            {/* Every filter on one line from 1280px; wraps to two lines on narrower screens. */}
+            <div className="flex flex-wrap xl:flex-nowrap items-center gap-2 mb-3">
+              <input
+                type="checkbox"
+                checked={allFilteredSelected}
+                onChange={() => setSelectedGuids(allFilteredSelected ? [] : filteredGuids)}
+                title="Select all filtered titles"
+                aria-label="Select all filtered titles"
+                className="w-4 h-4 accent-plex-orange flex-shrink-0"
+              />
+              <div className="flex gap-1 flex-shrink-0">
+                {STATUS_TABS.map(s => (
+                  <button
+                    key={s}
+                    onClick={() => setStatusFilter(s)}
+                    className={`px-2.5 py-1 text-xs rounded-full transition-colors capitalize whitespace-nowrap ${
+                      statusFilter === s
+                        ? 'bg-plex-orange text-black font-semibold'
+                        : 'bg-plex-card border border-plex-border text-gray-400 hover:text-gray-200'
+                    }`}
+                  >
+                    {s === 'all' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}
+                    {counts[s] != null && (
+                      <span className="ml-1 opacity-70">({counts[s] ?? 0})</span>
+                    )}
+                  </button>
+                ))}
+              </div>
               <input
                 type="text"
                 placeholder="Filter titles..."
                 value={filter}
                 onChange={e => setFilter(e.target.value)}
-                className="flex-1 px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
+                className="flex-1 min-w-[8rem] px-3 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
               />
               {availableRatings.length > 0 && (
                 <select
                   value={ratingFilter}
                   onChange={e => setRatingFilter(e.target.value)}
-                  className="px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 focus:outline-none focus:border-plex-orange/50"
+                  className="px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 focus:outline-none focus:border-plex-orange/50"
                 >
                   <option value="all">All ratings</option>
                   {availableRatings.map(r => (
@@ -910,7 +904,7 @@ export default function Library() {
               <select
                 value={sortBy}
                 onChange={e => setSortBy(e.target.value as SortOption)}
-                className="px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 focus:outline-none focus:border-plex-orange/50"
+                className="px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 focus:outline-none focus:border-plex-orange/50"
               >
                 <option value="date-added">Date Added</option>
                 <option value="scanned">Scanned Date</option>
@@ -920,67 +914,23 @@ export default function Library() {
               </select>
               <button
                 onClick={() => setSortDesc(!sortDesc)}
-                className="px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 hover:text-white hover:border-gray-500 transition-colors"
+                className="px-2.5 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 hover:text-white hover:border-gray-500 transition-colors"
                 title={sortDesc ? 'Descending' : 'Ascending'}
               >
                 {sortDesc ? '↓' : '↑'}
               </button>
-              <label className="inline-flex items-center gap-2 px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 select-none">
-                <input
-                  type="checkbox"
-                  checked={showIgnored}
-                  onChange={e => setShowIgnored(e.target.checked)}
-                  className="w-4 h-4 accent-plex-orange"
-                />
-                Show Ignored
-              </label>
-            </div>
-
-            {/* Multi-select actions */}
-            <div className="mb-3 flex items-center gap-2 flex-wrap shrink-0 bg-plex-darker/95 backdrop-blur border border-plex-border shadow-lg rounded-xl px-2.5 py-2">
-              <label className="inline-flex items-center gap-2 text-xs text-gray-300 bg-plex-card border border-plex-border px-2.5 py-1.5 rounded-lg">
-                <input
-                  type="checkbox"
-                  checked={allFilteredSelected}
-                  onChange={() => setSelectedGuids(allFilteredSelected ? [] : filteredGuids)}
-                  className="w-4 h-4 accent-plex-orange"
-                />
-                Select all filtered
-              </label>
               <button
-                onClick={() => setSelectedGuids([])}
-                disabled={selectedGuids.length === 0}
-                className="px-2.5 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40"
+                onClick={() => setShowIgnored(!showIgnored)}
+                aria-pressed={showIgnored}
+                title={showIgnored ? 'Hide ignored titles' : 'Show ignored titles'}
+                aria-label="Show ignored titles"
+                className={`p-2 border rounded-lg transition-colors ${
+                  showIgnored
+                    ? 'bg-yellow-500/15 border-yellow-500/30 text-yellow-400'
+                    : 'bg-plex-card border-plex-border text-gray-500 hover:text-gray-200'
+                }`}
               >
-                Clear
-              </button>
-              <button
-                onClick={() => scanSelected(false)}
-                disabled={selectedGuids.length === 0}
-                className="px-2.5 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-plex-orange/50 transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
-              >
-                <Moon size={13} /> Scan Selected Tonight ({selectedGuids.length})
-              </button>
-              <button
-                onClick={() => scanSelected(true)}
-                disabled={selectedGuids.length === 0}
-                className="px-2.5 py-1.5 text-xs bg-plex-orange/20 border border-plex-orange/30 rounded-lg text-plex-orange hover:bg-plex-orange/30 transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
-              >
-                <Zap size={13} /> Scan Selected Now ({selectedGuids.length})
-              </button>
-              <button
-                onClick={() => setIgnoredForGuids(selectedGuids, true)}
-                disabled={selectedGuids.length === 0}
-                className="px-2.5 py-1.5 text-xs bg-yellow-500/20 border border-yellow-500/30 rounded-lg text-yellow-500 hover:bg-yellow-500/30 transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
-              >
-                Ignore Selected ({selectedGuids.length})
-              </button>
-              <button
-                onClick={() => setIgnoredForGuids(selectedGuids, false)}
-                disabled={selectedGuids.length === 0}
-                className="px-2.5 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40 inline-flex items-center gap-1.5"
-              >
-                ○ Un-ignore Selected ({selectedGuids.length})
+                {showIgnored ? <Eye size={15} /> : <EyeOff size={15} />}
               </button>
             </div>
 
@@ -1040,29 +990,21 @@ export default function Library() {
                           </a>
                         )}
                         {showSegCount > 0 && (
-                          <button
+                          <ActionIcon
+                            label="Delete all segments for this show"
                             onClick={() => deleteAllShowSegs(group.show_key, group.episodes.map(ep => ep.plex_guid))}
                             disabled={deletingAllSegs[group.show_key]}
-                            className="px-2 py-1 text-xs bg-red-500/20 border border-red-500/30 rounded text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-40 flex items-center gap-1"
-                            title="Delete all segments for this show"
+                            tone="red"
                           >
-                            <Trash2 size={11} /> {deletingAllSegs[group.show_key] ? 'Deleting…' : 'Delete All'}
-                          </button>
+                            <Trash2 size={14} />
+                          </ActionIcon>
                         )}
-                        <button
-                          onClick={() => setIgnoredForGuids(group.episodes.map(ep => ep.plex_guid), true, group.show)}
-                          className="px-2 py-1 text-xs bg-yellow-500/20 border border-yellow-500/30 rounded text-yellow-500 hover:bg-yellow-500/30 transition-colors"
-                          title="Ignore all episodes in this show"
-                        >
-                          Ignore Show
-                        </button>
-                        <button
-                          onClick={() => setIgnoredForGuids(group.episodes.map(ep => ep.plex_guid), false, group.show)}
-                          className="px-2 py-1 text-xs bg-plex-card border border-plex-border rounded text-gray-300 hover:text-white hover:border-gray-500 transition-colors"
-                          title="Un-ignore all episodes in this show"
-                        >
-                          Un-ignore Show
-                        </button>
+                        <ActionIcon label="Ignore all episodes in this show" onClick={() => setIgnoredForGuids(group.episodes.map(ep => ep.plex_guid), true, group.show)} tone="yellow">
+                          <EyeOff size={14} />
+                        </ActionIcon>
+                        <ActionIcon label="Un-ignore all episodes in this show" onClick={() => setIgnoredForGuids(group.episodes.map(ep => ep.plex_guid), false, group.show)}>
+                          <Eye size={14} />
+                        </ActionIcon>
                       </div>
 
                       {showOpen && (
@@ -1137,7 +1079,7 @@ export default function Library() {
                                                 )}
                                               </div>
                                               <div className="flex flex-wrap items-center gap-1 mt-1.5">
-                                                {title.segment_count > 0 && (
+                                                {(title.segment_count > 0 || expandedSegments.has(title.plex_guid)) && (
                                                   <button
                                                     onClick={() => toggleSegments(title.plex_guid)}
                                                     title="Toggle segments"
@@ -1181,13 +1123,14 @@ export default function Library() {
                                                 <button
                                                   onClick={() => toggleIgnored(title.plex_guid, title.ignored, parsed.episode)}
                                                   title={title.ignored ? 'Un-ignore this episode' : 'Ignore this episode'}
+                                                  aria-label={title.ignored ? 'Un-ignore this episode' : 'Ignore this episode'}
                                                   className={`p-1.5 rounded transition-colors ${
                                                     title.ignored
                                                       ? 'text-yellow-600 hover:text-yellow-400 hover:bg-yellow-500/10'
                                                       : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
                                                   }`}
                                                 >
-                                                  {title.ignored ? 'Ignored' : 'Ignore'}
+                                                  {title.ignored ? <Eye size={14} /> : <EyeOff size={14} />}
                                                 </button>
                                               </div>
                                             </div>
@@ -1254,7 +1197,7 @@ export default function Library() {
                           )}
                         </div>
                         <div className="flex flex-wrap items-center gap-1 mt-2">
-                          {title.segment_count > 0 && (
+                          {(title.segment_count > 0 || expandedSegments.has(title.plex_guid)) && (
                             <button
                               onClick={() => toggleSegments(title.plex_guid)}
                               title="Toggle segments"
@@ -1306,13 +1249,14 @@ export default function Library() {
                           <button
                             onClick={() => toggleIgnored(title.plex_guid, title.ignored, title.title)}
                             title={title.ignored ? "Un-ignore this title" : "Ignore this title"}
+                            aria-label={title.ignored ? "Un-ignore this title" : "Ignore this title"}
                             className={`p-1.5 rounded transition-colors ${
                               title.ignored
                                 ? 'text-yellow-600 hover:text-yellow-400 hover:bg-yellow-500/10'
                                 : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
                             }`}
                           >
-                            {title.ignored ? 'IGNORED' : 'Ignore'}
+                            {title.ignored ? <Eye size={14} /> : <EyeOff size={14} />}
                           </button>
                         </div>
                       </div>
