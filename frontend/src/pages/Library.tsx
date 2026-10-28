@@ -4,7 +4,7 @@ import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import FalsePositiveButton, { FalsePositiveTag } from '../components/FalsePositiveButton'
 import SkipFileImport from '../components/SkipFileImport'
-import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2, Eye, EyeOff, X } from 'lucide-react'
+import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2, Eye, EyeOff, X, ThumbsDown } from 'lucide-react'
 
 interface Library {
   id: string
@@ -26,6 +26,8 @@ interface Title {
   show_rating_key?: string
   season_rating_key?: string
   segment_count: number
+  /** Segments marked as false positives; not in segment_count (#112). */
+  false_positive_count?: number
   content_rating: string
   media_type: string
   year?: number | null
@@ -100,6 +102,33 @@ function parseEpisodeTitle(title: string): ParsedEpisodeTitle {
     season: 'Unknown Season',
     episode: title,
   }
+}
+
+/**
+ * Opens a title's segment list. Always shown, even at 0, so a title whose segments
+ * were all marked false positives can still be opened to undo a mark (#112).
+ */
+function SegmentToggle({ title, open, onToggle }: { title: Title; open: boolean; onToggle: () => void }) {
+  const fp = title.false_positive_count ?? 0
+  return (
+    <button
+      onClick={onToggle}
+      title={fp ? `Toggle segments (${fp} marked false positive)` : 'Toggle segments'}
+      className={`flex items-center gap-1 px-1.5 py-1 text-xs rounded border transition-colors ${
+        title.segment_count > 0
+          ? 'text-red-400 bg-red-500/10 border-red-500/20 hover:bg-red-500/20'
+          : 'text-gray-500 bg-white/5 border-plex-border hover:text-gray-300'
+      }`}
+    >
+      {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+      {title.segment_count}
+      {fp > 0 && (
+        <span className="flex items-center gap-0.5 ml-1 text-amber-300">
+          <ThumbsDown size={10} /> {fp}
+        </span>
+      )}
+    </button>
+  )
 }
 
 /** Icon-only action button; the label doubles as tooltip and accessible name. */
@@ -1079,16 +1108,7 @@ export default function Library() {
                                                 )}
                                               </div>
                                               <div className="flex flex-wrap items-center gap-1 mt-1.5">
-                                                {(title.segment_count > 0 || expandedSegments.has(title.plex_guid)) && (
-                                                  <button
-                                                    onClick={() => toggleSegments(title.plex_guid)}
-                                                    title="Toggle segments"
-                                                    className="flex items-center gap-1 px-1.5 py-1 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded hover:bg-red-500/20 transition-colors"
-                                                  >
-                                                    {expandedSegments.has(title.plex_guid) ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-                                                    {title.segment_count}
-                                                  </button>
-                                                )}
+                                                <SegmentToggle title={title} open={expandedSegments.has(title.plex_guid)} onToggle={() => toggleSegments(title.plex_guid)} />
                                                 {title.segment_count > 0 && (
                                                   <button
                                                     onClick={() => deleteAllTitleSegs(title.plex_guid)}
@@ -1197,16 +1217,7 @@ export default function Library() {
                           )}
                         </div>
                         <div className="flex flex-wrap items-center gap-1 mt-2">
-                          {(title.segment_count > 0 || expandedSegments.has(title.plex_guid)) && (
-                            <button
-                              onClick={() => toggleSegments(title.plex_guid)}
-                              title="Toggle segments"
-                              className="flex items-center gap-1 px-1.5 py-1 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded hover:bg-red-500/20 transition-colors"
-                            >
-                              {expandedSegments.has(title.plex_guid) ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-                              {title.segment_count}
-                            </button>
-                          )}
+                          <SegmentToggle title={title} open={expandedSegments.has(title.plex_guid)} onToggle={() => toggleSegments(title.plex_guid)} />
                           {title.segment_count > 0 && (
                             <button
                               onClick={() => deleteAllTitleSegs(title.plex_guid)}

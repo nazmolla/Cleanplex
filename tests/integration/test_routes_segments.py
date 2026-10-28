@@ -152,6 +152,23 @@ async def test_get_titles_in_library_returns_jobs(http_client):
     assert len(titles) == 1
     assert titles[0]["plex_guid"] == "title-guid"
     assert titles[0]["segment_count"] == 1
+    assert titles[0]["false_positive_count"] == 0
+
+
+async def test_get_titles_in_library_counts_false_positives_separately(http_client):
+    await db.upsert_scan_job(
+        plex_guid="title-guid", title="Test Movie", file_path="/test.mkv",
+        rating_key="1", library_id="lib1", library_title="Movies",
+    )
+    wrong = await db.insert_segment("title-guid", "Test Movie", start_ms=0, end_ms=1000)
+    await db.mark_segment_false_positive(wrong)
+
+    mock_client = make_mock_plex_client()
+    with patch("cleanplex.web.routes.segments.plex_mod.get_client", return_value=mock_client):
+        resp = await http_client.get("/api/libraries/lib1/titles")
+
+    title = resp.json()["titles"][0]
+    assert (title["segment_count"], title["false_positive_count"]) == (0, 1)
 
 
 # ── POST /api/libraries/{library_id}/sync ─────────────────────────────────────

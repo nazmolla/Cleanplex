@@ -1233,6 +1233,26 @@ async def get_segment_counts_for_library(library_id: str) -> dict[str, int]:
         return {row["plex_guid"]: row["cnt"] for row in rows}
 
 
+
+async def get_false_positive_counts_for_library(library_id: str) -> dict[str, int]:
+    """Return {plex_guid: count} of segments marked false positive, for titles in a library.
+
+    Kept apart from get_segment_counts_for_library so every caller of that one keeps
+    counting only segments that act during playback.
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            """
+            SELECT s.plex_guid, COUNT(*) as cnt
+            FROM segments s
+            JOIN scan_jobs j ON j.plex_guid = s.plex_guid
+            WHERE j.library_id = ? AND COALESCE(s.false_positive, 0) = 1
+            GROUP BY s.plex_guid
+            """,
+            (library_id,),
+        )
+        return {row["plex_guid"]: row["cnt"] for row in rows}
+
 # ── Segment Library Sharing ────────────────────────────────────────────────────
 
 async def upsert_segment_library_entry(
