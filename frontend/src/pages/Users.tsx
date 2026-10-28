@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Navigate } from 'react-router-dom'
 import { api } from '../api/client'
 import { useLiveRefresh } from '../api/events'
 import { UserCircle2, ShieldCheck, ShieldOff, ChevronDown, ChevronRight } from 'lucide-react'
@@ -10,7 +11,8 @@ interface User {
   enabled: boolean
 }
 
-export default function UsersPage() {
+/** Per-account filtering, shown as the Users section of Settings (#118). */
+export function UsersPanel() {
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState<Record<string, boolean>>({})
@@ -39,8 +41,8 @@ export default function UsersPage() {
   }
 
   return (
-    <div className="max-w-2xl">
-      <h1 className="text-2xl font-bold text-gray-100 mb-2">Users</h1>
+    <div>
+      <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Users</h2>
       <p className="text-sm text-gray-500 mb-6">
         Toggle content filtering per Plex account, and set how strict each content category should be.
         Accounts with filtering enabled will have flagged scenes skipped or muted automatically.
@@ -49,11 +51,11 @@ export default function UsersPage() {
       {loading ? (
         <div className="text-gray-500 text-sm">Loading users...</div>
       ) : users.length === 0 ? (
-        <div className="bg-plex-card border border-plex-border rounded-xl p-8 text-center text-gray-500 text-sm">
+        <div className="bg-plex-darker border border-plex-border rounded-xl p-8 text-center text-gray-500 text-sm">
           No users found. Make sure Plex is configured in Settings.
         </div>
       ) : (
-        <div className="bg-plex-card border border-plex-border rounded-xl divide-y divide-plex-border">
+        <div className="bg-plex-darker border border-plex-border rounded-xl divide-y divide-plex-border">
           {users.map(user => (
             <div key={user.username}>
             <div className="flex items-center gap-4 px-5 py-4">
@@ -115,4 +117,10 @@ export default function UsersPage() {
       )}
     </div>
   )
+}
+
+
+/** The old /users address: Users now lives under Settings. */
+export default function UsersPage() {
+  return <Navigate to="/settings?section=users" replace />
 }

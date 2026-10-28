@@ -1040,6 +1040,43 @@ async def get_segments_for_labels(
         return [dict(r) for r in rows]
 
 
+async def get_false_positive_segments(limit: int, offset: int) -> list[dict]:
+    """Return segments marked as false positives, most recently marked first.
+
+    Same columns as get_segments_for_labels plus marked_at, the time of the
+    latest mark in segment_feedback (NULL for rows marked by a rescan's overlap
+    check before feedback rows existed).
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            """
+            SELECT s.id, s.plex_guid, s.title, s.start_ms, s.end_ms,
+                   s.confidence, s.labels, s.thumbnail_path, s.source, s.detector,
+                   s.hover_status, j.content_rating, j.media_type, j.rating_key,
+                   j.show_rating_key,
+                   (SELECT MAX(f.created_at) FROM segment_feedback f
+                     WHERE f.segment_id = s.id AND f.verdict = 'false_positive') AS marked_at
+            FROM segments s
+            JOIN scan_jobs j ON j.plex_guid = s.plex_guid
+            WHERE COALESCE(s.false_positive, 0) = 1
+            ORDER BY marked_at IS NULL, marked_at DESC, s.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        )
+        return [dict(r) for r in rows]
+
+
+async def count_false_positive_segments() -> int:
+    """Return how many segments are marked as false positives."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(
+            "SELECT COUNT(*) FROM segments s JOIN scan_jobs j ON j.plex_guid = s.plex_guid "
+            "WHERE COALESCE(s.false_positive, 0) = 1"
+        )).fetchone()
+        return row[0]
+
+
 async def count_segments_for_labels(labels: list[str]) -> int:
     """Return total count of segments matching any of the given labels.
 

@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Film, Scissors, BarChart2, Users, Settings, Bookmark } from 'lucide-react'
+import { LayoutDashboard, Film, Scissors, BarChart2, Settings, Bookmark } from 'lucide-react'
 
 const nav = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -7,7 +7,6 @@ const nav = [
   { to: '/segments', icon: Scissors, label: 'Segments' },
   { to: '/markers', icon: Bookmark, label: 'Markers' },
   { to: '/analytics', icon: BarChart2, label: 'Analytics' },
-  { to: '/users', icon: Users, label: 'Users' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ]
 

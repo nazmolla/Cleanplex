@@ -49,40 +49,42 @@ async def _fetch_segments_and_total(
     labels: list[str], limit: int, offset: int
 ) -> tuple[list[dict], int]:
     segs, total = await _parallel_fetch(labels, limit, offset)
-    result = []
-    for seg in segs:
-        rating_key = seg.get("rating_key") or ""
-        show_rating_key = seg.get("show_rating_key") or ""
-        media_type = seg.get("media_type") or "movie"
+    return [_segment_payload(seg) for seg in segs], total
 
-        # Use the same poster-URL logic as get_titles_in_library: show poster
-        # for episodes (via show_rating_key), episode thumb for movies.
-        if media_type == "episode" and show_rating_key:
-            poster_url = _plex_image_proxy_url(f"/library/metadata/{show_rating_key}/thumb")
-        elif rating_key:
-            poster_url = _plex_image_proxy_url(f"/library/metadata/{rating_key}/thumb")
-        else:
-            poster_url = ""
 
-        result.append({
-            "id": seg["id"],
-            "plex_guid": seg["plex_guid"],
-            "title": seg["title"],
-            "start_ms": seg["start_ms"],
-            "end_ms": seg["end_ms"],
-            "confidence": seg["confidence"],
-            "labels": seg.get("labels") or "",
-            "source": seg.get("source") or "scanner",
-            "detector": seg.get("detector") or "",
-            "has_thumbnail": bool(seg.get("thumbnail_path")),
-            "thumbnail_url": f"/api/thumbnails/{seg['id']}" if seg.get("thumbnail_path") else "",
-            "hover_url": f"/api/segments/{seg['id']}/hover" if seg.get("hover_status") == "done" else "",
-            "poster_url": poster_url,
-            "content_rating": seg.get("content_rating") or "",
-            "media_type": media_type,
-            "rating_key": rating_key,
-        })
-    return result, total
+def _segment_payload(seg: dict) -> dict:
+    """Shape one segment row (joined with its scan job) for the analytics lists."""
+    rating_key = seg.get("rating_key") or ""
+    show_rating_key = seg.get("show_rating_key") or ""
+    media_type = seg.get("media_type") or "movie"
+
+    # Use the same poster-URL logic as get_titles_in_library: show poster
+    # for episodes (via show_rating_key), episode thumb for movies.
+    if media_type == "episode" and show_rating_key:
+        poster_url = _plex_image_proxy_url(f"/library/metadata/{show_rating_key}/thumb")
+    elif rating_key:
+        poster_url = _plex_image_proxy_url(f"/library/metadata/{rating_key}/thumb")
+    else:
+        poster_url = ""
+
+    return {
+        "id": seg["id"],
+        "plex_guid": seg["plex_guid"],
+        "title": seg["title"],
+        "start_ms": seg["start_ms"],
+        "end_ms": seg["end_ms"],
+        "confidence": seg["confidence"],
+        "labels": seg.get("labels") or "",
+        "source": seg.get("source") or "scanner",
+        "detector": seg.get("detector") or "",
+        "has_thumbnail": bool(seg.get("thumbnail_path")),
+        "thumbnail_url": f"/api/thumbnails/{seg['id']}" if seg.get("thumbnail_path") else "",
+        "hover_url": f"/api/segments/{seg['id']}/hover" if seg.get("hover_status") == "done" else "",
+        "poster_url": poster_url,
+        "content_rating": seg.get("content_rating") or "",
+        "media_type": media_type,
+        "rating_key": rating_key,
+    }
 
 
 async def _parallel_fetch(labels: list[str], limit: int, offset: int):
@@ -92,6 +94,21 @@ async def _parallel_fetch(labels: list[str], limit: int, offset: int):
         db.count_segments_for_labels(labels),
     )
     return segs, total
+
+
+@router.get("/false-positives")
+async def get_false_positives(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """Return segments marked as false positives, most recently marked first, with a total."""
+    import asyncio
+    segs, total = await asyncio.gather(
+        db.get_false_positive_segments(limit, offset),
+        db.count_false_positive_segments(),
+    )
+    rows = [{**_segment_payload(seg), "false_positive": True, "marked_at": seg.get("marked_at")} for seg in segs]
+    return {"segments": rows, "total": total}
 
 
 @router.get("/detection-accuracy")
