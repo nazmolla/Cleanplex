@@ -304,4 +304,53 @@ describe('Library', () => {
 
     expect(titleCalls()).toBe(before + 1)
   })
+
+  it('keeps the fold toggle on an open title whose segments were all removed (#110)', async () => {
+    let count = 2
+    mockApi.get.mockImplementation((path: string) => {
+      if (path.includes('scanner-status')) return Promise.resolve(scannerIdle)
+      if (path.includes('libraries') && !path.includes('titles')) return Promise.resolve({ libraries })
+      if (path.startsWith('/api/titles/')) return Promise.resolve({ segments: [] })
+      if (path.includes('titles')) return Promise.resolve({ titles: [{ ...titles[0], segment_count: count }] })
+      return Promise.resolve({})
+    })
+    renderLibrary()
+    await waitFor(() => screen.getAllByText('Movies')[0])
+    await act(async () => {
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: 'lib1' } })
+    })
+    fireEvent.click(await screen.findByTitle('Toggle segments'))
+
+    // Every segment deleted or marked a false positive: the count drops to 0.
+    count = 0
+    await act(async () => {
+      emitLive('segments_changed', { guid: 'g1' })
+      await vi.advanceTimersByTimeAsync(600)
+    })
+    await waitFor(() => expect(screen.getByText('Movie A')).toBeInTheDocument())
+    fireEvent.click(screen.getByTitle('Toggle segments'))
+    expect(screen.queryByTitle('Toggle segments')).not.toBeInTheDocument()
+  })
+
+  it('shows running scans as one line of title and percent (#110)', async () => {
+    const status = { ...scannerIdle, active_scans: [
+      { guid: 'g1', title: 'Movie A', progress: 0.42, status: 'scanning' },
+      { guid: 'g9', title: 'Other Film', progress: 0.07, status: 'scanning' },
+    ] }
+    mockApi.get.mockImplementation((path: string) => {
+      if (path.includes('scanner-status')) return Promise.resolve(status)
+      if (path.includes('libraries') && !path.includes('titles')) return Promise.resolve({ libraries })
+      if (path.includes('titles')) return Promise.resolve({ titles })
+      return Promise.resolve({})
+    })
+    renderLibrary()
+    await waitFor(() => screen.getAllByText('Movies')[0])
+    await act(async () => {
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: 'lib1' } })
+    })
+    await waitFor(() => expect(screen.getByText('Other Film')).toBeInTheDocument())
+    expect(screen.getByText('7%')).toBeInTheDocument()
+    expect(screen.queryByText('Scanning now')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Refresh$/ })).not.toBeInTheDocument()
+  })
 })
