@@ -124,9 +124,9 @@ async def test_db_helpers_handle_empty_tables():
     assert await db.reset_missing_hover_previews() == 0
 
 
-def test_hover_window_defaults_to_the_evening_before_scans():
+def test_hover_window_defaults_to_overnight():
     config = Config()
-    assert (config.hover_window_start, config.hover_window_end) == (time(18, 0), time(23, 0))
+    assert (config.hover_window_start, config.hover_window_end) == (time(0, 0), time(7, 0))
     assert Config(hover_window_start=time(0, 0), hover_window_end=time(23, 59)).is_hover_window()
 
 

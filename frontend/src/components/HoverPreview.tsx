@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 
 interface Props {
-  /** The segment's hover_url; empty until the evening job has rendered it (#114). */
+  /** The segment's hover_url; empty until the overnight job has rendered it (#114). */
   src?: string
   className?: string
   children: ReactNode

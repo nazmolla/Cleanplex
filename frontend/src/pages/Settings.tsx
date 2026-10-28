@@ -70,8 +70,8 @@ const DEFAULT: Settings = {
   siglip_min_hits: '2',
   hw_decode: '1',
   hover_previews_enabled: '1',
-  hover_window_start: '18:00',
-  hover_window_end: '23:00',
+  hover_window_start: '00:00',
+  hover_window_end: '07:00',
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -412,6 +412,7 @@ export default function SettingsPage() {
                 <p className="text-xs text-gray-500 mb-4">
                   A separate job renders a short silent loop of each segment (about 20 KB each), played when you hover its
                   thumbnail. It runs only in this window, one segment at a time, and picks up segments it has not done yet.
+                  The window may cross midnight (e.g. 22:00 to 07:00).
                 </p>
                 <label className="flex items-start gap-3 cursor-pointer mb-4">
                   <input

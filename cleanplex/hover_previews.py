@@ -1,4 +1,4 @@
-"""Evening job rendering the hover previews of segments (#114).
+"""Overnight job rendering the hover previews of segments (#114).
 
 Runs apart from the scanner, inside its own window (hover_window_start/end), and
 renders one preview at a time for active segments that have none yet. Each is a

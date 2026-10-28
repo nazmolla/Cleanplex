@@ -242,10 +242,10 @@ DEFAULT_SETTINGS = {
     "hw_decode": "1",
     "scan_window_start": "23:00",
     "scan_window_end": "06:00",
-    # Evening job rendering hover previews (#114); ends when the scan window opens.
+    # Overnight job rendering hover previews (#114); its own window, set in Settings.
     "hover_previews_enabled": "1",
-    "hover_window_start": "18:00",
-    "hover_window_end": "23:00",
+    "hover_window_start": "00:00",
+    "hover_window_end": "07:00",
     "log_level": "INFO",
     "excluded_library_ids": "[]",
     "scan_ratings": "[]",  # empty = scan all ratings
@@ -315,7 +315,7 @@ async def init_db() -> None:
             # (#101). Such rows are kept for review but never act or count.
             "ALTER TABLE segments ADD COLUMN false_positive INTEGER DEFAULT 0",
             # Hover preview state (#114): '' not rendered yet, then done, failed or
-            # missing (source file unreachable; retried on the next evening run).
+            # missing (source file unreachable; retried on the next run).
             "ALTER TABLE segments ADD COLUMN hover_status TEXT DEFAULT ''",
             "CREATE INDEX IF NOT EXISTS idx_segments_hover_status ON segments(hover_status)",
         ]
