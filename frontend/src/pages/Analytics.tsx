@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { useLiveRefresh } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
@@ -7,6 +8,7 @@ import SkipAnalytics from '../components/SkipAnalytics'
 import DetectionAccuracy from '../components/DetectionAccuracy'
 import { BarChart2, X, AlertTriangle, Trash2, Play, SkipForward, ChevronLeft, ChevronRight } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
+import CollapsibleSection from '../components/CollapsibleSection'
 
 interface LabelCount {
   label: string
@@ -36,9 +38,26 @@ interface Segment {
   rating_key: string
   source?: string
   detector?: string
+  false_positive?: boolean
+  /** When it was marked (UTC, SQLite format); False positives tab only. */
+  marked_at?: string | null
 }
 
 const PAGE_SIZE = 50
+
+// Tabs, selected by ?tab= so each one can be linked like a sub-page (#117).
+const TABS = [
+  { id: 'detections', label: 'Detections' },
+  { id: 'skips', label: 'Skips' },
+  { id: 'accuracy', label: 'Accuracy' },
+  { id: 'false-positives', label: 'False positives' },
+] as const
+type TabId = typeof TABS[number]['id']
+
+function formatMarkedAt(v: string): string {
+  const d = new Date(v.replace(' ', 'T') + 'Z')
+  return isNaN(d.getTime()) ? v : d.toLocaleDateString()
+}
 
 function msToTimecode(ms: number): string {
   const s = Math.floor(ms / 1000)
@@ -105,7 +124,34 @@ function BarChart({
   )
 }
 
+function Pager({ page, totalPages, onPage, compact = false }: {
+  page: number
+  totalPages: number
+  onPage: (p: number) => void
+  compact?: boolean
+}) {
+  if (totalPages <= 1) return null
+  const btn = compact
+    ? 'p-1 rounded hover:bg-white/5 disabled:opacity-40'
+    : 'flex items-center gap-1 px-3 py-1.5 bg-plex-card border border-plex-border rounded-lg hover:text-white hover:border-gray-500 disabled:opacity-40 transition-colors'
+  return (
+    <div className={`flex items-center text-xs text-gray-400 ${compact ? "gap-2" : "gap-3 justify-center mt-4"}`}>
+      <button onClick={() => onPage(Math.max(0, page - 1))} disabled={page === 0} className={btn} aria-label="Previous page">
+        <ChevronLeft size={compact ? 14 : 13} />{!compact && ' Prev'}
+      </button>
+      <span>{page + 1} / {totalPages}</span>
+      <button onClick={() => onPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1} className={btn} aria-label="Next page">
+        {!compact && 'Next '}<ChevronRight size={compact ? 14 : 13} />
+      </button>
+    </div>
+  )
+}
+
 export default function Analytics() {
+  const [params, setParams] = useSearchParams()
+  const tab: TabId = TABS.some(t => t.id === params.get('tab')) ? (params.get('tab') as TabId) : 'detections'
+  const selectTab = (id: TabId) => setParams(id === 'detections' ? {} : { tab: id }, { replace: true })
+
   const [labelCounts, setLabelCounts] = useState<LabelCount[]>([])
   const [loadingLabels, setLoadingLabels] = useState(true)
 
@@ -146,19 +192,57 @@ export default function Analytics() {
       .finally(() => setLoadingRatings(false))
   }, [drillLabel])
 
-  const fetchSegments = useCallback(async (labels: string[], p: number) => {
+  // `silent` is for live refetches (#116): the current list stays on screen and is
+  // swapped when the data arrives, instead of blanking to "Loading…" (which reads
+  // as a page reload, e.g. two seconds after marking a false positive).
+  const segmentsCtl = useRef<AbortController | null>(null)
+  const fetchSegments = useCallback(async (labels: string[], p: number, silent = false) => {
+    segmentsCtl.current?.abort()
     if (!labels.length) { setSegments([]); setTotalSegments(0); return }
-    setLoadingSegments(true)
+    const controller = (segmentsCtl.current = new AbortController())
+    if (!silent) setLoadingSegments(true)
     try {
       const d = await api.get<{ segments: Segment[]; total: number }>(
-        `/api/analytics/segments?labels=${encodeURIComponent(labels.join(','))}&limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}`
+        `/api/analytics/segments?labels=${encodeURIComponent(labels.join(','))}&limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}`,
+        { signal: controller.signal },
       )
       setSegments(d.segments)
       setTotalSegments(d.total)
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') console.warn('Could not load segments:', err?.message)
     } finally {
-      setLoadingSegments(false)
+      if (segmentsCtl.current === controller) setLoadingSegments(false)
     }
   }, [])
+
+  // False positives tab (#117): every marked segment, newest mark first.
+  const [fpSegments, setFpSegments] = useState<Segment[]>([])
+  const [fpTotal, setFpTotal] = useState(0)
+  const [fpPage, setFpPage] = useState(0)
+  const [loadingFp, setLoadingFp] = useState(false)
+  const fpCtl = useRef<AbortController | null>(null)
+  const fetchFalsePositives = useCallback(async (p: number, silent = false) => {
+    fpCtl.current?.abort()
+    const controller = (fpCtl.current = new AbortController())
+    if (!silent) setLoadingFp(true)
+    try {
+      const d = await api.get<{ segments: Segment[]; total: number }>(
+        `/api/analytics/false-positives?limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}`,
+        { signal: controller.signal },
+      )
+      setFpSegments(d.segments)
+      setFpTotal(d.total)
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') console.warn('Could not load false positives:', err?.message)
+    } finally {
+      if (fpCtl.current === controller) setLoadingFp(false)
+    }
+  }, [])
+  // Loads when the tab opens and on page changes; nothing is fetched for other tabs.
+  useEffect(() => {
+    if (tab === 'false-positives') fetchFalsePositives(fpPage)
+  }, [tab, fpPage, fetchFalsePositives])
+  useEffect(() => () => { segmentsCtl.current?.abort(); fpCtl.current?.abort() }, [])
 
   // Single effect handles both label changes (reset to page 0) and page navigation.
   // A ref tracks the previous labels so we can distinguish the two cases and avoid
@@ -181,11 +265,13 @@ export default function Analytics() {
 
   // Live (#89): scans, imports and deletes change label counts and the segment
   // list. Debounced generously: a scan writes segments in bursts.
-  const liveView = useRef({ selectedLabels, page })
-  liveView.current = { selectedLabels, page }
+  const liveView = useRef({ selectedLabels, page, tab, fpPage })
+  liveView.current = { selectedLabels, page, tab, fpPage }
   useLiveRefresh(['segments_changed'], () => {
+    const v = liveView.current
     loadLabels()
-    fetchSegments(liveView.current.selectedLabels, liveView.current.page)
+    fetchSegments(v.selectedLabels, v.page, true)
+    if (v.tab === 'false-positives') fetchFalsePositives(v.fpPage, true)
   }, { debounceMs: 2000 })
 
   const toggleLabel = (label: string) => {
@@ -213,11 +299,18 @@ export default function Analytics() {
     })
   }
 
+  // Undo on the False positives tab: the segment is active again, so it leaves this list.
+  const dropFromFalsePositives = (seg: Segment) => {
+    setFpSegments(prev => prev.filter(s => s.id !== seg.id))
+    setFpTotal(t => Math.max(0, t - 1))
+  }
+
   const deleteSeg = async (seg: Segment) => {
     setDeletingSegs(d => ({ ...d, [seg.id]: true }))
     try {
       await api.delete(`/api/segments/${seg.id}`)
-      dropFromList(seg)
+      if (seg.false_positive) dropFromFalsePositives(seg)
+      else dropFromList(seg)
     } finally {
       setDeletingSegs(d => ({ ...d, [seg.id]: false }))
     }
@@ -239,154 +332,7 @@ export default function Analytics() {
     }
   }
 
-  const maxLabelCount = labelCounts[0]?.count ?? 0
-  const maxRatingCount = ratingCounts[0]?.count ?? 0
-  const totalPages = Math.ceil(totalSegments / PAGE_SIZE)
-
-  return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-gray-100 flex items-center gap-2">
-        <BarChart2 size={22} className="text-plex-orange" />
-        Analytics
-      </h1>
-
-      {/* ── Top chart: segments per label ─────────────────────────────────── */}
-      <section className="bg-plex-card border border-plex-border rounded-xl p-4">
-        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-4">
-          Segments by Label
-          <span className="ml-2 text-gray-600 normal-case font-normal">— click a bar to drill down or add to filter</span>
-        </h2>
-        {loadingLabels ? (
-          <p className="text-gray-500 text-sm">Loading…</p>
-        ) : (
-          <BarChart
-            data={labelCounts.map(lc => ({ key: lc.label, count: lc.count }))}
-            maxVal={maxLabelCount}
-            selectedBar={drillLabel}
-            onBarClick={handleBarClick}
-          />
-        )}
-      </section>
-
-      {/* ── Drill-down: segments per rating for selected label ────────────── */}
-      {drillLabel && (
-        <section className="bg-plex-card border border-plex-orange/30 rounded-xl p-4">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold text-gray-300">
-              <span className="text-plex-orange">{shortLabel(drillLabel)}</span>
-              <span className="text-gray-500 font-normal ml-2">— by content rating</span>
-            </h2>
-            <button
-              onClick={() => setDrillLabel(null)}
-              className="p-1 text-gray-500 hover:text-gray-300 rounded transition-colors"
-            >
-              <X size={14} />
-            </button>
-          </div>
-          {loadingRatings ? (
-            <p className="text-gray-500 text-sm">Loading…</p>
-          ) : (
-            <BarChart
-              data={ratingCounts.map(rc => ({ key: rc.content_rating, count: rc.count, label: rc.content_rating || 'Unrated' }))}
-              maxVal={maxRatingCount}
-              colorClass="bg-blue-500"
-            />
-          )}
-        </section>
-      )}
-
-      {/* ── Skip history ───────────────────────────────────────────────────── */}
-      <section>
-        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">
-          Skip History
-        </h2>
-        <SkipAnalytics />
-      </section>
-
-      <section>
-        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">
-          Detection accuracy
-        </h2>
-        <DetectionAccuracy />
-      </section>
-
-      {/* ── Label filter chips ─────────────────────────────────────────────── */}
-      <section className="bg-plex-card border border-plex-border rounded-xl p-4">
-        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">
-          Filter by Label
-        </h2>
-        <div className="flex flex-wrap gap-2">
-          {labelCounts.map(lc => {
-            const active = selectedLabels.includes(lc.label)
-            return (
-              <button
-                key={lc.label}
-                onClick={() => toggleLabel(lc.label)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors border ${
-                  active
-                    ? 'bg-plex-orange/20 border-plex-orange/50 text-plex-orange'
-                    : 'bg-plex-darker border-plex-border text-gray-400 hover:text-gray-200 hover:border-gray-500'
-                }`}
-              >
-                {shortLabel(lc.label)}
-                <span className={`tabular-nums ${active ? 'text-plex-orange/70' : 'text-gray-600'}`}>
-                  {lc.count}
-                </span>
-                {active && <X size={11} />}
-              </button>
-            )
-          })}
-        </div>
-        {selectedLabels.length > 0 && (
-          <button
-            onClick={() => setSelectedLabels([])}
-            className="mt-2 text-xs text-gray-500 hover:text-gray-300 transition-colors"
-          >
-            Clear all
-          </button>
-        )}
-      </section>
-
-      {/* ── Segment list for selected labels ─────────────────────────────── */}
-      {selectedLabels.length > 0 && (
-        <section>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
-              Segments
-              {!loadingSegments && (
-                <span className="ml-2 text-gray-600 normal-case font-normal">
-                  {totalSegments} total
-                </span>
-              )}
-            </h2>
-            {totalPages > 1 && (
-              <div className="flex items-center gap-2 text-xs text-gray-400">
-                <button
-                  onClick={() => setPage(p => Math.max(0, p - 1))}
-                  disabled={page === 0}
-                  className="p-1 rounded hover:bg-white/5 disabled:opacity-40"
-                >
-                  <ChevronLeft size={14} />
-                </button>
-                <span>{page + 1} / {totalPages}</span>
-                <button
-                  onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
-                  disabled={page >= totalPages - 1}
-                  className="p-1 rounded hover:bg-white/5 disabled:opacity-40"
-                >
-                  <ChevronRight size={14} />
-                </button>
-              </div>
-            )}
-          </div>
-
-          {loadingSegments ? (
-            <p className="text-gray-500 text-sm">Loading…</p>
-          ) : segments.length === 0 ? (
-            <p className="text-gray-600 text-sm">No segments found for the selected labels.</p>
-          ) : (
-            <div className="space-y-2">
-              {segments.map(seg => (
+  const renderRow = (seg: Segment) => (
                 <div
                   key={seg.id}
                   className="bg-plex-card border border-plex-border rounded-xl overflow-hidden flex flex-col sm:flex-row"
@@ -446,6 +392,9 @@ export default function Analytics() {
                           </span>
                         )}
                         <SegmentOriginBadge seg={seg} />
+                        {seg.marked_at && (
+                          <span className="text-xs text-amber-300/80">Marked {formatMarkedAt(seg.marked_at)}</span>
+                        )}
                       </div>
                       {/* Label chips */}
                       {seg.labels && (
@@ -485,7 +434,10 @@ export default function Analytics() {
                       >
                         <SkipForward size={14} />
                       </button>
-                      <FalsePositiveButton seg={seg} onChange={(_, fp) => { if (fp) dropFromList(seg) }} />
+                      <FalsePositiveButton
+                        seg={seg}
+                        onChange={(_, fp) => { if (seg.false_positive ? !fp : fp) (seg.false_positive ? dropFromFalsePositives : dropFromList)(seg) }}
+                      />
                       <button
                         onClick={() => deleteSeg(seg)}
                         disabled={deletingSegs[seg.id]}
@@ -497,31 +449,175 @@ export default function Analytics() {
                     </div>
                   </div>
                 </div>
-              ))}
-            </div>
+  )
+
+  const maxLabelCount = labelCounts[0]?.count ?? 0
+  const maxRatingCount = ratingCounts[0]?.count ?? 0
+  const totalPages = Math.ceil(totalSegments / PAGE_SIZE)
+
+  return (
+    <div className="space-y-6">
+      <h1 className="text-2xl font-bold text-gray-100 flex items-center gap-2">
+        <BarChart2 size={22} className="text-plex-orange" />
+        Analytics
+      </h1>
+
+      {/* Tabs (#117) */}
+      <div role="tablist" aria-label="Analytics sections" className="flex gap-1 border-b border-plex-border overflow-x-auto">
+        {TABS.map(t => (
+          <button
+            key={t.id}
+            role="tab"
+            aria-selected={tab === t.id}
+            onClick={() => selectTab(t.id)}
+            className={`px-4 py-2 text-sm whitespace-nowrap border-b-2 -mb-px transition-colors ${
+              tab === t.id
+                ? 'border-plex-orange text-plex-orange font-medium'
+                : 'border-transparent text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'detections' && (
+        <>
+          <CollapsibleSection id="analytics.labels" title="Segments by label" hint="click a bar to drill down or add to filter">
+            {loadingLabels ? (
+              <p className="text-gray-500 text-sm">Loading…</p>
+            ) : (
+              <BarChart
+                data={labelCounts.map(lc => ({ key: lc.label, count: lc.count }))}
+                maxVal={maxLabelCount}
+                selectedBar={drillLabel}
+                onBarClick={handleBarClick}
+              />
+            )}
+          </CollapsibleSection>
+
+          {/* ── Drill-down: segments per rating for selected label ────────────── */}
+          {drillLabel && (
+            <section className="bg-plex-card border border-plex-orange/30 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-sm font-semibold text-gray-300">
+                  <span className="text-plex-orange">{shortLabel(drillLabel)}</span>
+                  <span className="text-gray-500 font-normal ml-2">— by content rating</span>
+                </h2>
+                <button
+                  onClick={() => setDrillLabel(null)}
+                  className="p-1 text-gray-500 hover:text-gray-300 rounded transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              {loadingRatings ? (
+                <p className="text-gray-500 text-sm">Loading…</p>
+              ) : (
+                <BarChart
+                  data={ratingCounts.map(rc => ({ key: rc.content_rating, count: rc.count, label: rc.content_rating || 'Unrated' }))}
+                  maxVal={maxRatingCount}
+                  colorClass="bg-blue-500"
+                />
+              )}
+            </section>
           )}
 
-          {/* Bottom pagination */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-center gap-3 mt-4 text-xs text-gray-400">
-              <button
-                onClick={() => setPage(p => Math.max(0, p - 1))}
-                disabled={page === 0}
-                className="flex items-center gap-1 px-3 py-1.5 bg-plex-card border border-plex-border rounded-lg hover:text-white hover:border-gray-500 disabled:opacity-40 transition-colors"
-              >
-                <ChevronLeft size={13} /> Prev
-              </button>
-              <span>{page + 1} / {totalPages}</span>
-              <button
-                onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
-                disabled={page >= totalPages - 1}
-                className="flex items-center gap-1 px-3 py-1.5 bg-plex-card border border-plex-border rounded-lg hover:text-white hover:border-gray-500 disabled:opacity-40 transition-colors"
-              >
-                Next <ChevronRight size={13} />
-              </button>
+
+          <CollapsibleSection id="analytics.filter" title="Filter by label">
+            <div className="flex flex-wrap gap-2">
+              {labelCounts.map(lc => {
+                const active = selectedLabels.includes(lc.label)
+                return (
+                  <button
+                    key={lc.label}
+                    onClick={() => toggleLabel(lc.label)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors border ${
+                      active
+                        ? 'bg-plex-orange/20 border-plex-orange/50 text-plex-orange'
+                        : 'bg-plex-darker border-plex-border text-gray-400 hover:text-gray-200 hover:border-gray-500'
+                    }`}
+                  >
+                    {shortLabel(lc.label)}
+                    <span className={`tabular-nums ${active ? 'text-plex-orange/70' : 'text-gray-600'}`}>
+                      {lc.count}
+                    </span>
+                    {active && <X size={11} />}
+                  </button>
+                )
+              })}
             </div>
+            {selectedLabels.length > 0 && (
+              <button
+                onClick={() => setSelectedLabels([])}
+                className="mt-2 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                Clear all
+              </button>
+            )}
+          </CollapsibleSection>
+
+          {/* ── Segment list for selected labels ─────────────────────────────── */}
+          {selectedLabels.length > 0 && (
+            <section>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
+                  Segments
+                  {!loadingSegments && (
+                    <span className="ml-2 text-gray-600 normal-case font-normal">
+                      {totalSegments} total
+                    </span>
+                  )}
+                </h2>
+                <Pager page={page} totalPages={totalPages} onPage={setPage} compact />
+              </div>
+
+              {loadingSegments ? (
+                <p className="text-gray-500 text-sm">Loading…</p>
+              ) : segments.length === 0 ? (
+                <p className="text-gray-600 text-sm">No segments found for the selected labels.</p>
+              ) : (
+                <div className="space-y-2">
+                  {segments.map(seg => renderRow(seg))}
+                </div>
+              )}
+
+              <Pager page={page} totalPages={totalPages} onPage={setPage} />
+            </section>
           )}
-        </section>
+
+        </>
+      )}
+
+      {tab === 'skips' && <SkipAnalytics />}
+
+      {tab === 'accuracy' && (
+        <CollapsibleSection id="analytics.accuracy" title="Detection accuracy" hint="false-positive rate per detector and label">
+          <DetectionAccuracy />
+        </CollapsibleSection>
+      )}
+
+      {tab === 'false-positives' && (
+          <section>
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs text-gray-500">
+                Segments marked as not containing what they claim. They no longer skip or mute and are left out
+                of counts and sync; undo a mark to make the segment act again.
+                {!loadingFp && <span className="ml-2 text-gray-600">{fpTotal} total</span>}
+              </p>
+              <Pager page={fpPage} totalPages={Math.ceil(fpTotal / PAGE_SIZE)} onPage={setFpPage} compact />
+            </div>
+            {loadingFp ? (
+              <p className="text-gray-500 text-sm">Loading…</p>
+            ) : fpSegments.length === 0 ? (
+              <p className="text-gray-600 text-sm">No false positives marked yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {fpSegments.map(seg => renderRow(seg))}
+              </div>
+            )}
+            <Pager page={fpPage} totalPages={Math.ceil(fpTotal / PAGE_SIZE)} onPage={setFpPage} />
+          </section>
       )}
 
       {/* ── Segment preview modal ─────────────────────────────────────────── */}

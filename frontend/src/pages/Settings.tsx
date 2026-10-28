@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import { CheckCircle2, XCircle, Loader2, Eye, EyeOff, RotateCcw } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { UsersPanel } from './Users'
 
 interface Settings {
   plex_url: string
@@ -29,7 +31,8 @@ interface Settings {
   hover_window_end: string
 }
 
-type SectionId = 'connection' | 'playback' | 'schedule' | 'nudenet' | 'siglip' | 'segments' | 'sync'
+type SectionId = 'connection' | 'playback' | 'schedule' | 'nudenet' | 'siglip' | 'segments' | 'sync' | 'users'
+const SECTION_IDS: SectionId[] = ['connection', 'users', 'playback', 'schedule', 'nudenet', 'siglip', 'segments', 'sync']
 
 interface Library {
   id: string
@@ -106,7 +109,12 @@ export default function SettingsPage() {
   const [downloadResult, setDownloadResult] = useState<{ ok: boolean; message: string } | null>(null)
   const [restarting, setRestarting] = useState(false)
   const [restarted, setRestarted] = useState(false)
-  const [section, setSection] = useState<SectionId>('connection')
+  // The open section lives in ?section= so it can be linked (e.g. /users redirects here).
+  const [params, setParams] = useSearchParams()
+  const section: SectionId = SECTION_IDS.includes(params.get('section') as SectionId)
+    ? (params.get('section') as SectionId)
+    : 'connection'
+  const setSection = (id: SectionId) => setParams(id === 'connection' ? {} : { section: id }, { replace: true })
 
   useEffect(() => {
     Promise.all([
@@ -296,6 +304,7 @@ export default function SettingsPage() {
 
   const sections: { id: SectionId; label: string }[] = [
     { id: 'connection', label: 'Plex Connection' },
+    { id: 'users', label: 'Users' },
     { id: 'playback', label: 'Playback' },
     { id: 'schedule', label: 'Scan Scope & Schedule' },
     { id: 'nudenet', label: 'NudeNet Detection' },
@@ -305,7 +314,7 @@ export default function SettingsPage() {
   ]
 
   return (
-    <div className="max-w-3xl">
+    <div className="w-full">
       <h1 className="text-2xl font-bold text-gray-100 mb-4">Settings</h1>
       <div className="flex flex-col md:flex-row gap-6">
         {/* Section nav: a column on desktop, a scrolling row on phones. */}
@@ -324,11 +333,19 @@ export default function SettingsPage() {
           ))}
         </nav>
 
-        <div className="flex-1 min-w-0 space-y-8 pb-6">
+        {/* Each section's blocks are cards on a two-column grid on wide screens (#118);
+            a section with a single block spans both columns. */}
+        <div className="flex-1 min-w-0 grid gap-6 xl:grid-cols-2 items-start content-start pb-6 [&>section]:bg-plex-card [&>section]:border [&>section]:border-plex-border [&>section]:rounded-xl [&>section]:p-5 xl:[&>section:only-child]:col-span-2">
+          {section === 'users' && (
+            <section>
+              <UsersPanel />
+            </section>
+          )}
+
           {section === 'connection' && (
             <section>
               <h2 className={h2Cls}>Plex Connection</h2>
-              <div className="space-y-4">
+              <div className="grid gap-4 lg:grid-cols-2 items-start">
                 <Field label="Plex Server URL" hint="e.g. http://192.168.1.10:32400">
                   <input
                     type="url"
@@ -382,7 +399,7 @@ export default function SettingsPage() {
             <section>
               <h2 className={h2Cls}>Playback</h2>
               <p className="text-xs text-gray-500 mb-4">How Cleanplex watches active streams and acts on segments.</p>
-              <div className="space-y-4">
+              <div className="grid gap-4 lg:grid-cols-2 items-start">
                 <Field label="Poll Interval (seconds)" hint="How often to check active streams for scenes to skip">
                             <input type="number" min="2" max="30" value={form.poll_interval} onChange={set('poll_interval')} className={inputCls} />
                           </Field>
@@ -585,7 +602,7 @@ export default function SettingsPage() {
                 Its segments are marked <span className="text-gray-300">siglip</span> with medium severity.
                 Turning it on downloads about 815 MB of model files on the next scan.
               </p>
-              <div className="space-y-4">
+              <div className="grid gap-4 lg:grid-cols-2 items-start">
                 <label className="flex items-center gap-3 cursor-pointer">
                   <input
                     type="checkbox"
@@ -609,7 +626,7 @@ export default function SettingsPage() {
             <section>
               <h2 className={h2Cls}>Segments</h2>
               <p className="text-xs text-gray-500 mb-4">How flagged frames are grouped into segments.</p>
-              <div className="space-y-4">
+              <div className="grid gap-4 lg:grid-cols-2 items-start">
                 <Field label="Segment Merge Gap (ms)" hint="Flagged frames closer than this are merged into one segment.">
                             <input type="number" min="1000" max="30000" step="500" value={form.segment_gap_ms} onChange={set('segment_gap_ms')} className={inputCls} />
                           </Field>
@@ -624,7 +641,7 @@ export default function SettingsPage() {
             <section>
               <h2 className={h2Cls}>Segment Library Sync</h2>
               <p className="text-xs text-gray-500 mb-4">Crowdsource segment detections through one shared GitHub repository. Upload and download are always manual.</p>
-              <div className="space-y-4">
+              <div className="grid gap-4 lg:grid-cols-2 items-start">
                 <Field label="Repository" hint="Fixed shared repository used by all users.">
                   <input
                     type="text"
@@ -711,7 +728,9 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Sticky so Save is reachable from every section; it saves all of them at once. */}
+      {/* Sticky so Save is reachable from every section; it saves all of them at once.
+          Hidden on Users, which saves each change as it is made. */}
+      {section !== 'users' && (
       <div className="sticky bottom-0 py-3 bg-plex-darker/95 border-t border-plex-border backdrop-blur">
         <div className="flex flex-wrap items-center gap-3">
           <button
@@ -743,6 +762,7 @@ export default function SettingsPage() {
           )}
         </div>
       </div>
+      )}
     </div>
   )
 }

@@ -100,3 +100,27 @@ async def test_marking_or_undoing_an_unknown_segment_does_nothing():
     assert await db.mark_segment_false_positive(999) is None
     assert await db.unmark_segment_false_positive(999) == []
     assert await db.get_detection_accuracy() == []
+
+
+async def test_false_positive_segments_list_newest_mark_first():
+    await _job()
+    first = await db.insert_segment("g", "T", 0, 1000)
+    second = await db.insert_segment("g", "T", 5000, 6000)
+    await db.insert_segment("g", "T", 9000, 9500)  # stays active
+    await db.mark_segment_false_positive(first)
+    await db.mark_segment_false_positive(second)
+
+    rows = await db.get_false_positive_segments(10, 0)
+
+    assert {r["id"] for r in rows} == {first, second}
+    assert all(r["marked_at"] for r in rows)
+    assert await db.count_false_positive_segments() == 2
+    assert [r["id"] for r in await db.get_false_positive_segments(1, 1)] == [rows[1]["id"]]
+
+
+async def test_false_positive_segments_are_empty_without_marks():
+    await _job()
+    await db.insert_segment("g", "T", 0, 1000)
+
+    assert await db.get_false_positive_segments(10, 0) == []
+    assert await db.count_false_positive_segments() == 0

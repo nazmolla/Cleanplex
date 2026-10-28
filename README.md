@@ -201,7 +201,14 @@ only. Those categories are populated by importing skip files, where humans have 
 - **Jump to segment** — Send Plex seek command to that spot in the video
 - **Scan completion info** — Timestamp when the title finished scanning
 
-#### Users
+#### Analytics
+Tabs (linkable with `?tab=`), and sections that can be minimised (remembered per browser):
+- **Detections** — Segments per label (click a bar for a per-rating breakdown), a label filter, and the matching segments with preview, jump, false-positive and delete actions
+- **Skips** — Skip and mute history by category, client and title
+- **Accuracy** — How often each detector and label was marked a false positive, with mean scores of kept vs. marked segments
+- **False positives** — Every segment marked as a false positive, newest mark first, with an undo button
+
+#### Users (under Settings)
 - **Toggle filtering per Plex account** — Turn skipping on/off for specific user accounts
 - **Category preferences** — Expand a user to set a 0–3 strictness level per content category, with an optional skip/mute override
 

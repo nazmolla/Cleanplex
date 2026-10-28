@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
+import { Routes, Route } from 'react-router-dom'
 import Settings from '../../pages/Settings'
+import UsersPage from '../../pages/Users'
 
 vi.mock('../../api/client', () => ({
   api: {
@@ -64,6 +66,7 @@ beforeEach(() => {
     // /api/settings returns the settings object flat, not wrapped.
     if (path.includes('settings')) return Promise.resolve(defaultSettings)
     if (path.includes('libraries')) return Promise.resolve({ libraries: [] })
+    if (path === '/api/users') return Promise.resolve({ users: [{ username: 'alice', thumb: '', enabled: true }] })
     return Promise.resolve({})
   })
 })
@@ -149,5 +152,24 @@ describe('Settings sections', () => {
     const body = mockApi.put.mock.calls[0][1]
     expect(body.siglip_enabled).toBe('1')
     expect(body.siglip_threshold).toBe('0.3')
+  })
+
+  it('shows Users as a section without the Save bar (#118)', async () => {
+    render(<MemoryRouter initialEntries={['/settings?section=users']}><Settings /></MemoryRouter>)
+    await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Users' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.queryByRole('button', { name: /Save Settings/ })).not.toBeInTheDocument()
+  })
+
+  it('sends the old /users address to the Users section (#118)', async () => {
+    render(
+      <MemoryRouter initialEntries={['/users']}>
+        <Routes>
+          <Route path="/users" element={<UsersPage />} />
+          <Route path="/settings" element={<Settings />} />
+        </Routes>
+      </MemoryRouter>
+    )
+    await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument())
   })
 })
