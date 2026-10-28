@@ -45,7 +45,7 @@ _MODEL_FILES = {
 }
 SIGLIP_DIR: Path = Path.home() / ".cleanplex" / "models" / "siglip"
 
-IMAGE_SIZE = 224
+IMAGE_SIZE = 224  # also the smallest frame worth extracting while SigLIP is on
 TEXT_LENGTH = 64  # SigLIP was trained on text padded to exactly 64 tokens
 PAD_ID = 1  # "</s>", SigLIP's pad and eos token
 # exp(logit_scale) from the google/siglip-base-patch16-224 checkpoint. The split

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import cleanplex.scanner as scanner
+from cleanplex.frame_extractor import FrameStreamStalled
 from cleanplex import database as db
 from cleanplex.config import Config
 
@@ -24,11 +25,16 @@ async def _job(tmp_path):
     await db.set_force_scan("g", True)
 
 
-async def _scan(nudenet_hits: set[int], siglip_hits: set[int], frames=20, enabled=True):
+async def _scan(nudenet_hits: set[int], siglip_hits: set[int], frames=20, enabled=True,
+                stall=False, sizes=None, hw=True):
     """Run scan_video over `frames` fake frames; return (segments, frames SigLIP saw)."""
     seen: list[int] = []
+    sizes = sizes if sizes is not None else []
 
-    async def frames_gen(path, step_ms, duration_ms, size):
+    async def frames_gen(path, step_ms, duration_ms, size, hardware=False):
+        sizes.append((size, hardware))
+        if stall:
+            raise FrameStreamStalled("stuck")
         for i in range(frames):
             yield i * STEP, f"frame-{i}".encode()
 
@@ -42,7 +48,7 @@ async def _scan(nudenet_hits: set[int], siglip_hits: set[int], frames=20, enable
         return (0.8, "BUTTOCKS_EXPOSED") if i in siglip_hits else (0.1, "FEMALE_BREAST_EXPOSED")
 
     config = replace(Config(), scan_step_ms=STEP, segment_gap_ms=1500, segment_min_hits=1,
-                     siglip_enabled=enabled, siglip_threshold=0.5, siglip_min_hits=2)
+                     siglip_enabled=enabled, siglip_threshold=0.5, siglip_min_hits=2, hw_decode=hw)
     with patch.object(scanner, "extract_frames_batch", frames_gen), \
          patch.object(scanner, "get_duration_ms", AsyncMock(return_value=frames * STEP)), \
          patch.object(scanner, "_classify_frame", classify), \
@@ -127,3 +133,34 @@ async def test_scan_announces_start_segments_and_finish(tmp_path):
     assert types[0] == "scan_started" and types[-1] == "scan_finished"
     assert ("segments_changed", {"guid": "g"}) in seen
     assert all(d.get("guid") == "g" for _, d in seen)
+
+
+async def test_frames_are_never_smaller_than_siglip_input(tmp_path, monkeypatch):
+    """#107: a small NudeNet input must not starve SigLIP, which needs 224 px."""
+    await _job(tmp_path)
+    monkeypatch.setattr(scanner, "_inference_resolution", lambda name: 160)
+    sizes = []
+
+    await _scan(nudenet_hits=set(), siglip_hits=set(), sizes=sizes)
+
+    assert sizes == [(224, True)]
+
+
+async def test_hardware_decoding_follows_the_setting(tmp_path):
+    await _job(tmp_path)
+    sizes = []
+
+    await _scan(nudenet_hits=set(), siglip_hits=set(), enabled=False, sizes=sizes, hw=False)
+
+    assert sizes == [(320, False)]
+
+
+async def test_a_stalled_frame_stream_fails_the_scan(tmp_path):
+    """#108: the scan must not be saved as done with the rest of the film unscanned."""
+    await _job(tmp_path)
+
+    await _scan(nudenet_hits=set(), siglip_hits=set(), stall=True)
+
+    job = await db.get_scan_job_by_guid("g")
+    assert job["status"] == "failed"
+    assert "stuck" in (job["error_msg"] or "")

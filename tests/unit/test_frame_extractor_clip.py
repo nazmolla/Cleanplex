@@ -51,9 +51,13 @@ async def _first_frame_size(path, size):
     import cv2
     import numpy as np
 
-    async for _, jpeg in frame_extractor.extract_frames_batch(str(path), 1000, 2000, size):
-        mat = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
-        return mat.shape[1], mat.shape[0]
+    frames = frame_extractor.extract_frames_batch(str(path), 1000, 2000, size)
+    try:
+        async for _, jpeg in frames:
+            mat = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+            return mat.shape[1], mat.shape[0]
+    finally:
+        await frames.aclose()  # stop ffmpeg now, not when the generator is collected
 
 
 @pytest.mark.parametrize("size, expected", [(320, (320, 180)), (640, (640, 360))])
@@ -69,3 +73,73 @@ async def test_portrait_frames_are_bounded_by_height(tmp_path):
     _make_video(src, "720x1280")
 
     assert await _first_frame_size(src, 640) == (360, 640)
+
+
+# ── Hardware decoding and stalls (issues #107, #108) ─────────────────────────
+
+async def _collect(gen):
+    return [x async for x in gen]
+
+
+async def test_hardware_flag_asks_ffmpeg_for_any_available_decoder(tmp_path, monkeypatch):
+    src = tmp_path / "v.mkv"
+    _make_video(src, "320x240")
+    seen = []
+    real = frame_extractor.asyncio.create_subprocess_exec
+
+    async def spy(*cmd, **kw):
+        seen.append(cmd)
+        return await real(*cmd, **kw)
+
+    monkeypatch.setattr(frame_extractor.asyncio, "create_subprocess_exec", spy)
+
+    frames = await _collect(frame_extractor.extract_frames_batch(str(src), 1000, 2000, 320, hardware=True))
+    await _collect(frame_extractor.extract_frames_batch(str(src), 1000, 2000, 320, hardware=False))
+
+    assert frames, "hwaccel auto must still produce frames (software where no hardware exists)"
+    assert ("-hwaccel", "auto") == seen[0][seen[0].index("-hwaccel"):seen[0].index("-hwaccel") + 2]
+    assert "-hwaccel" not in seen[-1]
+
+
+async def test_a_file_the_hardware_decoder_cannot_read_is_retried_in_software(monkeypatch):
+    calls = []
+
+    async def fake_stream(path, step, dur, size, hardware):
+        calls.append(hardware)
+        if not hardware:
+            yield 0, b"frame"
+
+    monkeypatch.setattr(frame_extractor, "_frame_stream", fake_stream)
+
+    frames = await _collect(frame_extractor.extract_frames_batch("x.mkv", 1000, 1000, 320, hardware=True))
+
+    assert calls == [True, False]
+    assert frames == [(0, b"frame")]
+
+
+class _SilentProc:
+    returncode = None
+
+    class stdout:
+        @staticmethod
+        async def read(n):
+            await frame_extractor.asyncio.sleep(10)
+
+    def kill(self):
+        self.returncode = -9
+
+    async def wait(self):
+        return self.returncode
+
+
+async def test_a_silent_ffmpeg_fails_the_stream_instead_of_ending_it(monkeypatch):
+    """Regression for #108: a stall used to end the stream, so the scan was saved as done."""
+    monkeypatch.setattr(frame_extractor, "FRAME_STALL_TIMEOUT_S", 0.05)
+
+    async def fake_exec(*cmd, **kw):
+        return _SilentProc()
+
+    monkeypatch.setattr(frame_extractor.asyncio, "create_subprocess_exec", fake_exec)
+
+    with pytest.raises(frame_extractor.FrameStreamStalled):
+        await _collect(frame_extractor.extract_frames_batch("x.mkv", 1000, 60_000, 320, hardware=False))
