@@ -26,6 +26,15 @@ async def test_marked_segments_stop_acting_but_stay_reviewable():
     assert [s["id"] for s in await db.get_segments_for_guid("g", include_false_positives=True)] == [keep, wrong]
     assert await db.count_segments_for_guid("g") == 1
     assert await db.get_segment_counts_for_library("lib") == {"g": 1}
+    assert await db.get_false_positive_counts_for_library("lib") == {"g": 1}
+
+
+async def test_false_positive_counts_are_empty_without_marks():
+    await _job()
+    await db.insert_segment("g", "T", 0, 1000)
+
+    assert await db.get_false_positive_counts_for_library("lib") == {}
+    assert await db.get_false_positive_counts_for_library("no-such-lib") == {}
 
 
 async def test_marked_segments_are_left_out_of_rating_key_lookup_and_sync():

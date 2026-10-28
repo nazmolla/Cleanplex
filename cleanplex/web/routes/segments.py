@@ -181,6 +181,7 @@ async def get_titles_in_library(library_id: str):
     """
     jobs = await db.get_scan_jobs_by_library(library_id)
     seg_counts = await db.get_segment_counts_for_library(library_id)
+    fp_counts = await db.get_false_positive_counts_for_library(library_id)
 
     try:
         client = plex_mod.get_client()
@@ -242,6 +243,7 @@ async def get_titles_in_library(library_id: str):
             "show_rating_key": show_rating_key,
             "season_rating_key": season_rating_key,
             "segment_count": seg_counts.get(job["plex_guid"], 0),
+            "false_positive_count": fp_counts.get(job["plex_guid"], 0),
             "content_rating": job.get("content_rating", ""),
             "media_type": job.get("media_type", "movie"),
             "year": job.get("year"),

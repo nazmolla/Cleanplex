@@ -329,7 +329,28 @@ describe('Library', () => {
     })
     await waitFor(() => expect(screen.getByText('Movie A')).toBeInTheDocument())
     fireEvent.click(screen.getByTitle('Toggle segments'))
-    expect(screen.queryByTitle('Toggle segments')).not.toBeInTheDocument()
+    // Folded at 0 the toggle stays, so the title can be opened again (#112).
+    expect(screen.getByTitle('Toggle segments')).toBeInTheDocument()
+  })
+
+  it('shows the toggle at 0 segments with the false-positive count (#112)', async () => {
+    mockApi.get.mockImplementation((path: string) => {
+      if (path.includes('scanner-status')) return Promise.resolve(scannerIdle)
+      if (path.includes('libraries') && !path.includes('titles')) return Promise.resolve({ libraries })
+      if (path.includes('titles')) return Promise.resolve({ titles: [
+        { ...titles[0], segment_count: 0, false_positive_count: 3 },
+        { ...titles[1], segment_count: 0 },
+      ] })
+      return Promise.resolve({})
+    })
+    renderLibrary()
+    await waitFor(() => screen.getAllByText('Movies')[0])
+    await act(async () => {
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: 'lib1' } })
+    })
+    await waitFor(() => screen.getByText('Movie B'))
+    expect(screen.getByTitle('Toggle segments (3 marked false positive)')).toHaveTextContent(/^0\s*3$/)
+    expect(screen.getByTitle('Toggle segments')).toHaveTextContent('0')
   })
 
   it('shows running scans as one line of title and percent (#110)', async () => {
