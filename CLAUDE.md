@@ -245,6 +245,7 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 
 - **Categories come from the MovieContentFilter 1.1.0 vocabulary.** Never invent a category name; map onto an existing group or use `other`.
 - **Every segment carries `category`, `severity`, `action`, `channel` and `source`.** Importers set them from the file; the scanner uses its defaults.
+- **A detector segment's severity comes from its labels** via `severity_for_labels` / `LABEL_SEVERITY` in `importers/_common.py` (exposed genitalia and anus high, exposed breast and buttocks medium, everything else low). Never hardcode a scanner severity; imported segments keep the file's.
 - **Only `skip` and `mute` are executable.** Plex exposes playback position and volume, nothing else. `blank` and `blur` must be logged and ignored, never downgraded to a skip.
 - **Filtering is a threshold, not a boolean**: a segment fires when the user's category level plus its severity rank exceeds 3.
 - **A new parser goes in `importers/`** and must return normalized segment dicts through `validate_segment`. Never let a parser write to the database itself.

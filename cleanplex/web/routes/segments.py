@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from ...logger import get_logger
 import cleanplex.plex_client as plex_mod
@@ -18,6 +18,7 @@ from ... import database as db
 from ... import events
 from ... import frame_extractor
 from ... import hover_previews
+from ...importers._common import DETECTOR_LABELS
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["segments"])
@@ -659,6 +660,43 @@ async def set_segment_false_positive(segment_id: int, body: FalsePositiveUpdate)
     _refresh_cleanplex_summary_for_guid(seg["plex_guid"])
     events.publish("segments_changed", guid=seg["plex_guid"])
     return {"ok": True, "segment_id": segment_id, "false_positive": body.false_positive}
+
+
+class LabelsUpdate(BaseModel):
+    labels: list[str] = Field(min_length=1, max_length=len(DETECTOR_LABELS))
+
+    @field_validator("labels")
+    @classmethod
+    def _known_labels(cls, labels: list[str]) -> list[str]:
+        """Only labels from the detector vocabulary are allowed."""
+        unknown = [lbl for lbl in labels if lbl not in DETECTOR_LABELS]
+        if unknown:
+            raise ValueError(f"unknown label(s): {', '.join(unknown)}")
+        return labels
+
+
+@router.put("/segments/{segment_id}/labels")
+async def set_segment_labels(segment_id: int, body: LabelsUpdate):
+    """Correct a segment's labels; recorded as feedback, and a detector segment's severity follows them."""
+    seg = await db.get_segment_by_id(segment_id)
+    if not seg:
+        raise HTTPException(status_code=404, detail="Segment not found")
+    frame_path = ""
+    thumb = seg.get("thumbnail_path") or ""
+    if thumb and os.path.isfile(thumb):
+        FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
+        # Unique per edit: a second edit within the same second must not share (and then
+        # delete) the first edit's kept frame.
+        dest = FEEDBACK_DIR / f"{segment_id}_relabel_{time.time_ns()}.jpg"
+        await asyncio.to_thread(shutil.copyfile, thumb, dest)
+        frame_path = str(dest)
+    result = await db.relabel_segment(segment_id, body.labels, frame_path)
+    # Frames the database did not keep (an edit of an existing correction, or an undo).
+    for frame in result["frames"]:
+        Path(frame).unlink(missing_ok=True)
+    _refresh_cleanplex_summary_for_guid(seg["plex_guid"])
+    events.publish("segments_changed", guid=seg["plex_guid"])
+    return {"ok": True, "segment_id": segment_id, "labels": result["labels"], "severity": result["severity"]}
 
 
 @router.delete("/segments/{segment_id}")

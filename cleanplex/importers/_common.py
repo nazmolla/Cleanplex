@@ -20,6 +20,54 @@ CATEGORIES = (
 )
 
 SEVERITIES = ("low", "medium", "high")
+
+# NudeNet's label vocabulary: the labels a scanner segment can carry, and what a user
+# may relabel one to.
+DETECTOR_LABELS = (
+    "FEMALE_GENITALIA_EXPOSED",
+    "FEMALE_BREAST_EXPOSED",
+    "MALE_GENITALIA_EXPOSED",
+    "MALE_BREAST_EXPOSED",
+    "ANUS_EXPOSED",
+    "BUTTOCKS_EXPOSED",
+    "FEET_EXPOSED",
+    "BELLY_EXPOSED",
+    "ARMPITS_EXPOSED",
+    "FEMALE_GENITALIA_COVERED",
+    "FEMALE_BREAST_COVERED",
+    "MALE_BREAST_COVERED",
+    "ANUS_COVERED",
+    "BUTTOCKS_COVERED",
+    "FEET_COVERED",
+    "BELLY_COVERED",
+    "ARMPITS_COVERED",
+    "FACE_FEMALE",
+    "FACE_MALE",
+)
+
+# Severity of a detected label, which sets what each viewer level skips: a segment
+# fires when level + rank > 3, so level 3 skips everything, 2 skips medium and high
+# (exposed nudity), 1 only high (genitalia and anus), 0 nothing (#126). Labels not
+# listed (covered parts, belly, feet, faces) are low.
+LABEL_SEVERITY = {
+    "FEMALE_GENITALIA_EXPOSED": "high",
+    "MALE_GENITALIA_EXPOSED": "high",
+    "ANUS_EXPOSED": "high",
+    "FEMALE_BREAST_EXPOSED": "medium",
+    "BUTTOCKS_EXPOSED": "medium",
+}
+_SEVERITY_ORDER = {"low": 1, "medium": 2, "high": 3}
+
+
+def severity_for_labels(labels: str, default: str = "high") -> str:
+    """Return the highest severity among comma-separated *labels*; *default* if none.
+
+    Used for scanner output only: imported segments keep the severity their author set.
+    """
+    found = [lbl.strip() for lbl in (labels or "").split(",") if lbl.strip()]
+    if not found:
+        return default
+    return max((LABEL_SEVERITY.get(lbl, "low") for lbl in found), key=_SEVERITY_ORDER.__getitem__)
 ACTIONS = ("skip", "mute", "blank", "blur", "fast")
 CHANNELS = ("both", "video", "audio")
 

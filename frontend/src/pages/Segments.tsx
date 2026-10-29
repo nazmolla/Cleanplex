@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import FalsePositiveButton, { FalsePositiveTag } from '../components/FalsePositiveButton'
+import RelabelButton from '../components/RelabelButton'
 import ScanContextMenu, { ScanTarget } from '../components/ScanContextMenu'
 import { Film, Tv, ChevronRight, ChevronDown, Trash2, AlertTriangle, SkipForward, Play, Tv2 } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
@@ -133,6 +134,7 @@ function SegmentCard({
   onJump,
   onDelete,
   onFalsePositive,
+  onRelabel,
 }: {
   seg: Segment
   jumping: Record<number, boolean>
@@ -141,6 +143,7 @@ function SegmentCard({
   onJump: (id: number) => void
   onDelete: (id: number) => void
   onFalsePositive: (id: number, falsePositive: boolean) => void
+  onRelabel: (id: number, labels: string) => void
 }) {
   return (
     <div className={`bg-plex-card border border-plex-border rounded-xl overflow-hidden flex flex-col sm:flex-row ${seg.false_positive ? 'opacity-50' : ''}`}>
@@ -177,6 +180,7 @@ function SegmentCard({
           <button onClick={() => onJump(seg.id)} disabled={jumping[seg.id]} title="Jump active Plex playback for this title to this segment" className="p-2 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors disabled:opacity-40">
             <SkipForward size={16} />
           </button>
+          <RelabelButton seg={seg} onChange={onRelabel} />
           <FalsePositiveButton seg={seg} onChange={onFalsePositive} />
           <button onClick={() => onDelete(seg.id)} disabled={deleting[seg.id]} title="Delete this segment" className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-40">
             <Trash2 size={16} />
@@ -368,6 +372,9 @@ export default function Segments() {
   // the tree counts, which leave marked segments out.
   const setFalsePositive = (id: number, falsePositive: boolean) =>
     setSegments(prev => prev.map(s => (s.id === id ? { ...s, false_positive: falsePositive } : s)))
+
+  const relabelSegment = (id: number, labels: string) =>
+    setSegments(prev => prev.map(s => (s.id === id ? { ...s, labels } : s)))
 
   const selectLib = async (lib: Library) => {
     setSelectedLib(lib)
@@ -935,7 +942,7 @@ export default function Segments() {
                     </div>
                     <div className="ml-4 space-y-2">
                       {group.segments.map(seg => (
-                        <SegmentCard key={seg.id} seg={seg} jumping={jumping} deleting={deleting} onPreview={openPreview} onJump={jumpToSegment} onDelete={deleteSegment} onFalsePositive={setFalsePositive} />
+                        <SegmentCard key={seg.id} seg={seg} jumping={jumping} deleting={deleting} onPreview={openPreview} onJump={jumpToSegment} onDelete={deleteSegment} onFalsePositive={setFalsePositive} onRelabel={relabelSegment} />
                       ))}
                     </div>
                   </div>
@@ -945,7 +952,7 @@ export default function Segments() {
               // Single episode or movie — flat list, no grouping
               <div className="grid gap-3">
                 {filteredSegments.map(seg => (
-                  <SegmentCard key={seg.id} seg={seg} jumping={jumping} deleting={deleting} onPreview={openPreview} onJump={jumpToSegment} onDelete={deleteSegment} onFalsePositive={setFalsePositive} />
+                  <SegmentCard key={seg.id} seg={seg} jumping={jumping} deleting={deleting} onPreview={openPreview} onJump={jumpToSegment} onDelete={deleteSegment} onFalsePositive={setFalsePositive} onRelabel={relabelSegment} />
                 ))}
               </div>
             )}

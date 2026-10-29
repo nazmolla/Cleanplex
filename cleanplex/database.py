@@ -12,7 +12,7 @@ from typing import Any
 
 import aiosqlite
 
-from .importers._common import CATEGORIES
+from .importers._common import CATEGORIES, severity_for_labels
 from .logger import get_logger
 
 logger = get_logger(__name__)
@@ -292,6 +292,9 @@ async def init_db() -> None:
         # Catch only the specific OperationalError SQLite raises for duplicate columns;
         # any other error (e.g. corrupt DB, permission failure) is re-raised immediately.
         migrations = [
+            # Labels a user corrected a segment to (verdict 'relabeled'); `labels` keeps
+            # what the detector said, so the pair is a confusion sample (#125).
+            "ALTER TABLE segment_feedback ADD COLUMN corrected_labels TEXT DEFAULT ''",
             "ALTER TABLE scan_jobs ADD COLUMN content_rating TEXT DEFAULT ''",
             "ALTER TABLE scan_jobs ADD COLUMN media_type TEXT DEFAULT 'movie'",
             "ALTER TABLE scan_jobs ADD COLUMN force_scan INTEGER DEFAULT 0",
@@ -385,6 +388,23 @@ async def init_db() -> None:
                     "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
                     (key, legacy_buffer["value"]),
                 )
+
+        # Scanner severities used to be a flat high/medium by source; they now follow the
+        # detected labels (#126). Re-derive existing detector segments once. Imported
+        # segments keep the severity their author set.
+        migrated = await (await conn.execute(
+            "SELECT 1 FROM settings WHERE key='label_severity_migrated'"
+        )).fetchone()
+        if not migrated:
+            label_sets = await conn.execute_fetchall(
+                "SELECT DISTINCT labels FROM segments WHERE source IN ('scanner','siglip') AND labels != ''"
+            )
+            for row in label_sets:
+                await conn.execute(
+                    "UPDATE segments SET severity=? WHERE source IN ('scanner','siglip') AND labels=?",
+                    (severity_for_labels(row["labels"]), row["labels"]),
+                )
+            await conn.execute("INSERT INTO settings(key, value) VALUES('label_severity_migrated', '1')")
 
         for key, value in DEFAULT_SETTINGS.items():
             await conn.execute(
@@ -793,6 +813,17 @@ async def insert_segment(
                 "AND f.start_ms < ? AND f.end_ms > ?)",
                 (segment_id, plex_guid, end_ms, start_ms),
             )
+            # Same for a label correction: a rescan must not undo the user's relabel.
+            fixed = await (await conn.execute(
+                "SELECT corrected_labels FROM segment_feedback WHERE plex_guid=? AND verdict='relabeled' "
+                "AND corrected_labels != '' AND start_ms < ? AND end_ms > ? ORDER BY id DESC LIMIT 1",
+                (plex_guid, end_ms, start_ms),
+            )).fetchone()
+            if fixed:
+                await conn.execute(
+                    "UPDATE segments SET labels=?, severity=? WHERE id=?",
+                    (fixed["corrected_labels"], severity_for_labels(fixed["corrected_labels"], severity), segment_id),
+                )
         await conn.commit()
         return segment_id
 
@@ -865,6 +896,50 @@ async def mark_segment_false_positive(segment_id: int, frame_path: str = "") -> 
         )
         await conn.commit()
         return cursor.lastrowid
+
+
+async def relabel_segment(segment_id: int, labels: list[str], frame_path: str = "") -> dict | None:
+    """Correct a segment's labels and record the correction; None if the segment is missing.
+
+    Detector segments (scanner, siglip) also get their severity re-derived from the new
+    labels; imported ones keep the author's. The first correction stores a 'relabeled'
+    feedback row holding the detector's labels and the corrected ones; later edits update
+    it, and setting the labels back to the originals removes it (undo). Returns
+    {labels, severity, frames}: frames lists copied frames no longer referenced, for the
+    caller to delete. frame_path is kept only if it ends up on a new feedback row.
+    """
+    new = ",".join(dict.fromkeys(labels))
+    async with get_connection() as conn:
+        seg = await (await conn.execute("SELECT * FROM segments WHERE id=?", (segment_id,))).fetchone()
+        if seg is None:
+            return None
+        fb = await (await conn.execute(
+            "SELECT id, labels, frame_path FROM segment_feedback WHERE segment_id=? AND verdict='relabeled'",
+            (segment_id,),
+        )).fetchone()
+        original = fb["labels"] if fb else (seg["labels"] or "")
+        severity = seg["severity"]
+        if seg["source"] in ("scanner", "siglip"):
+            severity = severity_for_labels(new, severity)
+        await conn.execute("UPDATE segments SET labels=?, severity=? WHERE id=?", (new, severity, segment_id))
+
+        frames = [frame_path] if frame_path else []
+        if sorted(new.split(",")) == sorted(original.split(",")):
+            if fb:
+                await conn.execute("DELETE FROM segment_feedback WHERE id=?", (fb["id"],))
+                frames = [f for f in (fb["frame_path"],) if f] + frames
+        elif fb:
+            await conn.execute("UPDATE segment_feedback SET corrected_labels=? WHERE id=?", (new, fb["id"]))
+        else:
+            await conn.execute(
+                "INSERT INTO segment_feedback(plex_guid, segment_id, verdict, start_ms, end_ms, source, "
+                "detector, labels, corrected_labels, confidence, frame_path) VALUES(?,?,'relabeled',?,?,?,?,?,?,?,?)",
+                (seg["plex_guid"], segment_id, seg["start_ms"], seg["end_ms"], seg["source"] or "scanner",
+                 seg["detector"] or "", original, new, seg["confidence"] or 0, frame_path),
+            )
+            frames = []
+        await conn.commit()
+        return {"labels": new, "severity": severity, "frames": frames}
 
 
 async def unmark_segment_false_positive(segment_id: int) -> list[str]:

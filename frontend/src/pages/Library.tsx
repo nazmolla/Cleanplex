@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import FalsePositiveButton, { FalsePositiveTag } from '../components/FalsePositiveButton'
+import RelabelButton from '../components/RelabelButton'
 import SkipFileImport from '../components/SkipFileImport'
 import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2, Eye, EyeOff, X, ThumbsDown } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
@@ -503,6 +504,15 @@ export default function Library() {
                 >
                   <SkipForward size={15} />
                 </button>
+                <RelabelButton
+                  seg={seg}
+                  onChange={(id, labels) =>
+                    setLoadedSegments(prev => ({
+                      ...prev,
+                      [guid]: (prev[guid] ?? []).map(x => (x.id === id ? { ...x, labels } : x)),
+                    }))
+                  }
+                />
                 <FalsePositiveButton
                   seg={seg}
                   onChange={(id, fp) =>

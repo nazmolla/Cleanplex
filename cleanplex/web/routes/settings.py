@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 from ...logger import get_logger
 from ... import database as db
 from ... import events
+from ...importers._common import DETECTOR_LABELS as _DETECTOR_LABELS
 import cleanplex.plex_client as plex_mod
 from ... import scanner as scan_mod
 from .segments import _invalidate_scan_labels_cache
@@ -14,30 +15,7 @@ from .segments import _invalidate_scan_labels_cache
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
-DETECTOR_LABELS = [
-    # EXPOSED categories
-    "FEMALE_GENITALIA_EXPOSED",
-    "FEMALE_BREAST_EXPOSED",
-    "MALE_GENITALIA_EXPOSED",
-    "MALE_BREAST_EXPOSED",
-    "ANUS_EXPOSED",
-    "BUTTOCKS_EXPOSED",
-    "FEET_EXPOSED",
-    "BELLY_EXPOSED",
-    "ARMPITS_EXPOSED",
-    # COVERED categories
-    "FEMALE_GENITALIA_COVERED",
-    "FEMALE_BREAST_COVERED",
-    "MALE_BREAST_COVERED",
-    "ANUS_COVERED",
-    "BUTTOCKS_COVERED",
-    "FEET_COVERED",
-    "BELLY_COVERED",
-    "ARMPITS_COVERED",
-    # FACE categories
-    "FACE_FEMALE",
-    "FACE_MALE",
-]
+DETECTOR_LABELS = list(_DETECTOR_LABELS)
 
 
 class SettingsPayload(BaseModel):

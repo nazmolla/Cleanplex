@@ -19,6 +19,7 @@ from .frame_extractor import extract_frames_batch, get_duration_ms
 from . import events, siglip_detector
 from .logger import get_logger
 from . import database as db
+from .importers._common import severity_for_labels
 from . import ort_runtime
 
 if TYPE_CHECKING:
@@ -826,10 +827,10 @@ async def scan_video(plex_guid: str, config) -> None:
                     confidence=cluster_best_score if source == "scanner" else cluster_best_score + 1.0,
                     thumbnail_path=thumb_path,
                     labels=labels_str,
-                    # SigLIP-only segments are a safety net with more false positives,
-                    # so they rank one severity below NudeNet hits and say where they
-                    # came from; users can tell them apart and threshold them.
-                    severity="high" if source == "scanner" else "medium",
+                    # Severity follows what was detected, so a viewer's level decides
+                    # exposed vs covered vs genitalia (#126). SigLIP-only segments say
+                    # where they came from; users can tell them apart and threshold them.
+                    severity=severity_for_labels(labels_str),
                     source=source,
                     detector=nudenet_detector if source == "scanner" else siglip_detector.DETECTOR_ID,
                 )
