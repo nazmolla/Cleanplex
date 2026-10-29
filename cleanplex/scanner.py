@@ -38,6 +38,11 @@ THUMBNAILS_DIR: Path = Path.home() / ".cleanplex" / "thumbnails"
 MODELS_DIR: Path = Path.home() / ".cleanplex" / "models"
 # Minimum gap between scan_progress events per scan; the UI bar needs no finer.
 PROGRESS_EVENT_INTERVAL_S = 2.0
+# Revision of what a scan produces. Bump it when a change means existing results are worth
+# redoing (thresholds, prompts, severity, thumbnails and bounds), so "rescan outdated titles"
+# can find what an older scanner finished (#138). 1: per-label thresholds, credits skip, SigLIP
+# credit prompts. 2: severity from labels. 3: dense re-sample of flagged windows.
+SCAN_VERSION = 3
 # A flagged window is re-sampled at refine_step_ms, but never into more frames than this, so a
 # long segment costs a bounded amount: 120 frames is about 2 s of NudeNet at 320 px.
 REFINE_MAX_FRAMES = 120
@@ -1061,7 +1066,7 @@ async def scan_video(plex_guid: str, config) -> None:
             await _flush_cluster()
             part_time_offset_ms += part_duration_ms
 
-        await db.update_scan_job_status(plex_guid, "done", progress=1.0)
+        await db.update_scan_job_status(plex_guid, "done", progress=1.0, scan_version=SCAN_VERSION)
 
         if rating_key:
             await plex_summary.refresh_now(plex_guid)

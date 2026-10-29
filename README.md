@@ -214,7 +214,8 @@ only. Those categories are populated by importing skip files, where humans have 
 - **Live scanner banner** — shows which titles are currently being scanned with progress bars
 - **Segment details** — Timestamp range, confidence score, a thumbnail from the detected scene, and what found it (e.g. *NudeNet 640m*, *SigLIP*, *Subtitles*, *VideoSkip (.skp)*)
 - **Delete false positives** — Remove incorrectly flagged segments
-- **Right-click to rescan** — On a movie, episode, season or show: *Rescan now* or *Rescan tonight* (queued for the scan window)
+- **Right-click to rescan** — On a movie, episode, season or show: *Rescan now* or *Rescan tonight* (queued for the scan window). The Segments page lists only titles that have segments, so on a show the first pair rescans those listed episodes; *Rescan whole show now / tonight* queues every non-ignored episode, including ones with no segments
+- **Rescan many titles** — Settings → Scan Scope & Schedule → *Rescan Titles*: pick titles scanned by an older scanner (the right choice after an update), titles with segments, every scanned title, or titles scanned before a date, optionally for one library. A live count shows what will be queued and how many your rating filters skip; they go through the normal scan queue (scan window, usual order) and keep their current segments until the new scan replaces them
 - **Live updates** — The open title's segments and the tree counts refresh as a rescan runs and when it finishes
 - **Hover preview** — Hovering a segment's thumbnail plays a 5 s silent loop of it (sped up for long segments), in Library, Segments and Analytics. Rendered overnight by the hover-preview job, so new segments get one the next night
 - **Preview video** — In-app player; the server cuts a short H.264/AAC clip (5 s either side) so it plays in any browser, reading the file as the service account. *Open in VLC* starts and stops at the segment
