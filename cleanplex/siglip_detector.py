@@ -28,6 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import ort_runtime
 from .logger import get_logger
 
 logger = get_logger(__name__)
@@ -108,6 +109,14 @@ NEUTRAL_PROMPTS = [
     "a dark scene",
     "an action scene",
     "people kissing with clothes on",
+    # Credit rolls and title cards have no neutral prompt to land on, so the softmax
+    # handed their share to a body part (0.90 "buttocks" on a credit roll, #122).
+    # Chosen by replaying 175 marked false-positive and 214 kept SigLIP frames:
+    # at the default 0.35 threshold these cut 28 false positives and lost no kept
+    # frame. Broader sets (swimwear, shirtless, faces) lost real hits too.
+    "end credits scrolling text",
+    "a film title card",
+    "white text on a black background",
 ]
 
 _thread_local = threading.local()
@@ -193,7 +202,9 @@ def _session(name: str):
         import onnxruntime as ort
 
         sessions[name] = ort.InferenceSession(
-            str(SIGLIP_DIR / name), providers=["CPUExecutionProvider"]
+            str(SIGLIP_DIR / name),
+            sess_options=ort_runtime.session_options(),
+            providers=["CPUExecutionProvider"],
         )
     return sessions[name]
 

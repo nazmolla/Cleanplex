@@ -1,7 +1,8 @@
+import json
 from typing import Literal
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ...logger import get_logger
 from ... import database as db
@@ -65,10 +66,35 @@ class SettingsPayload(BaseModel):
     siglip_enabled: Literal["0", "1"] | None = None
     siglip_threshold: str | None = Field(None, pattern=r"^(0(\.\d+)?|1(\.0+)?)$")
     siglip_min_hits: str | None = Field(None, pattern=r"^[1-9]$")
+    ignore_credits: Literal["0", "1"] | None = None
+    inference_threads: str | None = Field(None, pattern=r"^([0-9]|[1-5][0-9]|6[0-4])$")
+    # JSON {LABEL: 0..1}; a label left out inherits the global threshold.
+    label_thresholds: str | None = None
+    siglip_label_thresholds: str | None = None
     hw_decode: Literal["0", "1"] | None = None
     hover_previews_enabled: Literal["0", "1"] | None = None
     hover_window_start: str | None = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     hover_window_end: str | None = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+    @field_validator("label_thresholds", "siglip_label_thresholds")
+    @classmethod
+    def _valid_threshold_map(cls, value: str | None) -> str | None:
+        """Reject anything but a JSON object of known label -> number in 0..1."""
+        if value is None:
+            return value
+        try:
+            parsed = json.loads(value)
+        except ValueError as exc:
+            raise ValueError("must be a JSON object") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("must be a JSON object")
+        for label, threshold in parsed.items():
+            if label not in DETECTOR_LABELS:
+                raise ValueError(f"unknown label {label!r}")
+            if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0 <= threshold <= 1:
+                raise ValueError(f"threshold for {label} must be a number between 0 and 1")
+        return value
 
 
 class ValidateModelPathPayload(BaseModel):
@@ -101,11 +127,13 @@ async def update_settings(payload: SettingsPayload):
     
     # Check if scan_workers is being changed
     scan_workers_changed = False
-    if "scan_workers" in data:
-        current_workers = await db.get_setting("scan_workers", "2")
-        if data["scan_workers"] != current_workers:
-            scan_workers_changed = True
-            logger.info("Scan workers changing from %s to %s", current_workers, data["scan_workers"])
+    # A new thread cap only reaches inference sessions when the pool is rebuilt.
+    for key, fallback in (("scan_workers", "2"), ("inference_threads", "0")):
+        if key in data:
+            current = await db.get_setting(key, fallback)
+            if data[key] != current:
+                scan_workers_changed = True
+                logger.info("%s changing from %s to %s", key, current, data[key])
     
     await db.update_settings(data)
 
