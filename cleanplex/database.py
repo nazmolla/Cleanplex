@@ -1025,12 +1025,35 @@ async def get_segment_counts_by_rating_for_label(label: str) -> list[dict]:
     return [{"content_rating": row["content_rating"] or "Unrated", "count": row["count"]} for row in rows]
 
 
+# Whitelisted ORDER BY columns for the analytics lists; the sort name from a query
+# string never reaches SQL except through this map. "marked" applies to false positives.
+_SEGMENT_SORT_COLUMNS = {"score": "s.confidence", "added": "s.created_at"}
+
+
+def _segment_order(sort: str, order: str) -> str:
+    """Return an ORDER BY body for sort in score/added and order in asc/desc.
+
+    s.id breaks ties the same way in both directions so OFFSET paging neither
+    repeats nor skips rows. Raises ValueError for anything not whitelisted.
+    """
+    column = _SEGMENT_SORT_COLUMNS.get(sort)
+    direction = {"asc": "ASC", "desc": "DESC"}.get(order)
+    if column is None or direction is None:
+        raise ValueError(f"unsupported sort {sort!r} / order {order!r}")
+    return f"{column} {direction}, s.id {direction}"
+
+
 async def get_segments_for_labels(
     labels: list[str],
     limit: int = 100,
     offset: int = 0,
+    sort: str = "score",
+    order: str = "desc",
 ) -> list[dict]:
-    """Return segments (with scan_job metadata) that contain any of the given labels."""
+    """Return segments (with scan_job metadata) that contain any of the given labels.
+
+    Ordered by sort ("score" = confidence, "added" = created_at) and order.
+    """
     if not labels:
         return []
     async with get_connection() as conn:
@@ -1046,7 +1069,7 @@ async def get_segments_for_labels(
             FROM segments s
             JOIN scan_jobs j ON j.plex_guid = s.plex_guid
             WHERE ({conditions}) AND COALESCE(s.false_positive, 0) = 0
-            ORDER BY s.confidence DESC
+            ORDER BY {_segment_order(sort, order)}
             LIMIT ? OFFSET ?
             """,
             params,
@@ -1054,16 +1077,27 @@ async def get_segments_for_labels(
         return [dict(r) for r in rows]
 
 
-async def get_false_positive_segments(limit: int, offset: int) -> list[dict]:
-    """Return segments marked as false positives, most recently marked first.
+async def get_false_positive_segments(
+    limit: int, offset: int, sort: str = "marked", order: str = "desc"
+) -> list[dict]:
+    """Return segments marked as false positives, by default most recently marked first.
+
+    sort is "marked" (time of the latest mark), "score" or "added"; order asc/desc.
 
     Same columns as get_segments_for_labels plus marked_at, the time of the
     latest mark in segment_feedback (NULL for rows marked by a rescan's overlap
     check before feedback rows existed).
     """
+    if sort == "marked":
+        if order not in ("asc", "desc"):
+            raise ValueError(f"unsupported order {order!r}")
+        direction = order.upper()
+        order_by = f"marked_at IS NULL, marked_at {direction}, s.id {direction}"
+    else:
+        order_by = _segment_order(sort, order)
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            """
+            f"""
             SELECT s.id, s.plex_guid, s.title, s.start_ms, s.end_ms,
                    s.confidence, s.labels, s.thumbnail_path, s.source, s.detector,
                    s.hover_status, j.content_rating, j.media_type, j.rating_key,
@@ -1073,7 +1107,7 @@ async def get_false_positive_segments(limit: int, offset: int) -> list[dict]:
             FROM segments s
             JOIN scan_jobs j ON j.plex_guid = s.plex_guid
             WHERE COALESCE(s.false_positive, 0) = 1
-            ORDER BY marked_at IS NULL, marked_at DESC, s.id DESC
+            ORDER BY {order_by}
             LIMIT ? OFFSET ?
             """,
             (limit, offset),
