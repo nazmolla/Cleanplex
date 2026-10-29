@@ -295,6 +295,9 @@ async def init_db() -> None:
             # Labels a user corrected a segment to (verdict 'relabeled'); `labels` keeps
             # what the detector said, so the pair is a confusion sample (#125).
             "ALTER TABLE segment_feedback ADD COLUMN corrected_labels TEXT DEFAULT ''",
+            # Which scanner revision finished the scan (scanner.SCAN_VERSION), so a rescan can
+            # be aimed at titles scanned before a change (#138). 0 = scanned before it existed.
+            "ALTER TABLE scan_jobs ADD COLUMN scan_version INTEGER DEFAULT 0",
             "ALTER TABLE scan_jobs ADD COLUMN content_rating TEXT DEFAULT ''",
             "ALTER TABLE scan_jobs ADD COLUMN media_type TEXT DEFAULT 'movie'",
             "ALTER TABLE scan_jobs ADD COLUMN force_scan INTEGER DEFAULT 0",
@@ -1319,7 +1322,9 @@ async def update_scan_job_status(
     status: str,
     progress: float = 0.0,
     error_msg: str | None = None,
+    scan_version: int | None = None,
 ) -> None:
+    """Set a job's status and progress; a finished scan also records the scanner revision."""
     async with get_connection() as conn:
         if status == "scanning":
             await conn.execute(
@@ -1328,8 +1333,9 @@ async def update_scan_job_status(
             )
         elif status in ("done", "failed"):
             await conn.execute(
-                "UPDATE scan_jobs SET status=?, progress=?, finished_at=CURRENT_TIMESTAMP, error_msg=? WHERE plex_guid=?",
-                (status, progress, error_msg, plex_guid),
+                "UPDATE scan_jobs SET status=?, progress=?, finished_at=CURRENT_TIMESTAMP, error_msg=?, "
+                "scan_version=COALESCE(?, scan_version) WHERE plex_guid=?",
+                (status, progress, error_msg, scan_version if status == "done" else None, plex_guid),
             )
         else:
             await conn.execute(
@@ -1337,6 +1343,72 @@ async def update_scan_job_status(
                 (status, progress, plex_guid),
             )
         await conn.commit()
+
+
+RESCAN_SCOPES = ("outdated", "with_segments", "all_scanned", "scanned_before")
+
+
+async def get_rescan_candidates(
+    scope: str,
+    current_version: int,
+    library_id: str | None = None,
+    before: str | None = None,
+) -> list[dict]:
+    """Return finished, non-ignored scan jobs matching a rescan scope.
+
+    outdated: scanned by an older scanner revision than current_version; with_segments: has at
+    least one active segment; all_scanned: every finished title; scanned_before: finished before
+    the SQLite timestamp *before*. Optionally limited to one library. Pending, scanning and failed
+    jobs are never returned. Raises ValueError for an unknown scope or a missing date.
+    """
+    if scope not in RESCAN_SCOPES:
+        raise ValueError(f"unknown rescan scope {scope!r}")
+    where = ["j.status = 'done'", "COALESCE(j.ignored, 0) = 0"]
+    params: list = []
+    if scope == "outdated":
+        where.append("COALESCE(j.scan_version, 0) < ?")
+        params.append(current_version)
+    elif scope == "with_segments":
+        where.append(f"EXISTS (SELECT 1 FROM segments s WHERE s.plex_guid = j.plex_guid AND {_ACTIVE_S})")
+    elif scope == "scanned_before":
+        if not before:
+            raise ValueError("scanned_before needs a date")
+        where.append("j.finished_at < ?")
+        params.append(before)
+    if library_id:
+        where.append("j.library_id = ?")
+        params.append(library_id)
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            f"SELECT j.plex_guid, j.library_id, j.content_rating, j.ignored FROM scan_jobs j WHERE {' AND '.join(where)}",
+            params,
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_show_episode_jobs(show_guid: str = "", show_title: str = "", library_id: str | None = None) -> list[dict]:
+    """Return a show's non-ignored episode jobs, by show GUID or, failing that, by "<show> – " title.
+
+    Some episodes carry no show GUID, so the title prefix ("Show – Season – Episode") is the fallback.
+    """
+    async with get_connection() as conn:
+        rows: list = []
+        if show_guid:
+            rows = await conn.execute_fetchall(
+                "SELECT plex_guid, library_id, content_rating, ignored, status FROM scan_jobs "
+                "WHERE show_guid = ? AND COALESCE(ignored, 0) = 0",
+                (show_guid,),
+            )
+        if not rows and show_title:
+            escaped = show_title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            sql = ("SELECT plex_guid, library_id, content_rating, ignored, status FROM scan_jobs "
+                   "WHERE media_type = 'episode' AND title LIKE ? ESCAPE '\\' AND COALESCE(ignored, 0) = 0")
+            params: list = [f"{escaped} – %"]
+            if library_id:
+                sql += " AND library_id = ?"
+                params.append(library_id)
+            rows = await conn.execute_fetchall(sql, params)
+        return [dict(r) for r in rows]
 
 
 async def update_part_files(plex_guid: str, part_files: str) -> None:
@@ -1359,18 +1431,20 @@ async def reset_scan_job(plex_guid: str) -> None:
 
 
 async def reset_scan_jobs(plex_guids: list[str]) -> int:
-    """Mark many jobs pending in one UPDATE; returns how many rows matched."""
-    if not plex_guids:
-        return 0
-    placeholders = ",".join("?" * len(plex_guids))
+    """Mark many jobs pending (in chunks, within SQLite's variable limit); returns how many matched."""
+    total = 0
     async with get_connection() as conn:
-        cursor = await conn.execute(
-            "UPDATE scan_jobs SET status='pending', progress=0, started_at=NULL, finished_at=NULL, "
-            f"error_msg=NULL WHERE plex_guid IN ({placeholders})",
-            plex_guids,
-        )
+        for i in range(0, len(plex_guids), 500):
+            chunk = plex_guids[i:i + 500]
+            placeholders = ",".join("?" * len(chunk))
+            cursor = await conn.execute(
+                "UPDATE scan_jobs SET status='pending', progress=0, started_at=NULL, finished_at=NULL, "
+                f"error_msg=NULL WHERE plex_guid IN ({placeholders})",
+                chunk,
+            )
+            total += cursor.rowcount
         await conn.commit()
-        return cursor.rowcount
+    return total
 
 
 async def reset_interrupted_scans() -> int:

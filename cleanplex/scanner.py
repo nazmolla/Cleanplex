@@ -38,6 +38,11 @@ THUMBNAILS_DIR: Path = Path.home() / ".cleanplex" / "thumbnails"
 MODELS_DIR: Path = Path.home() / ".cleanplex" / "models"
 # Minimum gap between scan_progress events per scan; the UI bar needs no finer.
 PROGRESS_EVENT_INTERVAL_S = 2.0
+# Revision of what a scan produces. Bump it when a change means existing results are worth
+# redoing (thresholds, prompts, severity, thumbnails and bounds), so "rescan outdated titles"
+# can find what an older scanner finished (#138). 1: per-label thresholds, credits skip, SigLIP
+# credit prompts. 2: severity from labels. 3: dense re-sample of flagged windows.
+SCAN_VERSION = 3
 
 # Detection models are cached per thread (threading.local), so the number of
 # threads running inference is the number of model copies held in memory. A pool
@@ -954,7 +959,7 @@ async def scan_video(plex_guid: str, config) -> None:
             await _flush_cluster()
             part_time_offset_ms += part_duration_ms
 
-        await db.update_scan_job_status(plex_guid, "done", progress=1.0)
+        await db.update_scan_job_status(plex_guid, "done", progress=1.0, scan_version=SCAN_VERSION)
 
         if rating_key:
             try:

@@ -1,4 +1,5 @@
 import json
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -26,6 +27,23 @@ class ScanTitlesRequest(BaseModel):
     # well under this.
     plex_guids: list[str] = Field(min_length=1, max_length=5000)
     now: bool = False
+
+
+class ScanShowRequest(BaseModel):
+    """Request body for rescanning every episode of a show, with or without detected segments."""
+    show_guid: str = ""
+    # Fallback for episodes that carry no show GUID: match "<show> – ..." titles in the library.
+    show_title: str = ""
+    library_id: str | None = None
+    now: bool = False
+
+
+class BulkRescanRequest(BaseModel):
+    """Request body for rescanning many titles chosen by scope rather than by name (#138)."""
+    scope: Literal["outdated", "with_segments", "all_scanned", "scanned_before"]
+    library_id: str | None = None
+    before: str | None = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="YYYY-MM-DD, UTC; for scanned_before")
+    dry_run: bool = False
 
 
 class ScanLibraryRequest(BaseModel):
@@ -101,6 +119,17 @@ async def scan_title(body: ScanTitleRequest):
     return {"ok": True, "queued": plex_guid}
 
 
+async def _queue_rescan(guids: list[str], now: bool) -> None:
+    """Reset the jobs and queue them: now jumps the queue, otherwise they wait for the scan window."""
+    await db.reset_scan_jobs(guids)
+    for guid in guids:
+        if now:
+            await scan_mod.force_scan_job(guid)
+        else:
+            await scan_mod.enqueue(guid)
+    events.publish("scanner_changed")
+
+
 @router.post("/titles")
 async def scan_titles(body: ScanTitlesRequest):
     """Rescan titles that already have scan jobs. now=true jumps the queue; otherwise
@@ -111,15 +140,56 @@ async def scan_titles(body: ScanTitlesRequest):
     if not known:
         raise HTTPException(status_code=404, detail="None of these titles have scan jobs")
 
-    await db.reset_scan_jobs(known)
-    for guid in known:
-        if body.now:
-            await scan_mod.force_scan_job(guid)
-        else:
-            await scan_mod.enqueue(guid)
+    await _queue_rescan(known, body.now)
     logger.info("Queued %d titles for rescan (now=%s)", len(known), body.now)
-    events.publish("scanner_changed")
     return {"ok": True, "queued": len(known), "missing": [g for g in guids if g not in jobs]}
+
+
+@router.post("/show")
+async def scan_show(body: ScanShowRequest):
+    """Rescan every non-ignored episode of a show, including episodes with no segments.
+
+    An episode being scanned right now is left to finish rather than reset under its worker.
+    """
+    if not body.show_guid and not body.show_title:
+        raise HTTPException(status_code=422, detail="show_guid or show_title is required")
+    jobs = await db.get_show_episode_jobs(body.show_guid, body.show_title, body.library_id)
+    if not jobs:
+        raise HTTPException(status_code=404, detail="No episodes of this show have scan jobs")
+    guids = [j["plex_guid"] for j in jobs if j["status"] != "scanning"]
+    await _queue_rescan(guids, body.now)
+    logger.info("Queued %d episodes of '%s' for rescan (now=%s)", len(guids), body.show_title or body.show_guid, body.now)
+    return {"ok": True, "queued": len(guids), "already_scanning": len(jobs) - len(guids)}
+
+
+@router.post("/rescan")
+async def bulk_rescan(body: BulkRescanRequest):
+    """Queue every finished title matching a scope for a scheduled rescan.
+
+    Goes through the normal queue (ordered, scan window, rating filters), never the force queue,
+    so a large batch cannot crowd out a title someone asked for. dry_run reports the counts only.
+    """
+    if body.scope == "scanned_before" and not body.before:
+        raise HTTPException(status_code=422, detail="scanned_before needs a date")
+    candidates = await db.get_rescan_candidates(
+        body.scope, scan_mod.SCAN_VERSION, body.library_id, f"{body.before} 00:00:00" if body.before else None
+    )
+    excluded = set(json.loads(await db.get_setting("excluded_library_ids", "[]")))
+    ratings = set(json.loads(await db.get_setting("scan_ratings", "[]")))
+    eligible = [j["plex_guid"] for j in candidates if scan_mod.is_scan_eligible(j, excluded, ratings)]
+    if not body.dry_run and eligible:
+        await db.reset_scan_jobs(eligible)
+        # Rebuilds the normal queue in priority order and keeps the force queue as it is.
+        await scan_mod.enqueue_pending()
+        events.publish("scanner_changed")
+        logger.info("Queued %d titles for a scheduled rescan (scope=%s)", len(eligible), body.scope)
+    return {
+        "ok": True,
+        "matched": len(candidates),
+        "queued": len(eligible),
+        "skipped_ineligible": len(candidates) - len(eligible),
+        "dry_run": body.dry_run,
+    }
 
 
 @router.post("/library/{library_id}")

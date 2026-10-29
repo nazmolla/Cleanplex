@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import { CheckCircle2, XCircle, Loader2, Eye, EyeOff, RotateCcw } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { UsersPanel } from './Users'
+import BulkRescan from '../components/BulkRescan'
 
 interface Settings {
   plex_url: string
@@ -468,6 +469,15 @@ export default function SettingsPage() {
                   </Field>
                 </div>
       </section>
+              <section>
+                <h2 className={h2Cls}>Rescan Titles</h2>
+                <p className="text-xs text-gray-500 mb-4">
+                  Queue many titles to be scanned again, for example after an update to the detector. They wait for the scan
+                  window like any scheduled scan, in the usual order, and their current segments stay in use until the new scan
+                  replaces them.
+                </p>
+                <BulkRescan libraries={libraries} />
+              </section>
               <section>
                 <h2 className={h2Cls}>Hover Previews</h2>
                 <p className="text-xs text-gray-500 mb-4">

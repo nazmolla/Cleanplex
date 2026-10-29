@@ -18,6 +18,8 @@ interface Title {
   plex_guid: string
   title: string
   status: string
+  /** Episodes only; empty when Plex did not give one. */
+  show_guid?: string
   finished_at?: string | null
   thumb_url: string
   segment_count: number
@@ -220,16 +222,21 @@ export default function Segments() {
   const [scanMenu, setScanMenu] = useState<ScanTarget | null>(null)
   const [scanNotice, setScanNotice] = useState('')
 
-  const openScanMenu = (e: React.MouseEvent, label: string, guids: string[]) => {
+  const openScanMenu = (e: React.MouseEvent, label: string, guids: string[], wholeShow?: ScanTarget['wholeShow']) => {
     e.preventDefault()
-    setScanMenu({ x: e.clientX, y: e.clientY, label, guids })
+    setScanMenu({ x: e.clientX, y: e.clientY, label, guids, wholeShow })
   }
 
   // One batch request per menu action, however many episodes a show has.
-  const rescan = async (target: ScanTarget, now: boolean) => {
+  const rescan = async (target: ScanTarget, now: boolean, whole = false) => {
     try {
-      const r = await api.post<{ queued: number }>('/api/scan/titles', { plex_guids: target.guids, now })
-      setScanNotice(`${target.label}: ${r.queued} title${r.queued === 1 ? '' : 's'} queued ${now ? 'to scan now' : 'for tonight'}`)
+      const r = whole && target.wholeShow
+        ? await api.post<{ queued: number }>('/api/scan/show', {
+            show_guid: target.wholeShow.showGuid, show_title: target.wholeShow.showTitle,
+            library_id: target.wholeShow.libraryId ?? null, now,
+          })
+        : await api.post<{ queued: number }>('/api/scan/titles', { plex_guids: target.guids, now })
+      setScanNotice(`${target.label}${whole ? ' (whole show)' : ''}: ${r.queued} title${r.queued === 1 ? '' : 's'} queued ${now ? 'to scan now' : 'for tonight'}`)
     } catch (err: any) {
       setScanNotice(`Could not queue ${target.label}: ${err.message || 'unknown error'}`)
     }
@@ -626,7 +633,14 @@ export default function Segments() {
                     buildShowGroups().map(showGroup => (
                       <div key={showGroup.show}>
                         <div
-                          onContextMenu={e => openScanMenu(e, showGroup.show, showGroup.seasons.flatMap(s => s.episodes.map(t => t.plex_guid)))}
+                          onContextMenu={e => {
+                            const episodes = showGroup.seasons.flatMap(s => s.episodes)
+                            openScanMenu(e, showGroup.show, episodes.map(t => t.plex_guid), {
+                              showGuid: episodes.find(t => t.show_guid)?.show_guid ?? '',
+                              showTitle: showGroup.show,
+                              libraryId: selectedLib?.id,
+                            })
+                          }}
                           className={`flex items-center gap-0.5 rounded text-xs transition-colors ${selectedGroup?.label === showGroup.show ? 'bg-white/10' : 'hover:bg-white/5'}`}
                         >
                           <button
