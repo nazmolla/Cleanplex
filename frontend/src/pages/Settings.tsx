@@ -143,6 +143,8 @@ export default function SettingsPage() {
   const [modelValidationResult, setModelValidationResult] = useState<{ ok: boolean; message: string } | null>(null)
   const [showToken, setShowToken] = useState(false)
   const [libraries, setLibraries] = useState<Library[]>([])
+  // Segments stored before dense re-sampling that the background job has not reached yet (#141).
+  const [refineRemaining, setRefineRemaining] = useState(0)
   const [detectorLabels, setDetectorLabels] = useState<string[]>([])
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
   const [syncForm, setSyncForm] = useState({ sync_enabled: false, instance_name: '' })
@@ -167,7 +169,9 @@ export default function SettingsPage() {
       api.get<{ libraries: Library[] }>('/api/libraries').catch(() => ({ libraries: [] })),
       api.get<{ labels: string[] }>('/api/settings/detector-labels').catch(() => ({ labels: [] })),
       api.get<SyncStatus>('/api/sync/status').catch(() => null),
-    ]).then(([settings, libs, labels, sync]) => {
+      api.get<{ remaining: number; enabled: boolean }>('/api/segments/refine-status').catch(() => null),
+    ]).then(([settings, libs, labels, sync, refine]) => {
+      setRefineRemaining(refine?.enabled ? refine.remaining : 0)
       setForm({ ...DEFAULT, ...settings })
       setLibraries(libs.libraries)
       setDetectorLabels(labels.labels)
@@ -722,6 +726,12 @@ export default function SettingsPage() {
                 <Field label="Refinement Step (ms)" hint="After a segment is found, its window is re-checked this finely to pick the best thumbnail and catch scenes that start or run on between samples. Smaller is more precise and slower for every flagged segment; 0 turns it off.">
                             <input type="number" min="0" max="5000" step="100" value={form.refine_step_ms} onChange={set('refine_step_ms')} className={inputCls} />
                           </Field>
+                {refineRemaining > 0 && (
+                  <p className="text-xs text-gray-400 lg:col-span-2" role="status">
+                    {refineRemaining.toLocaleString()} existing segment{refineRemaining === 1 ? ' is' : 's are'} still waiting to
+                    be refined. A background job re-checks each one's thumbnail and bounds, one at a time, inside the scan window.
+                  </p>
+                )}
                 <Field label="Minimum Hits Per Segment" hint="Require at least this many flagged frames in a cluster to keep a segment. Increase to reduce false positives.">
                             <input type="number" min="1" max="6" step="1" value={form.segment_min_hits} onChange={set('segment_min_hits')} className={inputCls} />
                           </Field>
