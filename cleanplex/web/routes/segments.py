@@ -628,6 +628,13 @@ async def set_segment_false_positive(segment_id: int, body: FalsePositiveUpdate)
     return {"ok": True, "segment_id": segment_id, "false_positive": body.false_positive}
 
 
+@router.get("/segments/refine-status")
+async def get_refine_status():
+    """How many stored segments still wait for the dense re-sample backfill (#141)."""
+    step = int(await db.get_setting("refine_step_ms", "500") or 0)
+    return {"remaining": await db.count_segments_to_refine(), "enabled": step > 0}
+
+
 class LabelsUpdate(BaseModel):
     labels: list[str] = Field(min_length=1, max_length=len(DETECTOR_LABELS))
 

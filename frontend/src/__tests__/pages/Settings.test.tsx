@@ -210,6 +210,23 @@ describe('Settings sections', () => {
     expect(mockApi.put.mock.calls[0][1].refine_step_ms).toBe('250')
   })
 
+  it('says how many existing segments still wait for refinement (#141)', async () => {
+    mockApi.get.mockImplementation((path: string) => {
+      if (path.includes('refine-status')) return Promise.resolve({ remaining: 3358, enabled: true })
+      if (path.includes('detector-labels')) return Promise.resolve({ labels: [] })
+      if (path.includes('sync/status')) return Promise.resolve(null)
+      if (path.includes('settings')) return Promise.resolve(defaultSettings)
+      if (path.includes('libraries')) return Promise.resolve({ libraries: [] })
+      return Promise.resolve({})
+    })
+    renderSettings()
+    await waitFor(() => screen.getByDisplayValue('http://plex:32400'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Segments' }))
+
+    expect(screen.getByRole('status')).toHaveTextContent('3,358 existing segments are still waiting to be refined')
+  })
+
   it('shows Users as a section without the Save bar (#118)', async () => {
     render(<MemoryRouter initialEntries={['/settings?section=users']}><Settings /></MemoryRouter>)
     await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument())
