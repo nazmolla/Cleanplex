@@ -102,3 +102,13 @@ async def test_db_rejects_unwhitelisted_sort_before_building_sql():
         await db.get_segments_for_labels([LABEL], sort="confidence; DROP TABLE segments")
     with pytest.raises(ValueError):
         await db.get_false_positive_segments(10, 0, sort="marked", order="sideways")
+
+
+async def test_analytics_rows_carry_the_thumbnail_time(http_client):
+    await db.upsert_scan_job(plex_guid="g", title="T", file_path="/m.mkv", rating_key="7",
+                             library_id="l", library_title="L")
+    await db.insert_segment("g", "T", 10_000, 20_000, labels=LABEL, thumbnail_ms=14_000)
+
+    resp = await http_client.get(f"/api/analytics/segments?labels={LABEL}")
+
+    assert resp.json()["segments"][0]["thumbnail_ms"] == 14_000

@@ -264,17 +264,49 @@ async def extract_frames_batch(
             yield item
 
 
+async def extract_frames_window(
+    file_path: str,
+    start_ms: int,
+    length_ms: int,
+    step_ms: int,
+    size: int = 320,
+    hardware: bool = False,
+) -> AsyncGenerator[tuple[int, bytes | None], None]:
+    """Yield (offset_ms, jpeg_bytes) every step_ms across [start_ms, start_ms + length_ms).
+
+    Like extract_frames_batch but for one short window: ffmpeg seeks to the window
+    instead of decoding from the start, so re-sampling a flagged scene costs time
+    proportional to the scene, not to the film (#133). Offsets are absolute positions in
+    *file_path*. A hardware decoder that yields nothing is retried in software.
+    """
+    end_ms = start_ms + length_ms
+    produced = False
+    try:
+        async for item in _frame_stream(file_path, step_ms, end_ms, size, hardware, start_ms, length_ms):
+            produced = True
+            yield item
+    except FrameStreamStalled:
+        if produced or not hardware:
+            raise
+    if hardware and not produced:
+        async for item in _frame_stream(file_path, step_ms, end_ms, size, False, start_ms, length_ms):
+            yield item
+
+
 async def _frame_stream(
     file_path: str, step_ms: int, duration_ms: int, size: int, hardware: bool,
+    start_ms: int = 0, length_ms: int | None = None,
 ) -> AsyncGenerator[tuple[int, bytes | None], None]:
-    """One ffmpeg run of extract_frames_batch."""
+    """One ffmpeg run of extract_frames_batch (or, with start_ms/length_ms, of one window)."""
     # Express step as a rational fps fraction to avoid float rounding (e.g. 1000/5000).
     fps_str = f"1000/{step_ms}"
     cmd = [
         _FFMPEG_BIN,
         "-loglevel", "error",
         *(["-hwaccel", "auto"] if hardware else []),
+        *(["-ss", f"{start_ms / 1000:.3f}"] if start_ms else []),
         "-i", file_path,
+        *(["-t", f"{length_ms / 1000:.3f}"] if length_ms is not None else []),
         "-vf", f"fps={fps_str},scale={size}:{size}:force_original_aspect_ratio=decrease:force_divisible_by=2",
         "-f", "image2pipe",
         "-vcodec", "mjpeg",
@@ -287,7 +319,7 @@ async def _frame_stream(
     )
 
     buffer = bytearray()
-    offset_ms = 0
+    offset_ms = start_ms
     # SOI / EOI byte sequences that delimit each JPEG in the MJPEG stream.
     SOI = b"\xff\xd8"
     EOI = b"\xff\xd9"

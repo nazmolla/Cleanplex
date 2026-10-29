@@ -47,7 +47,7 @@ async def _scan(nudenet_hits: set[int], siglip_hits: set[int], frames=20, enable
         seen.append(i)
         return (0.8, "BUTTOCKS_EXPOSED") if i in siglip_hits else (0.1, "FEMALE_BREAST_EXPOSED")
 
-    config = replace(Config(), scan_step_ms=STEP, segment_gap_ms=1500, segment_min_hits=1,
+    config = replace(Config(), refine_step_ms=0, scan_step_ms=STEP, segment_gap_ms=1500, segment_min_hits=1,
                      siglip_enabled=enabled, siglip_threshold=0.5, siglip_min_hits=2, hw_decode=hw)
     with patch.object(scanner, "extract_frames_batch", frames_gen), \
          patch.object(scanner, "get_duration_ms", AsyncMock(return_value=frames * STEP)), \
