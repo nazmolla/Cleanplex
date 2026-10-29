@@ -80,6 +80,7 @@ def _segment_payload(seg: dict) -> dict:
         "labels": seg.get("labels") or "",
         "source": seg.get("source") or "scanner",
         "detector": seg.get("detector") or "",
+        "thumbnail_ms": seg.get("thumbnail_ms"),
         "has_thumbnail": bool(seg.get("thumbnail_path")),
         "thumbnail_url": f"/api/thumbnails/{seg['id']}" if seg.get("thumbnail_path") else "",
         "hover_url": f"/api/segments/{seg['id']}/hover" if seg.get("hover_status") == "done" else "",

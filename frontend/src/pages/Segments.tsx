@@ -4,6 +4,7 @@ import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import FalsePositiveButton, { FalsePositiveTag } from '../components/FalsePositiveButton'
 import RelabelButton from '../components/RelabelButton'
+import ThumbnailTime from '../components/ThumbnailTime'
 import ScanContextMenu, { ScanTarget } from '../components/ScanContextMenu'
 import { Film, Tv, ChevronRight, ChevronDown, Trash2, AlertTriangle, SkipForward, Play, Tv2 } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
@@ -32,6 +33,8 @@ interface Segment {
   confidence: number
   has_thumbnail: boolean
   thumbnail_url: string
+  /** Film time the thumbnail frame was taken at (#133). */
+  thumbnail_ms?: number | null
   /** Short silent loop played on hover; empty until rendered (#114). */
   hover_url?: string
   created_at: string
@@ -156,6 +159,7 @@ function SegmentCard({
         <div className="absolute bottom-1 left-1 bg-black/70 text-xs text-gray-300 px-1.5 py-0.5 rounded">
           {Math.round(seg.confidence * 100)}%
         </div>
+        <ThumbnailTime ms={seg.thumbnail_ms} />
       </HoverPreview>
       <div className="flex-1 p-3 sm:p-4 flex items-center justify-between gap-3">
         <div className="min-w-0">

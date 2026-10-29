@@ -256,6 +256,7 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 
 - **One NudeNet detector per thread.** Use `threading.local()` — never instantiate inside a tight frame loop.
 - **Scanner global state (`_queued_guids`, `_current_scan_guids`, `_paused`) is guarded by a lock** before mutation.
+- **Flagged windows are re-sampled densely before insert** (`_refine_cluster`): the thumbnail is the peak frame, bounds only grow, and a failure leaves the coarse result. A segment's kept-or-dropped decision stays with the coarse pass.
 - **Segments are clustered before DB insert.** Never insert a raw frame-level row; always cluster via `_cluster_frames` / `_flush_cluster`.
 
 ### 5.6 Frontend

@@ -28,6 +28,8 @@ class Config:
     nudenet_model_path: str = ""
     segment_gap_ms: int = 12000
     segment_min_hits: int = 1
+    # Re-sample each flagged window this finely for its thumbnail and bounds; 0 turns it off (#133).
+    refine_step_ms: int = 500
     # SigLIP fallback for frames NudeNet did not flag (siglip_detector.py).
     siglip_enabled: bool = False
     siglip_threshold: float = 0.3
@@ -104,6 +106,7 @@ class Config:
             nudenet_model_path=s.get("nudenet_model_path", ""),
             segment_gap_ms=int(s.get("segment_gap_ms", "12000")),
             segment_min_hits=int(s.get("segment_min_hits", "1")),
+            refine_step_ms=max(0, int(s.get("refine_step_ms", "500"))),
             siglip_enabled=s.get("siglip_enabled", "0") == "1",
             siglip_threshold=float(s.get("siglip_threshold", "0.3")),
             siglip_min_hits=max(1, int(s.get("siglip_min_hits", "2"))),

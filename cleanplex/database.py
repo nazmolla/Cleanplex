@@ -242,6 +242,8 @@ DEFAULT_SETTINGS = {
     "scan_workers": "2",
     "segment_gap_ms": "12000",
     "segment_min_hits": "1",
+    # Dense re-sample of each flagged window for thumbnail and bounds, in ms; 0 = off.
+    "refine_step_ms": "500",
     # SigLIP fallback: off by default because enabling it downloads ~815 MB of
     # model weights on the next scan. Its threshold is a softmax share, not a
     # NudeNet confidence, so it is tuned separately from confidence_threshold.
@@ -295,6 +297,9 @@ async def init_db() -> None:
             # Labels a user corrected a segment to (verdict 'relabeled'); `labels` keeps
             # what the detector said, so the pair is a confusion sample (#125).
             "ALTER TABLE segment_feedback ADD COLUMN corrected_labels TEXT DEFAULT ''",
+            # Absolute time of the frame saved as the segment's thumbnail (#133); NULL for
+            # segments scanned before it was recorded.
+            "ALTER TABLE segments ADD COLUMN thumbnail_ms INTEGER",
             "ALTER TABLE scan_jobs ADD COLUMN content_rating TEXT DEFAULT ''",
             "ALTER TABLE scan_jobs ADD COLUMN media_type TEXT DEFAULT 'movie'",
             "ALTER TABLE scan_jobs ADD COLUMN force_scan INTEGER DEFAULT 0",
@@ -820,6 +825,7 @@ async def insert_segment(
     channel: str = "both",
     source: str = "scanner",
     detector: str = "",
+    thumbnail_ms: int | None = None,
 ) -> int:
     """Insert one segment and return its row id.
 
@@ -829,10 +835,10 @@ async def insert_segment(
     async with get_connection() as conn:
         cursor = await conn.execute(
             "INSERT INTO segments(plex_guid, title, start_ms, end_ms, confidence, thumbnail_path, "
-            "labels, category, severity, action, channel, source, detector) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "labels, category, severity, action, channel, source, detector, thumbnail_ms) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (plex_guid, title, start_ms, end_ms, confidence, thumbnail_path, labels,
-             category, severity, action, channel, source, detector),
+             category, severity, action, channel, source, detector, thumbnail_ms),
         )
         segment_id = cursor.lastrowid
         # A rescan rewrites segments, so a window the user already marked as a false
@@ -1170,7 +1176,7 @@ async def get_segments_for_labels(
         rows = await conn.execute_fetchall(
             f"""
             SELECT s.id, s.plex_guid, s.title, s.start_ms, s.end_ms,
-                   s.confidence, s.labels, s.thumbnail_path, s.source, s.detector,
+                   s.confidence, s.labels, s.thumbnail_path, s.thumbnail_ms, s.source, s.detector,
                    s.hover_status, j.content_rating, j.media_type, j.rating_key,
                    j.show_rating_key
             FROM segments s
@@ -1206,7 +1212,7 @@ async def get_false_positive_segments(
         rows = await conn.execute_fetchall(
             f"""
             SELECT s.id, s.plex_guid, s.title, s.start_ms, s.end_ms,
-                   s.confidence, s.labels, s.thumbnail_path, s.source, s.detector,
+                   s.confidence, s.labels, s.thumbnail_path, s.thumbnail_ms, s.source, s.detector,
                    s.hover_status, j.content_rating, j.media_type, j.rating_key,
                    j.show_rating_key,
                    (SELECT MAX(f.created_at) FROM segment_feedback f
