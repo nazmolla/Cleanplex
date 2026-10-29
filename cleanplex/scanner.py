@@ -16,7 +16,7 @@ import httpx
 import cleanplex.plex_client as plex_mod
 
 from .frame_extractor import extract_frames_batch, get_duration_ms
-from . import events, siglip_detector
+from . import events, plex_summary, siglip_detector
 from .logger import get_logger
 from . import database as db
 from .importers._common import severity_for_labels
@@ -957,15 +957,7 @@ async def scan_video(plex_guid: str, config) -> None:
         await db.update_scan_job_status(plex_guid, "done", progress=1.0)
 
         if rating_key:
-            try:
-                client = plex_mod.get_client()
-                await client.update_cleanplex_summary(
-                    rating_key=rating_key,
-                    status="Scanned",
-                    segment_count=segments_inserted,
-                )
-            except Exception as exc:
-                logger.debug("Could not update Plex summary metadata for %s: %s", plex_guid, exc)
+            await plex_summary.refresh_now(plex_guid)
 
         logger.info("Scan complete: %s — found %d segment(s)", title, segments_inserted)
 

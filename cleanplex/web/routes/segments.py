@@ -18,6 +18,7 @@ from ... import database as db
 from ... import events
 from ... import frame_extractor
 from ... import hover_previews
+from ... import plex_summary
 from ...importers._common import DETECTOR_LABELS
 
 logger = get_logger(__name__)
@@ -25,7 +26,6 @@ router = APIRouter(prefix="/api", tags=["segments"])
 
 # Pending debounce tasks keyed by plex_guid — cancelled and replaced on each delete.
 # This ensures bulk deletes trigger at most one Plex metadata write per title.
-_pending_summary_tasks: dict[str, asyncio.Task] = {}
 
 # scan_labels changes only when the user edits Settings, so a 30-second TTL avoids
 # opening a second aiosqlite connection on every segment-panel expand.
@@ -50,45 +50,9 @@ def _invalidate_scan_labels_cache() -> None:
     _scan_labels_cache = None
 
 
-async def _do_refresh_summary(plex_guid: str) -> None:
-    """Perform the actual Plex summary metadata update after a short debounce delay."""
-    await asyncio.sleep(2)  # coalesce rapid sequential deletes
-    _pending_summary_tasks.pop(plex_guid, None)
-
-    try:
-        job = await db.get_scan_job_by_guid(plex_guid)
-        if not job:
-            return
-
-        rating_key = str(job.get("rating_key") or "")
-        if not rating_key:
-            return
-
-        # COUNT query — avoids loading all segment rows just to get the total.
-        segment_count = await db.count_segments_for_guid(plex_guid)
-        status = "Scanned" if job.get("status") == "done" else "Pending"
-
-        client = plex_mod.get_client()
-        await client.update_cleanplex_summary(
-            rating_key=rating_key,
-            status=status,
-            segment_count=segment_count,
-        )
-    except Exception as exc:
-        logger.debug("Could not refresh Plex summary for guid=%s: %s", plex_guid, exc)
-
-
 def _refresh_cleanplex_summary_for_guid(plex_guid: str) -> None:
-    """Schedule a debounced Plex summary refresh.
-
-    Any pending refresh for the same guid is cancelled before scheduling a new
-    one, so bulk deletes of N segments produce at most one metadata write.
-    """
-    existing = _pending_summary_tasks.pop(plex_guid, None)
-    if existing and not existing.done():
-        existing.cancel()
-    task = asyncio.create_task(_do_refresh_summary(plex_guid))
-    _pending_summary_tasks[plex_guid] = task
+    """Schedule a debounced refresh of the title's Cleanplex block in its Plex summary."""
+    plex_summary.refresh_soon(plex_guid)
 
 
 def _plex_image_proxy_url(path: str) -> str:
