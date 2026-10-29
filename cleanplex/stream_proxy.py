@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from urllib.parse import parse_qsl
 
 import httpx
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
@@ -42,6 +42,8 @@ _EXTINF = re.compile(r"#EXTINF:([\d.]+)")
 _RATING_KEY = re.compile(r"/library/metadata/(\d+)")
 _START_PATHS = {"/video/:/transcode/universal/start.m3u8", "/video/:/transcode/universal/start"}
 _DECISION_PATH = "/video/:/transcode/universal/decision"
+# Requests that carry the player position (milliseconds) for Plex to store as the resume point.
+_PROGRESS_PATHS = {"/:/timeline", "/:/progress"}
 _VARIANT = re.compile(r"^/video/:/transcode/universal/session/([^/]+)/base/index\.m3u8$")
 _SEGMENT = re.compile(r"^/video/:/transcode/universal/session/([^/]+)/base/(\d+)\.ts$")
 # Headers that describe one hop, not the message; they must not be copied through.
@@ -251,7 +253,12 @@ async def lan_client_controllable(client_id: str, remote_ip: str) -> bool:
     """
     from . import database as db
 
-    known = await db.get_client_control(client_id) if client_id else None
+    try:
+        known = await db.get_client_control(client_id) if client_id else None
+    except Exception as exc:
+        # A database that predates the registry (or is being migrated) must not break playback.
+        logger.warning("Client registry unavailable, guessing from the address: %s", exc)
+        known = None
     return known if known is not None else is_lan_address(remote_ip)
 
 
@@ -296,12 +303,18 @@ class PlexTvUsers:
         await self._client.aclose()
 
 
-def db_policy(pre_ms: int = 3000, post_ms: int = 3000, unknown_user_filtered: bool = True) -> Policy:
-    """The production policy: live-skip clients, filter switch and the viewer's own levels."""
+def db_policy(
+    pre_ms: int = 3000, post_ms: int = 3000, unknown_user_filtered: bool = True, ignore_client: bool = False
+) -> Policy:
+    """The production policy: live-skip clients, filter switch and the viewer's own levels.
+
+    *ignore_client* drops the first condition so a client live skipping reaches (a local Apple TV)
+    can still be put through the proxy, for testing.
+    """
     users = PlexTvUsers()
     return Policy(
         ranges_for=eligible_ranges(pre_ms, post_ms),
-        client_controllable=lan_client_controllable,
+        client_controllable=None if ignore_client else lan_client_controllable,
         resolve_user=users,
         filter_enabled=db_filter_enabled,
         unknown_user_filtered=unknown_user_filtered,
@@ -315,15 +328,18 @@ def create_proxy_app(
     token: str = "",
     transport: httpx.AsyncBaseTransport | None = None,
     trust_forwarded_for: bool = False,
+    ws_connect=None,
 ) -> FastAPI:
     """Build the proxy app. *token* is added to requests that carry none (local testing only).
 
     *trust_forwarded_for* takes the client address from X-Forwarded-For; enable it only
-    behind a proxy you control, since the header is otherwise client-supplied.
+    behind a proxy you control, since the header is otherwise client-supplied. *ws_connect*
+    opens the upstream WebSocket (defaults to the websockets library); tests inject a fake.
     """
     state: dict = {
         "sessions": {},  # Plex transcode session id -> _Session
         "decisions": OrderedDict(),  # session id -> Decision, bounded
+        "by_client": {},  # (client identifier, rating key) -> transcode session id, for progress reports
         "requests": deque(maxlen=5000),  # segment fetches: what the client really asked for
         "telemetry": deque(maxlen=2000),  # reports posted by the test page
     }
@@ -382,6 +398,30 @@ def create_proxy_app(
             state["decisions"].popitem(last=False)
         return decision
 
+    def _remap_progress(request: Request, params: dict[str, str]) -> None:
+        """Translate a progress report from the shortened stream's time back to the film's.
+
+        The player reports offset + elapsed in the edited stream; Plex must store the real
+        position or resume, history and "watched" would all land too early. The session is
+        found by its transcode session id, else by (client, title).
+        """
+        raw = params.get("time")
+        if raw is None or not str(raw).lstrip("-").isdigit():
+            return
+        session_id = request.headers.get("x-plex-session-identifier") or params.get("X-Plex-Session-Identifier", "")
+        session = state["sessions"].get(session_id)
+        if session is None:
+            client_id = params.get("X-Plex-Client-Identifier") or request.headers.get("x-plex-client-identifier", "")
+            rating_key = params.get("ratingKey", "")
+            if not rating_key and params.get("key"):
+                match = _RATING_KEY.search(params["key"])
+                rating_key = match.group(1) if match else ""
+            found = state["by_client"].get((client_id, rating_key))
+            session = state["sessions"].get(found) if found else None
+        if session is None or not session.spans:
+            return
+        params["time"] = str(edited_to_original(int(raw), session.spans))
+
     @app.get("/_proxy/report")
     async def report() -> JSONResponse:
         """Segment fetches and test-page telemetry recorded so far, for verifying a run."""
@@ -415,6 +455,45 @@ def create_proxy_app(
         page = page.replace("__MARKS__", ",".join(m for m in marks.split(",") if m.strip().isdigit()))
         return HTMLResponse(page.replace("__SCENARIO__", "true" if scenario else "false"))
 
+    @app.websocket("/{path:path}")
+    async def proxy_websocket(websocket: WebSocket, path: str) -> None:
+        """Pass Plex's notification socket through, so apps that rely on it keep working."""
+        await websocket.accept(subprotocol=(websocket.scope.get("subprotocols") or [None])[0])
+        query = websocket.url.query
+        upstream_url = plex_url.replace("http", "ws", 1).rstrip("/") + "/" + path + (f"?{query}" if query else "")
+        connect = ws_connect or _open_upstream_ws
+        try:
+            async with connect(upstream_url) as upstream:
+
+                async def down() -> None:
+                    async for message in upstream:
+                        if isinstance(message, bytes):
+                            await websocket.send_bytes(message)
+                        else:
+                            await websocket.send_text(message)
+
+                async def up() -> None:
+                    while True:
+                        message = await websocket.receive()
+                        if message["type"] == "websocket.disconnect":
+                            return
+                        if message.get("bytes") is not None:
+                            await upstream.send(message["bytes"])
+                        elif message.get("text") is not None:
+                            await upstream.send(message["text"])
+
+                tasks = [asyncio.create_task(down()), asyncio.create_task(up())]
+                _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in pending:
+                    task.cancel()
+        except Exception as exc:
+            logger.debug("WebSocket proxy to %s ended: %s", upstream_url.split("?")[0], exc)
+        finally:
+            try:
+                await websocket.close()
+            except RuntimeError:
+                pass  # already closed by the client
+
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"])
     async def proxy(path: str, request: Request) -> Response:
         """Forward to Plex, forcing HLS transcode on playback requests and editing variant playlists."""
@@ -433,6 +512,12 @@ def create_proxy_app(
                     state["sessions"][session_id] = _Session(
                         rating_key, offset_ms, ranges=decision.ranges, username=decision.username
                     )
+                    client_id = params.get("X-Plex-Client-Identifier") or request.headers.get("x-plex-client-identifier", "")
+                    if client_id:
+                        state["by_client"][(client_id, rating_key)] = session_id
+
+        if full_path in _PROGRESS_PATHS:
+            _remap_progress(request, params)
 
         variant = _VARIANT.match(full_path)
         if variant:
@@ -471,6 +556,13 @@ def create_proxy_app(
         )
 
     return app
+
+
+def _open_upstream_ws(url: str):
+    """Connect to Plex's WebSocket with the websockets library (a context manager)."""
+    import websockets
+
+    return websockets.connect(url, max_size=None)
 
 
 def _response_headers(upstream: httpx.Response, decoded: bool = True) -> dict[str, str]:
@@ -550,6 +642,17 @@ begin().then(() => SCENARIO && scenario()).catch(e => note('begin-failed', {msg:
 """
 
 
+def _lan_addresses() -> list[str]:
+    """This machine's private IPv4 addresses, for the "open this URL" hint."""
+    import socket
+
+    try:
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except OSError:
+        return []
+    return sorted({info[4][0] for info in infos if is_lan_address(info[4][0]) and not info[4][0].startswith("127.")})
+
+
 def main() -> None:
     """Run the proxy standalone: python -m cleanplex.stream_proxy --cuts 60000-75000."""
     import uvicorn
@@ -560,6 +663,9 @@ def main() -> None:
     parser.add_argument("--cuts", default="", help="ms ranges applied to every title, e.g. 60000-75000,300000-310000")
     parser.add_argument("--unknown-user-unfiltered", action="store_true",
                         help="leave a viewer alone when their Plex token cannot be resolved (default: treat as filtered)")
+    parser.add_argument("--force-inject", action="store_true",
+                        help="testing: edit streams even for clients live skipping reaches (skips condition 1)")
+    parser.add_argument("--no-migrate", action="store_true", help="do not run database migrations (use with a live database)")
     parser.add_argument("--trust-forwarded-for", action="store_true", help="take the client address from X-Forwarded-For")
     parser.add_argument("--db", default="", help="use each title's skip segments from this Cleanplex database instead of --cuts")
     parser.add_argument("--token", default=os.environ.get("PLEX_TOKEN", ""),
@@ -571,11 +677,15 @@ def main() -> None:
         from . import database as db
 
         db.set_db_path(Path(args.db))
-        asyncio.run(db.init_db())  # additive migrations: brings a copied database up to date
-        policy = db_policy(unknown_user_filtered=not args.unknown_user_unfiltered)
+        if not args.no_migrate:
+            asyncio.run(db.init_db())  # additive migrations: brings a copied database up to date
+        policy = db_policy(unknown_user_filtered=not args.unknown_user_unfiltered, ignore_client=args.force_inject)
     else:
         policy = Policy(ranges_for=static_ranges(parse_cuts(args.cuts)))
     app = create_proxy_app(args.plex, policy, args.token, trust_forwarded_for=args.trust_forwarded_for)
+    print(f"Stream proxy for {args.plex} on port {args.port}")
+    for address in _lan_addresses():
+        print(f"  Plex Web through the proxy: http://{address}:{args.port}/web")
     uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="info")
 
 

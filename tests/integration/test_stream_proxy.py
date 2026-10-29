@@ -243,3 +243,130 @@ async def test_report_lists_each_decision_with_its_reason(plex):
         await client.aclose()
         await ctx.__aexit__(None, None, None)
     assert report["decisions"][SESSION] == {"inject": False, "reason": "filtering is off for bob", "username": "bob"}
+
+
+# ── progress reports are translated back to the film's time ──────────────────────
+
+async def _playing(client):
+    """Start the session and fetch its playlist, so its cut spans (5-15 s) are known."""
+    await _start(client, **{"X-Plex-Client-Identifier": "tv-1"})
+    await client.get(f"{BASE}/index.m3u8")
+
+
+@pytest.mark.parametrize("path", ["/:/timeline", "/:/progress"])
+async def test_a_progress_report_after_a_cut_is_shifted_by_the_removed_time(proxy, plex, path):
+    client, _ = proxy
+    await _playing(client)
+
+    await client.get(path, params={"time": "20000", "ratingKey": "42", "X-Plex-Client-Identifier": "tv-1"})
+
+    assert plex.seen[-1].url.params["time"] == "30000"
+
+
+async def test_a_position_before_the_first_cut_is_unchanged(proxy, plex):
+    client, _ = proxy
+    await _playing(client)
+    await client.get("/:/timeline", params={"time": "3000", "ratingKey": "42", "X-Plex-Client-Identifier": "tv-1"})
+    assert plex.seen[-1].url.params["time"] == "3000"
+
+
+async def test_the_session_is_found_by_its_session_identifier_header(proxy, plex):
+    client, _ = proxy
+    await _playing(client)
+    await client.get("/:/timeline", params={"time": "20000"}, headers={"x-plex-session-identifier": SESSION})
+    assert plex.seen[-1].url.params["time"] == "30000"
+
+
+async def test_the_title_can_be_named_by_its_key(proxy, plex):
+    client, _ = proxy
+    await _playing(client)
+    await client.get("/:/timeline", params={"time": "20000", "key": "/library/metadata/42",
+                                            "X-Plex-Client-Identifier": "tv-1"})
+    assert plex.seen[-1].url.params["time"] == "30000"
+
+
+async def test_a_report_for_a_session_the_proxy_did_not_edit_passes_through(proxy, plex):
+    client, _ = proxy
+    await client.get("/:/timeline", params={"time": "20000", "ratingKey": "42", "X-Plex-Client-Identifier": "other"})
+    assert plex.seen[-1].url.params["time"] == "20000"
+
+
+async def test_a_non_numeric_time_and_other_requests_are_left_alone(proxy, plex):
+    client, _ = proxy
+    await _playing(client)
+    await client.get("/:/timeline", params={"time": "soon", "ratingKey": "42", "X-Plex-Client-Identifier": "tv-1"})
+    assert plex.seen[-1].url.params["time"] == "soon"
+    await client.get("/library/metadata/42", params={"time": "20000", "X-Plex-Client-Identifier": "tv-1"})
+    assert plex.seen[-1].url.params["time"] == "20000"
+
+
+async def test_a_client_left_alone_is_not_remapped(plex):
+    client, ctx = await _proxy(plex, _policy(controllable=True))
+    try:
+        await _start(client, **{"X-Plex-Client-Identifier": "tv-1"})
+        await client.get("/:/timeline", params={"time": "20000", "ratingKey": "42", "X-Plex-Client-Identifier": "tv-1"})
+    finally:
+        await client.aclose()
+        await ctx.__aexit__(None, None, None)
+    assert plex.seen[-1].url.params["time"] == "20000"
+
+
+# ── WebSocket passthrough ───────────────────────────────────────────────────────
+
+class FakeUpstreamSocket:
+    """Stands in for Plex's notification socket."""
+
+    def __init__(self, incoming):
+        self.incoming = list(incoming)
+        self.sent = []
+
+    def __aiter__(self):
+        return self._messages()
+
+    async def _messages(self):
+        for message in self.incoming:
+            yield message
+
+    async def send(self, message):
+        self.sent.append(message)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def test_the_notification_socket_is_passed_through_both_ways(plex):
+    from starlette.testclient import TestClient
+
+    upstream = FakeUpstreamSocket(['{"NotificationContainer": 1}', b"\x01\x02"])
+    urls = []
+
+    def connect(url):
+        urls.append(url)
+        return upstream
+
+    app = create_proxy_app("http://plex.test:32400", Policy(ranges_for=static_ranges([])), transport=httpx.MockTransport(plex),
+                           ws_connect=connect)
+    with TestClient(app) as client, client.websocket_connect("/:/websockets/notifications?X-Plex-Token=abc") as ws:
+        assert ws.receive_text() == '{"NotificationContainer": 1}'
+        assert ws.receive_bytes() == b"\x01\x02"
+        ws.send_text("hello")
+
+    assert urls == ["ws://plex.test:32400/:/websockets/notifications?X-Plex-Token=abc"]
+    assert upstream.sent in (["hello"], [])  # the client may close before the relay task runs
+
+
+def test_an_unreachable_upstream_socket_closes_the_client_cleanly(plex):
+    from starlette.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    def connect(url):
+        raise OSError("refused")
+
+    app = create_proxy_app("http://plex.test", Policy(ranges_for=static_ranges([])), transport=httpx.MockTransport(plex),
+                           ws_connect=connect)
+    with TestClient(app) as client, client.websocket_connect("/:/websockets/notifications") as ws:
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_text()

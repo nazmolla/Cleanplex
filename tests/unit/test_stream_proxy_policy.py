@@ -227,3 +227,23 @@ async def test_watcher_ignores_a_session_with_no_client_identifier():
     watcher._recorded_control.clear()
     await watcher._remember_client_control(_session(""))
     assert await db.get_client_control("") is None
+
+
+def test_force_inject_drops_the_client_condition_only():
+    from cleanplex.stream_proxy import db_policy
+
+    normal = db_policy()
+    forced = db_policy(ignore_client=True)
+    assert normal.client_controllable is not None
+    assert forced.client_controllable is None
+    assert forced.filter_enabled is not None and forced.resolve_user is not None
+
+
+@pytest.mark.usefixtures("setup_db")
+async def test_a_missing_client_registry_falls_back_to_the_address_guess(monkeypatch):
+    async def broken(client_id):
+        raise RuntimeError("no such table: client_control")
+
+    monkeypatch.setattr(db, "get_client_control", broken)
+    assert await lan_client_controllable("tv", "192.168.1.9") is True
+    assert await lan_client_controllable("tv", "93.184.216.34") is False
