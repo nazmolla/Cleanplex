@@ -72,3 +72,69 @@ describe('Segments live refresh (#81, #89)', () => {
     })
   })
 })
+
+
+describe('Segments right-click rescans (#137)', () => {
+  const tvTitles = [
+    { plex_guid: 'e1', title: 'The Show – Season 1 – Pilot', segment_count: 1, show_guid: 'show-1' },
+    { plex_guid: 'e2', title: 'The Show – Season 1 – Two', segment_count: 2, show_guid: 'show-1' },
+  ]
+
+  beforeEach(() => {
+    const base = mockApi.get.getMockImplementation()!
+    mockApi.get.mockImplementation((path: string) => {
+      if (path === '/api/libraries') {
+        return Promise.resolve({ libraries: [{ id: '1', title: 'Movies', type: 'movie' }, { id: '2', title: 'TV Shows', type: 'show' }] })
+      }
+      if (path === '/api/libraries/2/titles') return Promise.resolve({ titles: tvTitles })
+      return base(path)
+    })
+    mockApi.post.mockResolvedValue({ queued: 2 })
+  })
+
+  async function openTv() {
+    render(<MemoryRouter><Segments /></MemoryRouter>)
+    fireEvent.click((await screen.findAllByRole('button', { name: /TV Shows/ }))[0])
+    await screen.findAllByText(/The Show/)
+  }
+
+  it('rescans the whole show, not just the episodes listed', async () => {
+    await openTv()
+
+    fireEvent.contextMenu(screen.getAllByText('The Show')[0])
+    fireEvent.click(await screen.findByText('Rescan whole show tonight'))
+
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/scan/show', {
+      show_guid: 'show-1', show_title: 'The Show', season: '', library_id: '2', now: false }))
+  })
+
+  it('rescans the whole season', async () => {
+    await openTv()
+    fireEvent.click(screen.getAllByRole('button', { name: 'Expand/collapse' })[0])
+
+    fireEvent.contextMenu(await screen.findByText('Season 1'))
+    fireEvent.click(await screen.findByText('Rescan whole season now'))
+
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/scan/show', {
+      show_guid: 'show-1', show_title: 'The Show', season: 'Season 1', library_id: '2', now: true }))
+  })
+
+  it('keeps rescanning only the listed episodes when that is chosen', async () => {
+    await openTv()
+
+    fireEvent.contextMenu(screen.getAllByText('The Show')[0])
+    fireEvent.click(await screen.findByText('Rescan tonight'))
+
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/scan/titles', { plex_guids: ['e1', 'e2'], now: false }))
+  })
+
+  it('schedules a whole library from its right-click menu', async () => {
+    render(<MemoryRouter><Segments /></MemoryRouter>)
+
+    fireEvent.contextMenu((await screen.findAllByRole('button', { name: /TV Shows/ }))[0])
+    fireEvent.click(await screen.findByText('Rescan whole library tonight'))
+
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/scan/rescan', { scope: 'whole_library', library_id: '2' }))
+    expect(await screen.findByText(/TV Shows \(whole library\): 2 titles queued for tonight/)).toBeInTheDocument()
+  })
+})
