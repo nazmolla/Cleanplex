@@ -5,6 +5,7 @@ import { useLiveRefresh } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import FalsePositiveButton from '../components/FalsePositiveButton'
 import RelabelButton from '../components/RelabelButton'
+import ThumbnailTime from '../components/ThumbnailTime'
 import SkipAnalytics from '../components/SkipAnalytics'
 import DetectionAccuracy from '../components/DetectionAccuracy'
 import { BarChart2, X, AlertTriangle, Trash2, Play, SkipForward, ChevronLeft, ChevronRight } from 'lucide-react'
@@ -31,6 +32,8 @@ interface Segment {
   labels: string
   has_thumbnail: boolean
   thumbnail_url: string
+  /** Film time the thumbnail frame was taken at; null for segments scanned before it was recorded. */
+  thumbnail_ms?: number | null
   /** Short silent loop played on hover; empty until rendered (#114). */
   hover_url?: string
   poster_url: string
@@ -417,6 +420,7 @@ export default function Analytics() {
                     <div className="absolute bottom-0.5 left-0.5 bg-black/70 text-[10px] text-gray-300 px-1 py-0.5 rounded">
                       {Math.round(seg.confidence * 100)}%
                     </div>
+                    <ThumbnailTime ms={seg.thumbnail_ms} />
                   </HoverPreview>
 
                   {/* Info + actions */}

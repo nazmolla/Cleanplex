@@ -143,3 +143,37 @@ async def test_a_silent_ffmpeg_fails_the_stream_instead_of_ending_it(monkeypatch
 
     with pytest.raises(frame_extractor.FrameStreamStalled):
         await _collect(frame_extractor.extract_frames_batch("x.mkv", 1000, 60_000, 320, hardware=False))
+
+
+# ── Dense window sampling (#133) ──────────────────────────────────────────────
+
+async def test_window_frames_sit_at_absolute_offsets_and_show_the_right_instants(tmp_path):
+    """Brightness rises 25 per second, so each frame's brightness says what time it really is."""
+    import cv2
+    import numpy as np
+
+    src = tmp_path / "ramp.mp4"
+    subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-f", "lavfi",
+         "-i", "color=c=black:s=64x64:r=10,geq=lum='min(255,T*25)':cb=128:cr=128",
+         "-t", "10", "-c:v", "libx264", "-g", "10", str(src)],
+        check=True,
+    )
+
+    frames = [(t, jpg) async for t, jpg in frame_extractor.extract_frames_window(str(src), 4000, 3000, 500, 64)]
+
+    assert [t for t, _ in frames] == [4000, 4500, 5000, 5500, 6000, 6500]
+    for t, jpg in frames:
+        luma = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_GRAYSCALE).mean()
+        assert luma == pytest.approx(t / 1000 * 25, abs=14)  # within about half a second
+
+
+async def test_window_stops_at_the_end_of_the_window_not_the_file(tmp_path):
+    src = tmp_path / "long.mp4"
+    subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10", "-t", "20",
+         "-c:v", "libx264", str(src)],
+        check=True,
+    )
+    frames = [t async for t, _ in frame_extractor.extract_frames_window(str(src), 2000, 2000, 500, 64)]
+    assert frames == [2000, 2500, 3000, 3500]

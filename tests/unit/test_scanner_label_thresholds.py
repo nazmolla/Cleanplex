@@ -126,7 +126,7 @@ async def _scan(credits_at, *, ignore_credits=True, frames=20, siglip_hits=froze
         seen.append(i)
         return (siglip_score, siglip_label) if i in siglip_hits else (0.1, siglip_label)
 
-    config = replace(Config(), scan_step_ms=STEP, segment_gap_ms=1500, segment_min_hits=1,
+    config = replace(Config(), refine_step_ms=0, scan_step_ms=STEP, segment_gap_ms=1500, segment_min_hits=1,
                      siglip_enabled=True, siglip_threshold=0.5, siglip_min_hits=2,
                      ignore_credits=ignore_credits,
                      siglip_label_thresholds=siglip_label_thresholds or {})

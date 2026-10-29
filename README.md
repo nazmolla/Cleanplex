@@ -102,6 +102,7 @@ All configuration is done via the **web UI** at `http://your-server:7979/setting
 | Ignore end credits | on | SigLIP is not run on frames at or after the title's Plex credits marker, since text-heavy credit screens are read as nudity. NudeNet still runs. No marker, no effect |
 | Inference threads | 0 (auto) | onnxruntime threads per scan worker (`inference_threads`, API only). Auto leaves about one worker's share of CPU free for Plex and the web UI |
 | SigLIP Consecutive Frames | 2 | SigLIP-only hits must repeat on this many consecutive sampled frames before a segment is created |
+| Refinement Step | 500 ms | After a segment is found, its window is re-sampled this finely so the thumbnail is the highest-scoring frame and the segment also covers scene frames the coarse scan stepped over. Segments only ever grow; 0 turns it off. The card shows the time the thumbnail frame was taken at (Settings → Segments) |
 | Content Ratings | — | Only scan and filter titles matching your selected ratings |
 
 ## Segment Expansion & Skip Logic

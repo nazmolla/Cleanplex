@@ -546,3 +546,19 @@ async def test_reset_interrupted_scans_returns_scanning_jobs_to_pending():
 
 async def test_reset_interrupted_scans_with_nothing_scanning_does_nothing():
     assert await db.reset_interrupted_scans() == 0
+
+
+# ── Thumbnail time (#133) ──────────────────────────────────────────────────────
+
+async def test_insert_segment_stores_the_thumbnail_time():
+    await db.upsert_scan_job(plex_guid="g", title="T", file_path="/m.mkv", rating_key="1",
+                             library_id="l", library_title="L")
+    sid = await db.insert_segment("g", "T", 10_000, 20_000, thumbnail_ms=12_500)
+    assert (await db.get_segment_by_id(sid))["thumbnail_ms"] == 12_500
+
+
+async def test_thumbnail_time_is_null_when_not_given():
+    await db.upsert_scan_job(plex_guid="g", title="T", file_path="/m.mkv", rating_key="1",
+                             library_id="l", library_title="L")
+    sid = await db.insert_segment("g", "T", 10_000, 20_000)
+    assert (await db.get_segment_by_id(sid))["thumbnail_ms"] is None

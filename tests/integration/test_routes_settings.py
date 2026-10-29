@@ -271,3 +271,18 @@ async def test_put_ignore_credits_toggle(http_client):
     resp, _ = await _put(http_client, {"ignore_credits": "0"})
     assert resp.status_code == 200
     assert await db.get_setting("ignore_credits") == "0"
+
+
+# ── refine step (#133) ───────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("value", ["0", "100", "500", "5000"])
+async def test_put_accepts_a_refine_step(http_client, value):
+    resp, _ = await _put(http_client, {"refine_step_ms": value})
+    assert resp.status_code == 200
+    assert await db.get_setting("refine_step_ms") == value
+
+
+@pytest.mark.parametrize("value", ["-1", "99", "5001", "fast", "50.5", ""])
+async def test_put_rejects_an_invalid_refine_step(http_client, value):
+    resp, _ = await _put(http_client, {"refine_step_ms": value})
+    assert resp.status_code == 422
