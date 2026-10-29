@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import { useLiveRefresh } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import FalsePositiveButton from '../components/FalsePositiveButton'
+import RelabelButton from '../components/RelabelButton'
 import SkipAnalytics from '../components/SkipAnalytics'
 import DetectionAccuracy from '../components/DetectionAccuracy'
 import { BarChart2, X, AlertTriangle, Trash2, Play, SkipForward, ChevronLeft, ChevronRight } from 'lucide-react'
@@ -288,6 +289,14 @@ export default function Analytics() {
 
   // This list shows active detections only, so a marked segment leaves it, as on
   // delete; the mark can be undone from the Segments or Library page.
+  // Swap in the corrected labels without a refetch; the live refresh that follows
+  // drops the row if it no longer matches the selected labels.
+  const relabelInPlace = (id: number, labels: string) => {
+    const apply = (list: Segment[]) => list.map(s => (s.id === id ? { ...s, labels } : s))
+    setSegments(apply)
+    setFpSegments(apply)
+  }
+
   const dropFromList = (seg: Segment) => {
     setSegments(prev => prev.filter(s => s.id !== seg.id))
     setTotalSegments(t => Math.max(0, t - 1))
@@ -434,6 +443,7 @@ export default function Analytics() {
                       >
                         <SkipForward size={14} />
                       </button>
+                      <RelabelButton seg={seg} onChange={relabelInPlace} />
                       <FalsePositiveButton
                         seg={seg}
                         onChange={(_, fp) => { if (seg.false_positive ? !fp : fp) (seg.false_positive ? dropFromFalsePositives : dropFromList)(seg) }}

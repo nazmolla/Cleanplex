@@ -95,7 +95,7 @@ All configuration is done via the **web UI** at `http://your-server:7979/setting
 | Hover Preview Window | 00:00–07:00 | When the hover preview job runs (Settings → Schedule). It renders one segment at a time, picks up segments it has not done yet, and removes files of deleted segments |
 | Scanner Workers | 2 | Number of parallel scans (higher = more CPU/memory usage) |
 | Detector Labels | — | Select which nudity types to detect (and skip). Only selected labels trigger skips |
-| SigLIP Fallback | off | Second, whole-frame check that runs only on frames NudeNet did not flag, to catch scenes it misses. Follows Detector Labels. Downloads ~815 MB of model files on first use. Its segments have source `siglip` and medium severity |
+| SigLIP Fallback | off | Second, whole-frame check that runs only on frames NudeNet did not flag, to catch scenes it misses. Follows Detector Labels. Downloads ~815 MB of model files on first use. Its segments have source `siglip`, and their severity follows the label they are tagged with |
 | SigLIP Threshold | 0.3 | Share (0–1) of a frame's match that must go to enabled-label descriptions. Separate from Confidence Threshold |
 | SigLIP Consecutive Frames | 2 | SigLIP-only hits must repeat on this many consecutive sampled frames before a segment is created |
 | Content Ratings | — | Only scan and filter titles matching your selected ratings |
@@ -125,6 +125,21 @@ Each user gets a 0–3 level per category. A segment fires when *level + severit
 level 3 filters everything in that category and level 0 filters nothing. Every category starts
 at level 3 when filtering is on; lowering or turning one off is always an explicit choice, and
 changing one category never affects the others.
+
+**Scanner segments get their severity from the detected label**, so a level has a concrete meaning
+for nudity:
+
+| Detected | Severity | Skipped at level |
+|---|---|---|
+| Exposed genitalia, anus | high | 1, 2, 3 |
+| Exposed breast, exposed buttocks | medium | 2, 3 |
+| Covered body parts, belly, feet, faces | low | 3 |
+
+A segment with several labels takes the highest. Covered labels are not scanned by default; enable
+them under Detector Labels if level 3 should skip them. Imported segments keep the severity their
+author set. If the detector names the wrong thing, use the tag button on a segment to correct its
+labels: the severity follows, the correction is kept as feedback next to the detector's original
+labels, and a rescan of the same window keeps it.
 
 `blank` and `blur` appear in some imported files but are **not supported**: Plex exposes playback
 position and volume, not the video stream. Those segments are logged and ignored rather than

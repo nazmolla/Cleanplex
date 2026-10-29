@@ -42,6 +42,17 @@ beforeEach(() => {
 })
 
 describe('CategoryMatrix', () => {
+  it('says exactly what the nudity level skips, following the level (#126)', async () => {
+    mockApi.get.mockResolvedValue(defaults)
+    const { rerender } = render(<CategoryMatrix username="alice" enabled={true} />)
+    expect(await screen.findByText('Skips everything detected, including covered body parts.')).toBeInTheDocument()
+
+    mockApi.get.mockResolvedValue(customised)
+    rerender(<CategoryMatrix username="bob" enabled={true} />)
+    expect(await screen.findByText('Skips exposed nudity: genitalia, anus, breasts and buttocks.')).toBeInTheDocument()
+    expect(screen.queryByText(/including covered body parts/)).not.toBeInTheDocument()
+  })
+
   it('renders defaults rather than blank controls for a new user', async () => {
     mockApi.get.mockResolvedValue(defaults)
 

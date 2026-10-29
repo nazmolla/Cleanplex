@@ -21,6 +21,15 @@ interface CategoriesResponse {
 // they let through is far clearer than showing the raw number.
 const LEVEL_LABELS = ['Off', 'Severe only', 'Moderate and up', 'Everything']
 
+// What each level skips for detector (scanner) segments, whose severity follows the
+// detected label (#126). Imported segments carry their author's own severities.
+const NUDITY_LEVEL_HINTS = [
+  'Skips nothing.',
+  'Skips exposed genitalia and anus only.',
+  'Skips exposed nudity: genitalia, anus, breasts and buttocks.',
+  'Skips everything detected, including covered body parts.',
+]
+
 const CATEGORY_LABELS: Record<string, string> = {
   commercial: 'Commercials',
   discrimination: 'Discrimination',
@@ -148,6 +157,9 @@ export default function CategoryMatrix({ username, enabled }: Props) {
               {!cat.has_segments && (
                 <p className="text-[11px] text-gray-600 mt-0.5">No segments yet</p>
               )}
+              {cat.category === 'nudity' && (
+                <p className="text-[11px] text-gray-500 mt-0.5">{NUDITY_LEVEL_HINTS[cat.level]}</p>
+              )}
             </div>
 
             <div className="flex-1 flex items-center gap-3">
@@ -161,7 +173,9 @@ export default function CategoryMatrix({ username, enabled }: Props) {
                 onChange={e => update(cat.category, Number(e.target.value), cat.action)}
                 className="flex-1 accent-plex-orange"
               />
-              <span className="text-xs text-gray-500 w-32">{LEVEL_LABELS[cat.level]}</span>
+              <span className="text-xs text-gray-500 w-32" title={cat.category === 'nudity' ? NUDITY_LEVEL_HINTS[cat.level] : undefined}>
+                {LEVEL_LABELS[cat.level]}
+              </span>
             </div>
 
             {/* Action override. Only skip and mute are possible through the Plex
