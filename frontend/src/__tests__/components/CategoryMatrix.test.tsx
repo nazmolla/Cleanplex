@@ -42,6 +42,19 @@ beforeEach(() => {
 })
 
 describe('CategoryMatrix', () => {
+  it('spells out which severities each level skips (#126)', async () => {
+    mockApi.get.mockResolvedValue(defaults)
+    render(<CategoryMatrix username="alice" enabled={true} />)
+    await screen.findByText('What does each level skip?')
+
+    const row = (label: RegExp) => screen.getByText(label).closest('tr') as HTMLElement
+    const cells = (tr: HTMLElement) => Array.from(tr.querySelectorAll('td')).slice(1).map(td => td.textContent)
+    expect(cells(row(/^0 · Off/))).toEqual(['allowed', 'allowed', 'allowed'])
+    expect(cells(row(/^1 · Severe only/))).toEqual(['skipped', 'allowed', 'allowed'])
+    expect(cells(row(/^2 · Moderate and up/))).toEqual(['skipped', 'skipped', 'allowed'])
+    expect(cells(row(/^3 · Everything/))).toEqual(['skipped', 'skipped', 'skipped'])
+  })
+
   it('says exactly what the nudity level skips, following the level (#126)', async () => {
     mockApi.get.mockResolvedValue(defaults)
     const { rerender } = render(<CategoryMatrix username="alice" enabled={true} />)

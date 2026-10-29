@@ -30,6 +30,14 @@ const NUDITY_LEVEL_HINTS = [
   'Skips everything detected, including covered body parts.',
 ]
 
+// Detector severities and the labels behind them (kept in step with LABEL_SEVERITY in
+// importers/_common.py). Rank is what the filter adds to the viewer's level.
+const SEVERITY_COLUMNS = [
+  { rank: 3, name: 'High', examples: 'Exposed genitalia, anus' },
+  { rank: 2, name: 'Medium', examples: 'Exposed breast, buttocks' },
+  { rank: 1, name: 'Low', examples: 'Covered parts, belly, feet, faces' },
+]
+
 const CATEGORY_LABELS: Record<string, string> = {
   commercial: 'Commercials',
   discrimination: 'Discrimination',
@@ -144,6 +152,40 @@ export default function CategoryMatrix({ username, enabled }: Props) {
           </button>
         )}
       </div>
+
+      {/* The levels, spelled out, so nobody has to work out level + severity > 3. */}
+      <details className="px-5 py-3 border-b border-plex-border text-xs text-gray-400">
+        <summary className="cursor-pointer text-gray-300">What does each level skip?</summary>
+        <p className="mt-2 mb-2 text-gray-500">
+          A detected segment is skipped when the level plus its severity (low 1, medium 2, high 3) is more than 3.
+          Imported segments use the severity their author set.
+        </p>
+        <table className="w-full text-left">
+          <thead>
+            <tr className="text-gray-500">
+              <th className="font-normal py-1 pr-3">Level</th>
+              {SEVERITY_COLUMNS.map(col => (
+                <th key={col.name} className="font-normal py-1 pr-3">
+                  {col.name}
+                  <span className="block text-[10px] text-gray-600">{col.examples}</span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {LEVEL_LABELS.map((name, level) => (
+              <tr key={level} className="border-t border-plex-border/60">
+                <td className="py-1 pr-3 text-gray-300">{level} · {name}</td>
+                {SEVERITY_COLUMNS.map(col => (
+                  <td key={col.name} className={`py-1 pr-3 ${level + col.rank > 3 ? 'text-red-300' : 'text-gray-600'}`}>
+                    {level + col.rank > 3 ? 'skipped' : 'allowed'}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </details>
 
       {error && <p className="text-xs text-red-400 px-5 pt-3">{error}</p>}
 
