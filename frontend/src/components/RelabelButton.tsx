@@ -8,8 +8,20 @@ interface Props {
   onChange: (id: number, labels: string) => void
 }
 
-// Fetched once per page load: the vocabulary does not change while the app runs.
+// The vocabulary does not change while the app runs, so it is fetched once per page load and
+// shared by every card's button. A failed fetch is not remembered, so the next open retries.
 let labelCache: string[] | null = null
+let labelRequest: Promise<string[]> | null = null
+
+function loadLabels(): Promise<string[]> {
+  if (labelCache) return Promise.resolve(labelCache)
+  if (!labelRequest) {
+    labelRequest = api.get<{ labels: string[] }>('/api/settings/detector-labels')
+      .then(d => { labelCache = d.labels; return d.labels })
+      .finally(() => { labelRequest = null })
+  }
+  return labelRequest
+}
 
 const pretty = (label: string) => label.toLowerCase().replace(/_/g, ' ')
 
@@ -20,17 +32,22 @@ const pretty = (label: string) => label.toLowerCase().replace(/_/g, ' ')
  */
 export default function RelabelButton({ seg, onChange }: Props) {
   const [open, setOpen] = useState(false)
-  const [all, setAll] = useState<string[]>(labelCache ?? [])
+  const [all, setAll] = useState<string[]>([])
+  const [attempt, setAttempt] = useState(0)
   const [picked, setPicked] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
+  // Runs on every open, not once at mount: a button mounted before another card filled the
+  // shared cache must still pick it up, or its dialog stays empty.
   useEffect(() => {
-    if (!open || labelCache) return
-    api.get<{ labels: string[] }>('/api/settings/detector-labels')
-      .then(d => { labelCache = d.labels; setAll(d.labels) })
-      .catch(() => setError('Could not load the label list.'))
-  }, [open])
+    if (!open) return
+    let cancelled = false
+    loadLabels()
+      .then(labels => { if (!cancelled) { setAll(labels); setError('') } })
+      .catch(() => { if (!cancelled) setError('Could not load the label list.') })
+    return () => { cancelled = true }
+  }, [open, attempt])
 
   const show = () => {
     setPicked((seg.labels || '').split(',').map(l => l.trim()).filter(Boolean))
@@ -95,7 +112,15 @@ export default function RelabelButton({ seg, onChange }: Props) {
                 </label>
               ))}
             </div>
-            {error && <p className="text-xs text-red-400 mt-3">{error}</p>}
+            {all.length === 0 && !error && <p className="text-xs text-gray-500">Loading labels…</p>}
+            {error && (
+              <p className="text-xs text-red-400 mt-3">
+                {error}{' '}
+                {all.length === 0 && (
+                  <button onClick={() => { setError(''); setAttempt(n => n + 1) }} className="underline hover:text-red-300">Retry</button>
+                )}
+              </p>
+            )}
             <div className="flex justify-end gap-2 mt-5">
               <button onClick={() => setOpen(false)} disabled={busy} className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200">
                 Cancel
