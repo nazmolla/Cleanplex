@@ -154,6 +154,49 @@ describe('Settings sections', () => {
     expect(body.siglip_threshold).toBe('0.3')
   })
 
+  it('saves a per-label NudeNet threshold and leaves blank labels inheriting (#120)', async () => {
+    mockApi.put.mockResolvedValue({})
+    renderSettings()
+    await waitFor(() => screen.getByDisplayValue('http://plex:32400'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'NudeNet Detection' }))
+    fireEvent.change(screen.getByLabelText('FEMALE_BREAST_EXPOSED threshold'), { target: { value: '0.8' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save Settings/ }))
+
+    await waitFor(() => expect(mockApi.put).toHaveBeenCalled())
+    expect(JSON.parse(mockApi.put.mock.calls[0][1].label_thresholds)).toEqual({ FEMALE_BREAST_EXPOSED: 0.8 })
+  })
+
+  it('clearing a per-label SigLIP threshold removes the override (#120)', async () => {
+    mockApi.put.mockResolvedValue({})
+    renderSettings()
+    await waitFor(() => screen.getByDisplayValue('http://plex:32400'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'SigLIP Fallback' }))
+    fireEvent.click(screen.getByLabelText('Enable SigLIP fallback'))
+    const box = screen.getByLabelText('FEMALE_BREAST_EXPOSED threshold')
+    fireEvent.change(box, { target: { value: '0.9' } })
+    fireEvent.change(box, { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save Settings/ }))
+
+    await waitFor(() => expect(mockApi.put).toHaveBeenCalled())
+    expect(JSON.parse(mockApi.put.mock.calls[0][1].siglip_label_thresholds)).toEqual({})
+  })
+
+  it('toggles ignoring end credits (#121)', async () => {
+    mockApi.put.mockResolvedValue({})
+    renderSettings()
+    await waitFor(() => screen.getByDisplayValue('http://plex:32400'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'SigLIP Fallback' }))
+    fireEvent.click(screen.getByLabelText('Enable SigLIP fallback'))
+    fireEvent.click(screen.getByLabelText(/Ignore end credits/))
+    fireEvent.click(screen.getByRole('button', { name: /Save Settings/ }))
+
+    await waitFor(() => expect(mockApi.put).toHaveBeenCalled())
+    expect(mockApi.put.mock.calls[0][1].ignore_credits).toBe('0')
+  })
+
   it('shows Users as a section without the Save bar (#118)', async () => {
     render(<MemoryRouter initialEntries={['/settings?section=users']}><Settings /></MemoryRouter>)
     await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument())

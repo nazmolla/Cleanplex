@@ -86,6 +86,7 @@ All configuration is done via the **web UI** at `http://your-server:7979/setting
 | Plex Token | — | Your Plex authentication token |
 | Poll Interval | 5s | How often to check active streams |
 | Confidence Threshold | 0.6 | NudeNet score threshold (0–1). Lower = more sensitive. |
+| Per-Label Thresholds | blank | Optional per-label NudeNet threshold (NudeNet Detection section). A blank label uses the Confidence Threshold. Stored in `label_thresholds` |
 | Pre Buffer | 3000ms | Milliseconds to start the skip *before* a segment, so the flagged content is never briefly shown |
 | Post Buffer | 3000ms | Milliseconds to hold past the end of a segment before the filter can re-trigger |
 | Profanity Wordlist | built-in | JSON array of words the subtitle scanner mutes. Empty uses the bundled list |
@@ -97,6 +98,9 @@ All configuration is done via the **web UI** at `http://your-server:7979/setting
 | Detector Labels | — | Select which nudity types to detect (and skip). Only selected labels trigger skips |
 | SigLIP Fallback | off | Second, whole-frame check that runs only on frames NudeNet did not flag, to catch scenes it misses. Follows Detector Labels. Downloads ~815 MB of model files on first use. Its segments have source `siglip`, and their severity follows the label they are tagged with |
 | SigLIP Threshold | 0.3 | Share (0–1) of a frame's match that must go to enabled-label descriptions. Separate from Confidence Threshold |
+| Per-label SigLIP thresholds | blank | Optional threshold per label; a SigLIP hit is judged by the label it is tagged with. Blank uses the SigLIP Threshold. Stored in `siglip_label_thresholds` |
+| Ignore end credits | on | SigLIP is not run on frames at or after the title's Plex credits marker, since text-heavy credit screens are read as nudity. NudeNet still runs. No marker, no effect |
+| Inference threads | 0 (auto) | onnxruntime threads per scan worker (`inference_threads`, API only). Auto leaves about one worker's share of CPU free for Plex and the web UI |
 | SigLIP Consecutive Frames | 2 | SigLIP-only hits must repeat on this many consecutive sampled frames before a segment is created |
 | Content Ratings | — | Only scan and filter titles matching your selected ratings |
 

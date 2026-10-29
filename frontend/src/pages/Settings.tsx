@@ -25,6 +25,9 @@ interface Settings {
   siglip_enabled: string
   siglip_threshold: string
   siglip_min_hits: string
+  ignore_credits: string
+  label_thresholds: string
+  siglip_label_thresholds: string
   hw_decode: string
   hover_previews_enabled: string
   hover_window_start: string
@@ -71,6 +74,9 @@ const DEFAULT: Settings = {
   siglip_enabled: '0',
   siglip_threshold: '0.3',
   siglip_min_hits: '2',
+  ignore_credits: '1',
+  label_thresholds: '{}',
+  siglip_label_thresholds: '{}',
   hw_decode: '1',
   hover_previews_enabled: '1',
   hover_window_start: '00:00',
@@ -83,6 +89,42 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       <label className="block text-sm font-medium text-gray-300 mb-1">{label}</label>
       {children}
       {hint && <p className="text-xs text-gray-600 mt-1">{hint}</p>}
+    </div>
+  )
+}
+
+// Per-label threshold overrides stored as a JSON object in one setting. A blank box
+// means "inherit the global threshold", so only labels the user typed into are saved.
+function LabelThresholds({ labels, value, globalValue, disabled, onChange }: {
+  labels: string[]
+  value: string
+  globalValue: string
+  disabled?: boolean
+  onChange: (next: string) => void
+}) {
+  const map: Record<string, number> = (() => { try { return JSON.parse(value) } catch { return {} } })()
+  const update = (label: string, raw: string) => {
+    const next = { ...map }
+    if (raw === '' || Number.isNaN(Number(raw))) delete next[label]
+    else next[label] = Number(raw)
+    onChange(JSON.stringify(next))
+  }
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      {labels.map(label => (
+        <label key={label} className="flex items-center justify-between gap-3 text-sm text-gray-300">
+          <span className="truncate">{label}</span>
+          <input
+            type="number" min="0" max="1" step="0.05"
+            value={map[label] ?? ''}
+            placeholder={globalValue}
+            disabled={disabled}
+            onChange={e => update(label, e.target.value)}
+            aria-label={`${label} threshold`}
+            className="w-24 bg-plex-card border border-plex-border rounded px-2 py-1 text-sm text-gray-100 disabled:opacity-40"
+          />
+        </label>
+      ))}
     </div>
   )
 }
@@ -148,6 +190,8 @@ export default function SettingsPage() {
       : [...excludedIds, id]
     setForm(f => ({ ...f, excluded_library_ids: JSON.stringify(next) }))
   }
+
+  const enabledLabels: string[] = (() => { try { return JSON.parse(form.scan_labels) } catch { return [] } })()
 
   const set = (k: keyof Settings) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm(f => ({ ...f, [k]: e.target.value }))
@@ -590,6 +634,18 @@ export default function SettingsPage() {
                   })}
                 </div>
       </section>
+              <section>
+                <h2 className={h2Cls}>Per-Label Thresholds</h2>
+                <p className="text-xs text-gray-500 mb-3">
+                  Override the confidence threshold for a single label. A blank box uses the global threshold shown inside it.
+                </p>
+                <LabelThresholds
+                  labels={enabledLabels}
+                  value={form.label_thresholds}
+                  globalValue={form.confidence_threshold}
+                  onChange={next => setForm(f => ({ ...f, label_thresholds: next }))}
+                />
+              </section>
             </>
           )}
 
@@ -615,6 +671,27 @@ export default function SettingsPage() {
                 <Field label="SigLIP Threshold" hint="Share of the frame's match that goes to enabled-label descriptions (0–1). Separate from the NudeNet threshold. Lower = catches more, with more false positives.">
                   <input type="number" min="0.05" max="0.95" step="0.05" value={form.siglip_threshold} onChange={set('siglip_threshold')} disabled={form.siglip_enabled !== '1'} className={inputCls + ' disabled:opacity-40'} />
                 </Field>
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.ignore_credits === '1'}
+                    onChange={e => setForm(f => ({ ...f, ignore_credits: e.target.checked ? '1' : '0' }))}
+                    disabled={form.siglip_enabled !== '1'}
+                    className="w-4 h-4 accent-plex-orange"
+                  />
+                  <span className="text-sm text-gray-300">Ignore end credits (uses Plex credits markers)</span>
+                </label>
+                <div className="lg:col-span-2">
+                  <p className="text-sm font-medium text-gray-300 mb-1">Per-label SigLIP thresholds</p>
+                  <p className="text-xs text-gray-600 mb-2">A hit is judged by the threshold of the label it is tagged with. Blank uses the SigLIP threshold above.</p>
+                  <LabelThresholds
+                    labels={enabledLabels}
+                    value={form.siglip_label_thresholds}
+                    globalValue={form.siglip_threshold}
+                    disabled={form.siglip_enabled !== '1'}
+                    onChange={next => setForm(f => ({ ...f, siglip_label_thresholds: next }))}
+                  />
+                </div>
                 <Field label="Consecutive Frames Required" hint="A SigLIP-only hit must repeat on this many consecutive sampled frames before a segment is created. Filters one-off false alarms.">
                   <input type="number" min="1" max="6" step="1" value={form.siglip_min_hits} onChange={set('siglip_min_hits')} disabled={form.siglip_enabled !== '1'} className={inputCls + ' disabled:opacity-40'} />
                 </Field>

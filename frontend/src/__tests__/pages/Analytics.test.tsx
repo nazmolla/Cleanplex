@@ -126,4 +126,28 @@ describe('Analytics', () => {
     renderAt('/analytics?tab=accuracy')
     expect(await screen.findByRole('button', { name: /Detection accuracy/ })).toHaveAttribute('aria-expanded', 'false')
   })
+
+  const lastUrl = (prefix: string) =>
+    mockApi.get.mock.calls.map(c => c[0] as string).filter(u => u.startsWith(prefix)).at(-1) as string
+
+  it('sorts the label list by score or date added and flips direction (#128)', async () => {
+    await openLabel()
+    expect(lastUrl('/api/analytics/segments')).toContain('sort=score&order=desc')
+
+    fireEvent.change(screen.getByLabelText('Sort by'), { target: { value: 'added' } })
+    await waitFor(() => expect(lastUrl('/api/analytics/segments')).toContain('sort=added&order=desc'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sort descending' }))
+    await waitFor(() => expect(lastUrl('/api/analytics/segments')).toContain('sort=added&order=asc'))
+    expect(lastUrl('/api/analytics/segments')).toContain('offset=0')
+  })
+
+  it('sorts false positives, defaulting to newest mark first (#128)', async () => {
+    renderAt('/analytics?tab=false-positives')
+    await screen.findByText('Wrong One')
+    expect(lastUrl('/api/analytics/false-positives')).toContain('sort=marked&order=desc')
+
+    fireEvent.change(screen.getByLabelText('Sort by'), { target: { value: 'score' } })
+    await waitFor(() => expect(lastUrl('/api/analytics/false-positives')).toContain('sort=score&order=desc'))
+  })
 })

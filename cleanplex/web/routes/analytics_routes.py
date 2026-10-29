@@ -1,6 +1,7 @@
 """Analytics routes: label-based segment statistics and segment browsing."""
 
 from datetime import datetime
+from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Query
@@ -35,20 +36,22 @@ async def get_segments_by_labels(
     labels: str = Query(..., description="Comma-separated label names"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    sort: Literal["score", "added"] = Query("score", description="score = confidence, added = date added"),
+    order: Literal["asc", "desc"] = Query("desc"),
 ):
     """Return segments matching any of the given labels, with poster proxy URLs."""
     label_list = [l.strip() for l in labels.split(",") if l.strip()]
     if not label_list:
         return {"segments": [], "total": 0}
 
-    rows, total = await _fetch_segments_and_total(label_list, limit, offset)
+    rows, total = await _fetch_segments_and_total(label_list, limit, offset, sort, order)
     return {"segments": rows, "total": total}
 
 
 async def _fetch_segments_and_total(
-    labels: list[str], limit: int, offset: int
+    labels: list[str], limit: int, offset: int, sort: str = "score", order: str = "desc"
 ) -> tuple[list[dict], int]:
-    segs, total = await _parallel_fetch(labels, limit, offset)
+    segs, total = await _parallel_fetch(labels, limit, offset, sort, order)
     return [_segment_payload(seg) for seg in segs], total
 
 
@@ -87,10 +90,10 @@ def _segment_payload(seg: dict) -> dict:
     }
 
 
-async def _parallel_fetch(labels: list[str], limit: int, offset: int):
+async def _parallel_fetch(labels: list[str], limit: int, offset: int, sort: str, order: str):
     import asyncio
     segs, total = await asyncio.gather(
-        db.get_segments_for_labels(labels, limit, offset),
+        db.get_segments_for_labels(labels, limit, offset, sort, order),
         db.count_segments_for_labels(labels),
     )
     return segs, total
@@ -100,11 +103,13 @@ async def _parallel_fetch(labels: list[str], limit: int, offset: int):
 async def get_false_positives(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    sort: Literal["marked", "score", "added"] = Query("marked", description="marked = when flagged, score = confidence, added = date added"),
+    order: Literal["asc", "desc"] = Query("desc"),
 ):
-    """Return segments marked as false positives, most recently marked first, with a total."""
+    """Return segments marked as false positives (newest mark first by default), with a total."""
     import asyncio
     segs, total = await asyncio.gather(
-        db.get_false_positive_segments(limit, offset),
+        db.get_false_positive_segments(limit, offset, sort, order),
         db.count_false_positive_segments(),
     )
     rows = [{**_segment_payload(seg), "false_positive": True, "marked_at": seg.get("marked_at")} for seg in segs]

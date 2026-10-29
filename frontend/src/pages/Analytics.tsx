@@ -125,6 +125,41 @@ function BarChart({
   )
 }
 
+type SortKey = 'score' | 'added' | 'marked'
+interface SortSpec { sort: SortKey; order: 'asc' | 'desc' }
+
+const SORT_LABELS: Record<SortKey, string> = { score: 'Score', added: 'Date added', marked: 'Date marked' }
+
+// Sort picker for a segment list: the key, plus a button flipping ascending/descending.
+function SortControl({ value, options, onChange }: {
+  value: SortSpec
+  options: SortKey[]
+  onChange: (next: SortSpec) => void
+}) {
+  return (
+    <div className="flex items-center gap-1.5 text-xs text-gray-400">
+      <label htmlFor="segment-sort" className="sr-only">Sort by</label>
+      <select
+        id="segment-sort"
+        value={value.sort}
+        onChange={e => onChange({ ...value, sort: e.target.value as SortKey })}
+        className="bg-plex-card border border-plex-border rounded px-2 py-1 text-gray-200"
+      >
+        {options.map(k => <option key={k} value={k}>{SORT_LABELS[k]}</option>)}
+      </select>
+      <button
+        type="button"
+        onClick={() => onChange({ ...value, order: value.order === 'desc' ? 'asc' : 'desc' })}
+        aria-label={value.order === 'desc' ? 'Sort descending' : 'Sort ascending'}
+        title={value.order === 'desc' ? 'Highest / newest first' : 'Lowest / oldest first'}
+        className="px-2 py-1 rounded border border-plex-border text-gray-200 hover:bg-plex-card"
+      >
+        {value.order === 'desc' ? '↓' : '↑'}
+      </button>
+    </div>
+  )
+}
+
 function Pager({ page, totalPages, onPage, compact = false }: {
   page: number
   totalPages: number
@@ -169,6 +204,7 @@ export default function Analytics() {
   const [totalSegments, setTotalSegments] = useState(0)
   const [loadingSegments, setLoadingSegments] = useState(false)
   const [page, setPage] = useState(0)
+  const [segSort, setSegSort] = useState<SortSpec>({ sort: 'score', order: 'desc' })
 
   // Per-segment state
   const [deletingSegs, setDeletingSegs] = useState<Record<number, boolean>>({})
@@ -197,14 +233,14 @@ export default function Analytics() {
   // swapped when the data arrives, instead of blanking to "Loading…" (which reads
   // as a page reload, e.g. two seconds after marking a false positive).
   const segmentsCtl = useRef<AbortController | null>(null)
-  const fetchSegments = useCallback(async (labels: string[], p: number, silent = false) => {
+  const fetchSegments = useCallback(async (labels: string[], p: number, spec: SortSpec, silent = false) => {
     segmentsCtl.current?.abort()
     if (!labels.length) { setSegments([]); setTotalSegments(0); return }
     const controller = (segmentsCtl.current = new AbortController())
     if (!silent) setLoadingSegments(true)
     try {
       const d = await api.get<{ segments: Segment[]; total: number }>(
-        `/api/analytics/segments?labels=${encodeURIComponent(labels.join(','))}&limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}`,
+        `/api/analytics/segments?labels=${encodeURIComponent(labels.join(','))}&limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}&sort=${spec.sort}&order=${spec.order}`,
         { signal: controller.signal },
       )
       setSegments(d.segments)
@@ -220,15 +256,16 @@ export default function Analytics() {
   const [fpSegments, setFpSegments] = useState<Segment[]>([])
   const [fpTotal, setFpTotal] = useState(0)
   const [fpPage, setFpPage] = useState(0)
+  const [fpSort, setFpSort] = useState<SortSpec>({ sort: 'marked', order: 'desc' })
   const [loadingFp, setLoadingFp] = useState(false)
   const fpCtl = useRef<AbortController | null>(null)
-  const fetchFalsePositives = useCallback(async (p: number, silent = false) => {
+  const fetchFalsePositives = useCallback(async (p: number, spec: SortSpec, silent = false) => {
     fpCtl.current?.abort()
     const controller = (fpCtl.current = new AbortController())
     if (!silent) setLoadingFp(true)
     try {
       const d = await api.get<{ segments: Segment[]; total: number }>(
-        `/api/analytics/false-positives?limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}`,
+        `/api/analytics/false-positives?limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}&sort=${spec.sort}&order=${spec.order}`,
         { signal: controller.signal },
       )
       setFpSegments(d.segments)
@@ -239,10 +276,10 @@ export default function Analytics() {
       if (fpCtl.current === controller) setLoadingFp(false)
     }
   }, [])
-  // Loads when the tab opens and on page changes; nothing is fetched for other tabs.
+  // Loads when the tab opens and on page or sort changes; nothing is fetched for other tabs.
   useEffect(() => {
-    if (tab === 'false-positives') fetchFalsePositives(fpPage)
-  }, [tab, fpPage, fetchFalsePositives])
+    if (tab === 'false-positives') fetchFalsePositives(fpPage, fpSort)
+  }, [tab, fpPage, fpSort, fetchFalsePositives])
   useEffect(() => () => { segmentsCtl.current?.abort(); fpCtl.current?.abort() }, [])
 
   // Single effect handles both label changes (reset to page 0) and page navigation.
@@ -257,22 +294,22 @@ export default function Analytics() {
       // Labels changed — always go back to page 0.
       prevLabelsRef.current = labelsKey
       setPage(0)
-      fetchSegments(selectedLabels, 0)
+      fetchSegments(selectedLabels, 0, segSort)
     } else {
-      // Only the page changed — fetch the requested page.
-      fetchSegments(selectedLabels, page)
+      // Only the page or sort changed — fetch the requested page.
+      fetchSegments(selectedLabels, page, segSort)
     }
-  }, [page, selectedLabels, fetchSegments])
+  }, [page, selectedLabels, segSort, fetchSegments])
 
   // Live (#89): scans, imports and deletes change label counts and the segment
   // list. Debounced generously: a scan writes segments in bursts.
-  const liveView = useRef({ selectedLabels, page, tab, fpPage })
-  liveView.current = { selectedLabels, page, tab, fpPage }
+  const liveView = useRef({ selectedLabels, page, tab, fpPage, segSort, fpSort })
+  liveView.current = { selectedLabels, page, tab, fpPage, segSort, fpSort }
   useLiveRefresh(['segments_changed'], () => {
     const v = liveView.current
     loadLabels()
-    fetchSegments(v.selectedLabels, v.page, true)
-    if (v.tab === 'false-positives') fetchFalsePositives(v.fpPage, true)
+    fetchSegments(v.selectedLabels, v.page, v.segSort, true)
+    if (v.tab === 'false-positives') fetchFalsePositives(v.fpPage, v.fpSort, true)
   }, { debounceMs: 2000 })
 
   const toggleLabel = (label: string) => {
@@ -579,7 +616,10 @@ export default function Analytics() {
                     </span>
                   )}
                 </h2>
-                <Pager page={page} totalPages={totalPages} onPage={setPage} compact />
+                <div className="flex items-center gap-3">
+                  <SortControl value={segSort} options={['score', 'added']} onChange={next => { setSegSort(next); setPage(0) }} />
+                  <Pager page={page} totalPages={totalPages} onPage={setPage} compact />
+                </div>
               </div>
 
               {loadingSegments ? (
@@ -609,13 +649,16 @@ export default function Analytics() {
 
       {tab === 'false-positives' && (
           <section>
-            <div className="flex items-center justify-between mb-3">
-              <p className="text-xs text-gray-500">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <p className="text-xs text-gray-500 min-w-0 flex-1 basis-64">
                 Segments marked as not containing what they claim. They no longer skip or mute and are left out
                 of counts and sync; undo a mark to make the segment act again.
                 {!loadingFp && <span className="ml-2 text-gray-600">{fpTotal} total</span>}
               </p>
-              <Pager page={fpPage} totalPages={Math.ceil(fpTotal / PAGE_SIZE)} onPage={setFpPage} compact />
+              <div className="flex items-center gap-3 shrink-0">
+                <SortControl value={fpSort} options={['marked', 'score', 'added']} onChange={next => { setFpSort(next); setFpPage(0) }} />
+                <Pager page={fpPage} totalPages={Math.ceil(fpTotal / PAGE_SIZE)} onPage={setFpPage} compact />
+              </div>
             </div>
             {loadingFp ? (
               <p className="text-gray-500 text-sm">Loading…</p>
