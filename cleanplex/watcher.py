@@ -53,6 +53,7 @@ async def session_watcher_loop(get_config_fn, get_client_fn) -> None:
             await filter_engine.reap({s.session_key for s in sessions}, client)
 
             for session in sessions:
+                await _remember_client_control(session)
                 user_filter = await db.get_user_filter(session.user)
                 # Default: filter enabled if no explicit record
                 if user_filter is None or user_filter["enabled"]:
@@ -80,6 +81,20 @@ async def session_watcher_loop(get_config_fn, get_client_fn) -> None:
             sessions = []
 
         await asyncio.sleep(await _next_poll_delay(sessions, config))
+
+
+# client_identifier -> last recorded value, so the DB is written only when it changes.
+_recorded_control: dict[str, bool] = {}
+
+
+async def _remember_client_control(session) -> None:
+    """Record whether live skipping can reach this session's client (used by the stream proxy)."""
+    if not session.client_identifier:
+        return
+    reachable = bool(session.is_controllable and session.client_local)
+    if _recorded_control.get(session.client_identifier) != reachable:
+        await db.record_client_control(session.client_identifier, reachable)
+        _recorded_control[session.client_identifier] = reachable
 
 
 async def _next_poll_delay(sessions, config) -> float:

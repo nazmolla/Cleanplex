@@ -40,6 +40,9 @@ class ActiveSession:
     thumb: str = ""       # relative Plex thumb URL
     client_address: str = ""
     client_port: int = 32500
+    # Plex reports the player as on the server's own network. A remote player can show
+    # a state yet cannot be reached by the server's commands.
+    client_local: bool = True
     library_section_id: str = ""
     # Player volume 0-100, or None when the client does not report one. Captured so
     # a mute can restore the viewer's own level rather than guessing 100.
@@ -148,6 +151,7 @@ class PlexClient:
                 client_title = player.title if player else "Unknown"
                 controllable = bool(player and player.state is not None) if player else False
                 client_address = getattr(player, "address", "") if player else ""
+                client_local = bool(getattr(player, "local", True)) if player else False
                 client_port_raw = getattr(player, "port", 32500) if player else 32500
                 try:
                     client_port = int(client_port_raw or 32500)
@@ -201,6 +205,7 @@ class PlexClient:
                         is_controllable=controllable,
                         client_address=client_address,
                         client_port=client_port,
+                        client_local=client_local,
                         thumb=s.thumb or "",
                         library_section_id=section_id,
                         volume=volume,
