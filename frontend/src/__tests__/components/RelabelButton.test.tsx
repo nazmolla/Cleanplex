@@ -64,3 +64,69 @@ describe('RelabelButton (#125)', () => {
     expect(mockPut).not.toHaveBeenCalled()
   })
 })
+
+
+describe('RelabelButton label list shared across cards (#142)', () => {
+  const fresh = async () => {
+    vi.resetModules()
+    const apiModule = await import('../../api/client')
+    const Button = (await import('../../components/RelabelButton')).default
+    return { get: apiModule.api.get as ReturnType<typeof vi.fn>, Button }
+  }
+
+  it('shows every label on a card mounted before another card filled the shared list', async () => {
+    const { get, Button } = await fresh()
+    get.mockResolvedValue({ labels: LABELS })
+    render(<><Button seg={{ id: 1, labels: 'BUTTOCKS_EXPOSED' }} onChange={vi.fn()} />
+              <Button seg={{ id: 2, labels: 'FEMALE_BREAST_EXPOSED' }} onChange={vi.fn()} /></>)
+
+    fireEvent.click(screen.getAllByLabelText('Edit labels')[0])
+    await screen.findByLabelText('buttocks exposed')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    fireEvent.click(screen.getAllByLabelText('Edit labels')[1])
+    expect(await screen.findByLabelText('female breast exposed')).toBeChecked()
+    expect(screen.getAllByRole('checkbox')).toHaveLength(LABELS.length)
+    expect(get).toHaveBeenCalledTimes(1)
+  })
+
+  it('makes one request when two dialogs open at once', async () => {
+    const { get, Button } = await fresh()
+    get.mockResolvedValue({ labels: LABELS })
+    render(<><Button seg={{ id: 1, labels: 'BUTTOCKS_EXPOSED' }} onChange={vi.fn()} />
+              <Button seg={{ id: 2, labels: 'BUTTOCKS_EXPOSED' }} onChange={vi.fn()} /></>)
+
+    fireEvent.click(screen.getAllByLabelText('Edit labels')[0])
+    await screen.findByLabelText('buttocks exposed')
+
+    expect(get).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the error with a retry instead of an empty dialog, and a retry succeeds', async () => {
+    const { get, Button } = await fresh()
+    get.mockRejectedValueOnce(new Error('offline'))
+    get.mockResolvedValue({ labels: LABELS })
+    render(<Button seg={{ id: 1, labels: 'BUTTOCKS_EXPOSED' }} onChange={vi.fn()} />)
+
+    fireEvent.click(screen.getByLabelText('Edit labels'))
+    expect(await screen.findByText(/Could not load the label list/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+
+    expect(await screen.findByLabelText('buttocks exposed')).toBeInTheDocument()
+    expect(get).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not remember a failed load for the next open', async () => {
+    const { get, Button } = await fresh()
+    get.mockRejectedValueOnce(new Error('offline'))
+    get.mockResolvedValue({ labels: LABELS })
+    render(<Button seg={{ id: 1, labels: 'BUTTOCKS_EXPOSED' }} onChange={vi.fn()} />)
+
+    fireEvent.click(screen.getByLabelText('Edit labels'))
+    await screen.findByText(/Could not load the label list/)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByLabelText('Edit labels'))
+
+    expect(await screen.findByLabelText('buttocks exposed')).toBeInTheDocument()
+  })
+})
