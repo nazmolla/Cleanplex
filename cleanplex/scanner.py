@@ -264,6 +264,25 @@ async def enqueue(plex_guid: str) -> None:
     await _notify_workers()
 
 
+async def _enqueue_force(plex_guid: str) -> None:
+    """Put a title on the force queue unless it is already scanning or queued there.
+
+    Unlike force_scan_job() this leaves the DB flag alone (it is already set) and
+    does not announce a new force request; it only restores in-memory queue state.
+    """
+    async with _state_lock:
+        if plex_guid in _current_guids or plex_guid in _queued_force:
+            return
+        if plex_guid in _queued_normal:
+            _queued_normal.discard(plex_guid)
+            if plex_guid in _queued_normal_ordered:
+                _queued_normal_ordered.remove(plex_guid)
+        await _force_scan_queue.put(plex_guid)
+        _queued_force.add(plex_guid)
+        _queued_force_ordered.append(plex_guid)
+    await _notify_workers()
+
+
 async def enqueue_pending() -> None:
     """Drain the normal queue and re-enqueue all pending jobs in priority order.
 
@@ -297,6 +316,19 @@ async def enqueue_pending() -> None:
 
     jobs = await db.get_scan_jobs(status="pending")
     active = [j for j in jobs if is_scan_eligible(j, excluded_library_ids, scan_ratings_set)]
+
+    # The force queue lives in memory, so a restart empties it. force_scan stays set in
+    # the DB, and force jobs bypass eligibility, so restore every pending, non-ignored
+    # one here; filtering them through is_scan_eligible dropped them silently (#106).
+    forced = sorted(
+        (j for j in jobs if j.get("force_scan") and not j.get("ignored")),
+        key=lambda j: int(j.get("rating_key") or 0),
+        reverse=True,
+    )
+    for job in forced:
+        await _enqueue_force(job["plex_guid"])
+    if forced:
+        logger.info("Restored %d force-scan job(s) to the force queue", len(forced))
 
     movies = [j for j in active if j.get("media_type") != "episode"]
     episodes = [j for j in active if j.get("media_type") == "episode"]
