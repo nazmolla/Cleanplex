@@ -997,6 +997,21 @@ async def get_detection_accuracy() -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def get_skip_ranges_for_rating_key(rating_key: str) -> list[tuple[int, int]]:
+    """Return (start_ms, end_ms) of the title's active skip segments, ordered by start.
+
+    Active means not marked a false positive; only the skip action is returned, since
+    mutes do not remove video. Empty for an unknown rating key.
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT s.start_ms, s.end_ms FROM segments s JOIN scan_jobs j ON j.plex_guid = s.plex_guid "
+            f"WHERE j.rating_key = ? AND s.action = 'skip' AND {_ACTIVE_S} ORDER BY s.start_ms",
+            (rating_key,),
+        )
+        return [(row["start_ms"], row["end_ms"]) for row in rows]
+
+
 async def get_segment_by_id(segment_id: int) -> dict | None:
     async with get_connection() as conn:
         row = await (await conn.execute("SELECT * FROM segments WHERE id=?", (segment_id,))).fetchone()
