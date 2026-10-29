@@ -228,3 +228,46 @@ async def test_hover_preview_settings_default_to_the_evening_and_validate(http_c
     assert (await http_client.get("/api/settings")).json()["hover_window_start"] == "19:30"
     assert (await http_client.put("/api/settings", json={"hover_window_end": "25:00"})).status_code == 422
     assert (await http_client.put("/api/settings", json={"hover_previews_enabled": "on"})).status_code == 422
+
+
+# ── per-label thresholds, credits, inference threads (#120, #121, #123) ──────────
+
+async def _put(http_client, body):
+    with patch("cleanplex.web.routes.settings.scan_mod.request_scanner_restart", new=AsyncMock()) as restart:
+        resp = await http_client.put("/api/settings", json=body)
+    return resp, restart
+
+
+async def test_put_accepts_label_threshold_maps(http_client):
+    resp, _ = await _put(http_client, {
+        "label_thresholds": '{"MALE_GENITALIA_EXPOSED": 0.75}',
+        "siglip_label_thresholds": '{"BUTTOCKS_EXPOSED": 0.9}',
+    })
+    assert resp.status_code == 200
+    assert await db.get_setting("label_thresholds") == '{"MALE_GENITALIA_EXPOSED": 0.75}'
+
+
+@pytest.mark.parametrize("bad", [
+    "not json", "[0.5]", '{"NOT_A_LABEL": 0.5}', '{"BUTTOCKS_EXPOSED": 1.5}',
+    '{"BUTTOCKS_EXPOSED": "0.5"}', '{"BUTTOCKS_EXPOSED": true}',
+])
+async def test_put_rejects_invalid_label_threshold_maps(http_client, bad):
+    resp, _ = await _put(http_client, {"label_thresholds": bad})
+    assert resp.status_code == 422
+
+
+async def test_put_rejects_out_of_range_inference_threads(http_client):
+    resp, _ = await _put(http_client, {"inference_threads": "99"})
+    assert resp.status_code == 422
+
+
+async def test_changing_inference_threads_restarts_the_scanner_pool(http_client):
+    resp, restart = await _put(http_client, {"inference_threads": "2"})
+    assert resp.status_code == 200
+    restart.assert_awaited_once()
+
+
+async def test_put_ignore_credits_toggle(http_client):
+    resp, _ = await _put(http_client, {"ignore_credits": "0"})
+    assert resp.status_code == 200
+    assert await db.get_setting("ignore_credits") == "0"

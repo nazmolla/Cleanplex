@@ -15,6 +15,10 @@ class Config:
     plex_token: str = ""
     poll_interval: int = 5
     confidence_threshold: float = 0.6
+    # Per-label overrides of confidence_threshold / siglip_threshold; a label with no
+    # entry inherits the global value (#120).
+    label_thresholds: dict[str, float] = field(default_factory=dict)
+    siglip_label_thresholds: dict[str, float] = field(default_factory=dict)
     skip_buffer_ms: int = 3000
     pre_buffer_ms: int = 3000
     post_buffer_ms: int = 3000
@@ -28,6 +32,10 @@ class Config:
     siglip_enabled: bool = False
     siglip_threshold: float = 0.3
     siglip_min_hits: int = 2
+    # Do not run SigLIP after a title's Plex credits marker (#121).
+    ignore_credits: bool = True
+    # onnxruntime threads per session; 0 derives it from scan_workers (#123).
+    inference_threads: int = 0
     # ffmpeg -hwaccel auto for scans; falls back to software per file (#107).
     hw_decode: bool = True
     scan_ratings: list[str] = field(default_factory=list)  # empty = scan all ratings
@@ -63,11 +71,28 @@ class Config:
             # Return empty list if parsing fails - no scanning until labels are configured
             return []
 
+        def _thresholds(val: str) -> dict[str, float]:
+            try:
+                parsed = json.loads(val)
+            except Exception:
+                return {}
+            if not isinstance(parsed, dict):
+                return {}
+            out: dict[str, float] = {}
+            for label, value in parsed.items():
+                try:
+                    out[str(label)] = float(value)
+                except (TypeError, ValueError):
+                    continue
+            return out
+
         return cls(
             plex_url=s.get("plex_url", ""),
             plex_token=s.get("plex_token", ""),
             poll_interval=int(s.get("poll_interval", "5")),
             confidence_threshold=float(s.get("confidence_threshold", "0.6")),
+            label_thresholds=_thresholds(s.get("label_thresholds", "{}")),
+            siglip_label_thresholds=_thresholds(s.get("siglip_label_thresholds", "{}")),
             skip_buffer_ms=int(s.get("skip_buffer_ms", "3000")),
             # Fall back to skip_buffer_ms so a settings row written before the split
             # still governs both edges rather than silently reverting to the default.
@@ -82,6 +107,8 @@ class Config:
             siglip_enabled=s.get("siglip_enabled", "0") == "1",
             siglip_threshold=float(s.get("siglip_threshold", "0.3")),
             siglip_min_hits=max(1, int(s.get("siglip_min_hits", "2"))),
+            ignore_credits=s.get("ignore_credits", "1") == "1",
+            inference_threads=max(0, int(s.get("inference_threads", "0"))),
             hw_decode=s.get("hw_decode", "1") == "1",
             scan_ratings=_labels(s.get("scan_ratings", "[]")),
             scan_labels=_labels(s.get("scan_labels", "[]")),
@@ -92,6 +119,14 @@ class Config:
             hover_window_end=_time(s.get("hover_window_end", "07:00")),
             log_level=s.get("log_level", "INFO"),
         )
+
+    def threshold_for(self, label: str) -> float:
+        """NudeNet confidence a *label* must reach: its override, else the global threshold."""
+        return self.label_thresholds.get(label, self.confidence_threshold)
+
+    def siglip_threshold_for(self, label: str) -> float:
+        """SigLIP score a hit tagged *label* must reach: its override, else the global one."""
+        return self.siglip_label_thresholds.get(label, self.siglip_threshold)
 
     def is_configured(self) -> bool:
         return bool(self.plex_url and self.plex_token)
