@@ -11,6 +11,7 @@ from ...logger import get_logger
 from ... import database as db
 from ... import events
 from ... import importers
+from ... import plex_summary
 from ...importers._common import ParseError
 
 logger = get_logger(__name__)
@@ -57,6 +58,7 @@ async def _store(plex_guid: str, segments: list[dict], source: str, replace: boo
 
     count = await db.insert_segments_bulk(plex_guid, job.get("title") or "", segments, source)
     events.publish("segments_changed", guid=plex_guid)
+    plex_summary.refresh_soon(plex_guid)
     logger.info("Imported %d segment(s) for '%s' from %s", count, job.get("title"), source)
 
     return {
@@ -128,6 +130,7 @@ async def scan_subtitles(payload: SubtitleScanPayload):
     count = await subtitle_scanner.scan_title(
         payload.plex_guid, job.get("title") or "", job["file_path"]
     )
+    plex_summary.refresh_soon(payload.plex_guid)
     return {"imported": count, "source": "subtitles", "title": job.get("title") or ""}
 
 

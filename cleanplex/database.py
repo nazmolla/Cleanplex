@@ -753,6 +753,38 @@ async def get_segments_by_rating_key(rating_key: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def get_summary_stats(plex_guid: str) -> dict | None:
+    """Return what the Plex summary describes for a title, or None for an unknown title.
+
+    {"job": {status, finished_at, duration_ms, rating_key},
+     "segments": active rows (start_ms, end_ms, labels, severity, source),
+     "false_positives": count marked, "relabeled": count of corrections kept}.
+    """
+    async with get_connection() as conn:
+        job = await (await conn.execute(
+            "SELECT status, finished_at, duration_ms, rating_key FROM scan_jobs WHERE plex_guid=?", (plex_guid,)
+        )).fetchone()
+        if job is None:
+            return None
+        rows = await conn.execute_fetchall(
+            f"SELECT start_ms, end_ms, labels, severity, source FROM segments WHERE plex_guid=? AND {_ACTIVE} "
+            "ORDER BY start_ms",
+            (plex_guid,),
+        )
+        fp = await (await conn.execute(
+            "SELECT COUNT(*) FROM segments WHERE plex_guid=? AND false_positive=1", (plex_guid,)
+        )).fetchone()
+        relabeled = await (await conn.execute(
+            "SELECT COUNT(*) FROM segment_feedback WHERE plex_guid=? AND verdict='relabeled'", (plex_guid,)
+        )).fetchone()
+        return {
+            "job": dict(job),
+            "segments": [dict(r) for r in rows],
+            "false_positives": fp[0],
+            "relabeled": relabeled[0],
+        }
+
+
 async def count_segments_for_guid(plex_guid: str) -> int:
     """Return segment count for a title using SELECT COUNT — avoids loading full rows."""
     async with get_connection() as conn:

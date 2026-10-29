@@ -566,7 +566,12 @@ class PlexClient:
         pattern = r"\n*\[\[CLEANPLEX\]\].*?\[\[/CLEANPLEX\]\]\n*"
         return re.sub(pattern, "\n", summary or "", flags=re.S).strip()
 
-    def _build_cleanplex_block(self, status: str, segment_count: int, last_scan: str | None = None) -> str:
+    def _build_cleanplex_block(
+        self, status: str, segment_count: int, last_scan: str | None = None, details: list[str] | None = None
+    ) -> str:
+        """Build the marked block. *details* replaces the status/count/time lines with ready-made ones."""
+        if details is not None:
+            return "\n".join(["[[CLEANPLEX]]", *details, "[[/CLEANPLEX]]"])
         stamp = last_scan or datetime.now().strftime("%Y-%m-%d %H:%M")
         return (
             "[[CLEANPLEX]]\n"
@@ -583,15 +588,22 @@ class PlexClient:
         status: str,
         segment_count: int,
         last_scan: str | None = None,
+        details: list[str] | None = None,
     ) -> bool:
-        """Insert/update a marker-based Cleanplex block in Plex summary metadata."""
+        """Insert/update a marker-based Cleanplex block in Plex summary metadata.
+
+        Nothing is written when the item already carries exactly this block, so a refresh
+        that changes nothing costs no Plex metadata edit.
+        """
         try:
             srv = await asyncio.to_thread(self._get_server)
             item = await asyncio.to_thread(srv.fetchItem, int(rating_key))
             current_summary = getattr(item, "summary", "") or ""
 
             base_summary = self._strip_cleanplex_block(current_summary)
-            cleanplex_block = self._build_cleanplex_block(status, segment_count, last_scan)
+            cleanplex_block = self._build_cleanplex_block(status, segment_count, last_scan, details)
+            if details is not None and cleanplex_block in current_summary:
+                return True
             new_summary = f"{base_summary}\n\n{cleanplex_block}".strip() if base_summary else cleanplex_block
 
             try:
