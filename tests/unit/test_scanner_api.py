@@ -230,3 +230,73 @@ async def test_enqueue_pending_ignored_titles_excluded():
 @pytest.mark.parametrize("name, size", [("640m", 640), (" 640M ", 640), ("320n", 320), ("", 320)])
 def test_inference_resolution_follows_the_model_name(name, size):
     assert scanner._inference_resolution(name) == size
+
+
+# ── force-scan jobs survive a restart (#106) ──────────────────────────────────
+
+async def test_enqueue_pending_restores_force_jobs_that_are_not_normally_eligible():
+    """A force job whose rating is outside scan_ratings is dropped by the normal filter."""
+    await db.set_setting("scan_ratings", '["R"]')
+    await db.upsert_scan_job("forced", "Not Rated Film", "/f.mkv", "7", "lib", "L", content_rating="Not Rated")
+    await db.set_force_scan("forced", True)
+    await db.upsert_scan_job("plain", "Not Rated Plain", "/p.mkv", "8", "lib", "L", content_rating="Not Rated")
+
+    await scanner.enqueue_pending()
+
+    assert "forced" in scanner._queued_force
+    assert scanner._force_scan_queue.get_nowait() == "forced"
+    assert "plain" not in scanner._queued_normal  # normal filtering is unchanged
+
+
+async def test_enqueue_pending_restores_force_jobs_in_excluded_libraries():
+    await db.set_setting("excluded_library_ids", '["lib-x"]')
+    await db.upsert_scan_job("forced", "Film", "/f.mkv", "7", "lib-x", "L")
+    await db.set_force_scan("forced", True)
+
+    await scanner.enqueue_pending()
+
+    assert "forced" in scanner._queued_force
+
+
+async def test_enqueue_pending_skips_ignored_force_jobs():
+    await db.upsert_scan_job("forced", "Film", "/f.mkv", "7", "lib", "L")
+    await db.set_force_scan("forced", True)
+    await db.set_ignored("forced", True)
+
+    await scanner.enqueue_pending()
+
+    assert "forced" not in scanner._queued_force and "forced" not in scanner._queued_normal
+
+
+async def test_enqueue_pending_twice_does_not_duplicate_force_jobs():
+    """enqueue_pending also runs from the reorder-queue API while jobs are queued."""
+    await db.upsert_scan_job("forced", "Film", "/f.mkv", "7", "lib", "L")
+    await db.set_force_scan("forced", True)
+
+    await scanner.enqueue_pending()
+    await scanner.enqueue_pending()
+
+    assert scanner._force_scan_queue.qsize() == 1
+    assert "forced" not in scanner._queued_normal
+
+
+async def test_enqueue_pending_leaves_a_currently_scanning_force_job_alone():
+    await db.upsert_scan_job("forced", "Film", "/f.mkv", "7", "lib", "L")
+    await db.set_force_scan("forced", True)
+    scanner._current_guids.add("forced")
+
+    await scanner.enqueue_pending()
+
+    assert scanner._force_scan_queue.empty()
+
+
+async def test_force_job_interrupted_by_a_restart_is_requeued():
+    """Scanning jobs are reset to pending at startup, keeping force_scan."""
+    await db.upsert_scan_job("forced", "Film", "/f.mkv", "7", "lib", "L")
+    await db.set_force_scan("forced", True)
+    await db.update_scan_job_status("forced", "scanning", progress=0.4)
+
+    assert await db.reset_interrupted_scans() == 1
+    await scanner.enqueue_pending()
+
+    assert "forced" in scanner._queued_force
