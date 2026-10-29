@@ -15,6 +15,7 @@ import cleanplex.plex_client as plex_mod
 from .watcher import session_watcher_loop, library_watcher_loop
 from .scanner import scanner_loop
 from .hover_previews import hover_preview_loop
+from .thumbnail_backfill import thumbnail_backfill_loop
 from .web.app import create_app
 from .bg_jobs import recover_stale_jobs
 
@@ -82,6 +83,7 @@ async def _amain() -> None:
         library_watcher_loop(get_config, get_client),
         scanner_loop(get_config),
         hover_preview_loop(get_config),
+        thumbnail_backfill_loop(get_config),
     )
 
 

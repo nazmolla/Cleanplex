@@ -352,3 +352,21 @@ async def test_hover_preview_is_404_until_rendered_then_served(http_client, tmp_
     assert resp.headers["content-type"] == "video/mp4"
     listed = (await http_client.get("/api/titles/title-guid/segments")).json()["segments"][0]
     assert listed["hover_url"] == f"/api/segments/{seg}/hover"
+
+
+# ── refine backfill status (#141) ─────────────────────────────────────────────
+
+async def test_refine_status_counts_waiting_segments(http_client):
+    await db.upsert_scan_job(plex_guid="g", title="T", file_path="/m.mkv", rating_key="1",
+                             library_id="l", library_title="L")
+    await db.insert_segment("g", "T", 0, 1000)
+    await db.insert_segment("g", "T", 5000, 6000, thumbnail_ms=5500)
+
+    resp = await http_client.get("/api/segments/refine-status")
+
+    assert resp.json() == {"remaining": 1, "enabled": True}
+
+
+async def test_refine_status_reports_the_job_off_when_the_step_is_zero(http_client):
+    await db.set_setting("refine_step_ms", "0")
+    assert (await http_client.get("/api/segments/refine-status")).json()["enabled"] is False

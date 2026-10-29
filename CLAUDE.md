@@ -43,6 +43,8 @@ Every change — regardless of size — must follow these rules. No exceptions.
 | `siglip_detector.py` | SigLIP zero-shot fallback for frames NudeNet did not flag — model download, prompts from `scan_labels`, scoring |
 | `ort_runtime.py` | Shared onnxruntime session options: caps threads per inference session so scan workers do not oversubscribe the CPU. Every `InferenceSession` the scanner or SigLIP builds goes through it |
 | `plex_summary.py` | The Cleanplex block in a title's Plex summary: builds the description from the database (`db.get_summary_stats`) and refreshes it (debounced) after scans, deletes, false positives, relabels, imports and subtitle scans. Plex writes go through `PlexClient.update_cleanplex_summary` |
+| `segment_refine.py` | Dense sampling of a flagged window (`dense_hits`): the frames above threshold inside it, growing while the scene runs on. Shared by the scanner and the backfill, so both choose thumbnails and bounds the same way |
+| `thumbnail_backfill.py` | Background job (scan window, one segment at a time) that re-samples segments stored before dense sampling existed: better thumbnail, bounds that only grow, `refined_at` so each is processed once, hover preview reset when the window changes |
 | `hover_previews.py` | Job rendering each active segment's hover preview (small silent MP4) inside its own window (default 00:00–07:00); separate from the scanner, never part of a scan |
 | `subtitle_scanner.py` | Subtitle parsing and profanity matching — emits muted language segments |
 | `importers/` | Skip file parsers and exporters (`.skp`, `.edl`, `.mcf`, pasted lists). One module per format; all return the same normalized segment dict |

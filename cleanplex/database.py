@@ -303,6 +303,8 @@ async def init_db() -> None:
             # Absolute time of the frame saved as the segment's thumbnail (#133); NULL for
             # segments scanned before it was recorded.
             "ALTER TABLE segments ADD COLUMN thumbnail_ms INTEGER",
+            # When the backfill job re-sampled a segment stored before dense sampling existed (#141).
+            "ALTER TABLE segments ADD COLUMN refined_at TIMESTAMP",
             "ALTER TABLE scan_jobs ADD COLUMN content_rating TEXT DEFAULT ''",
             "ALTER TABLE scan_jobs ADD COLUMN media_type TEXT DEFAULT 'movie'",
             "ALTER TABLE scan_jobs ADD COLUMN force_scan INTEGER DEFAULT 0",
@@ -1042,6 +1044,71 @@ async def get_segment_by_id(segment_id: int) -> dict | None:
     async with get_connection() as conn:
         row = await (await conn.execute("SELECT * FROM segments WHERE id=?", (segment_id,))).fetchone()
         return dict(row) if row else None
+
+
+_NEEDS_REFINING = (
+    "s.source IN ('scanner','siglip') AND s.thumbnail_ms IS NULL AND s.refined_at IS NULL "
+    f"AND {_ACTIVE_S}"
+)
+
+
+async def get_segments_to_refine(limit: int) -> list[dict]:
+    """Return up to *limit* active detector segments stored before dense sampling, by title then time.
+
+    Rows carry what the backfill needs: the segment, its title's file and parts, and rating key.
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT s.id, s.plex_guid, s.start_ms, s.end_ms, s.confidence, s.labels, s.severity, s.source, "
+            "s.detector, s.thumbnail_path, j.file_path, j.part_files, j.title, j.rating_key "
+            f"FROM segments s JOIN scan_jobs j ON j.plex_guid = s.plex_guid WHERE {_NEEDS_REFINING} "
+            "ORDER BY s.plex_guid, s.start_ms LIMIT ?",
+            (limit,),
+        )
+        return [dict(r) for r in rows]
+
+
+async def count_segments_to_refine() -> int:
+    """Return how many active detector segments are still waiting for the backfill."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(f"SELECT COUNT(*) FROM segments s WHERE {_NEEDS_REFINING}")).fetchone()
+        return row[0]
+
+
+async def mark_segment_refined(segment_id: int) -> None:
+    """Record that the backfill has looked at this segment, so it is never revisited."""
+    async with get_connection() as conn:
+        await conn.execute("UPDATE segments SET refined_at=CURRENT_TIMESTAMP WHERE id=?", (segment_id,))
+        await conn.commit()
+
+
+async def apply_segment_refinement(
+    segment_id: int,
+    *,
+    start_ms: int,
+    end_ms: int,
+    confidence: float,
+    labels: str,
+    severity: str,
+    source: str,
+    detector: str,
+    thumbnail_ms: int | None,
+    reset_hover: bool,
+) -> None:
+    """Store a segment's refined bounds, labels and thumbnail time, and mark it refined.
+
+    reset_hover clears the hover preview state so a segment whose window changed is re-rendered.
+    thumbnail_ms is left as it was when the thumbnail was not replaced.
+    """
+    async with get_connection() as conn:
+        await conn.execute(
+            "UPDATE segments SET start_ms=?, end_ms=?, confidence=?, labels=?, severity=?, source=?, detector=?, "
+            "thumbnail_ms=COALESCE(?, thumbnail_ms), refined_at=CURRENT_TIMESTAMP, "
+            "hover_status=CASE WHEN ? THEN '' ELSE hover_status END WHERE id=?",
+            (start_ms, end_ms, confidence, labels, severity, source, detector, thumbnail_ms,
+             1 if reset_hover else 0, segment_id),
+        )
+        await conn.commit()
 
 
 async def get_hover_preview_candidates(limit: int) -> list[dict]:

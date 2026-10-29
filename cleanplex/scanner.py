@@ -17,6 +17,7 @@ import cleanplex.plex_client as plex_mod
 
 from .frame_extractor import extract_frames_batch, extract_frames_window, get_duration_ms
 from . import events, plex_summary, siglip_detector
+from .segment_refine import REFINE_MAX_FRAMES, dense_hits  # noqa: F401 (REFINE_MAX_FRAMES is re-exported)
 from .logger import get_logger
 from . import database as db
 from .importers._common import severity_for_labels
@@ -43,9 +44,6 @@ PROGRESS_EVENT_INTERVAL_S = 2.0
 # can find what an older scanner finished (#138). 1: per-label thresholds, credits skip, SigLIP
 # credit prompts. 2: severity from labels. 3: dense re-sample of flagged windows.
 SCAN_VERSION = 3
-# A flagged window is re-sampled at refine_step_ms, but never into more frames than this, so a
-# long segment costs a bounded amount: 120 frames is about 2 s of NudeNet at 320 px.
-REFINE_MAX_FRAMES = 120
 
 # Detection models are cached per thread (threading.local), so the number of
 # threads running inference is the number of model copies held in memory. A pool
@@ -648,6 +646,67 @@ def request_skip_scan(plex_guid: str) -> bool:
     return True
 
 
+async def prepare_detectors(config, label: str) -> tuple[str, str, bool, bool]:
+    """Resolve which detectors a scan uses: (nudenet_model, nudenet_model_path, custom_model, siglip_on).
+
+    Downloads the 640m model once under a lock (so parallel workers do not race), falls back to
+    320n when it is unavailable, and turns SigLIP off if its models cannot be fetched.
+    """
+    enabled_labels = set(config.scan_labels) if config.scan_labels else set()
+    nudenet_model = str(getattr(config, "nudenet_model", "320n"))
+    nudenet_model_path = str(getattr(config, "nudenet_model_path", ""))
+    # A user-supplied model file; checked before the 640m download fills the path.
+    custom_model = bool(nudenet_model_path)
+    if nudenet_model.startswith("640") and not nudenet_model_path:
+        nudenet_model_path = await _ensure_640m_model_async()
+        if not nudenet_model_path:
+            logger.warning("Could not prepare 640m model for %s; falling back to 320n", label)
+            nudenet_model = "320n"
+
+    siglip_on = bool(getattr(config, "siglip_enabled", False)) and bool(enabled_labels)
+    if siglip_on and not await siglip_detector.ensure_models_async():
+        logger.warning("SigLIP models unavailable; using NudeNet only for %s", label)
+        siglip_on = False
+    return nudenet_model, nudenet_model_path, custom_model, siglip_on
+
+
+def frame_size_for(nudenet_model: str, siglip_on: bool) -> int:
+    """Frames are sized for NudeNet. SigLIP shrinks every frame to 224 px, so a 320 px frame loses
+    it nothing, but it must never get less than that."""
+    size = _inference_resolution(nudenet_model)
+    return max(size, siglip_detector.IMAGE_SIZE) if siglip_on else size
+
+
+def make_judge(config, nudenet_model: str, nudenet_model_path: str, siglip_on: bool,
+               credits_start_ms: int | None = None):
+    """Return judge(jpeg, at_ms, use_siglip=True) -> (is_nude, siglip_hit, score, labels).
+
+    SigLIP only looks at frames NudeNet passed over: its job is the scenes NudeNet misses, not a
+    second opinion on its hits, and it is skipped from credits_start_ms on. asyncio runs the
+    inference on the pool, so ffmpeg's pipe keeps filling while a frame is being scored.
+    """
+    enabled_labels = set(config.scan_labels) if config.scan_labels else set()
+    threshold = config.confidence_threshold
+
+    async def judge(jpeg: bytes, at_ms: int, use_siglip: bool = True) -> tuple[bool, bool, float, list[str]]:
+        is_nude, score, labels = await _infer(
+            _classify_frame, jpeg, threshold, enabled_labels, nudenet_model, nudenet_model_path,
+            config.label_thresholds,
+        )
+        siglip_hit = False
+        in_credits = credits_start_ms is not None and at_ms >= credits_start_ms
+        if not is_nude and use_siglip and siglip_on and not in_credits:
+            siglip_score, siglip_label = await _infer(siglip_detector.score_frame, jpeg, enabled_labels)
+            siglip_hit = siglip_score >= config.siglip_threshold_for(siglip_label)
+            if siglip_hit:
+                # Ranked below any NudeNet score so a NudeNet frame always wins the thumbnail
+                # and labels of a mixed cluster.
+                score, labels = siglip_score - 1.0, [siglip_label]
+        return is_nude, siglip_hit, score, labels
+
+    return judge
+
+
 async def scan_video(plex_guid: str, config) -> None:
     _skip_requested_guids.discard(plex_guid)
 
@@ -761,26 +820,9 @@ async def scan_video(plex_guid: str, config) -> None:
         cluster_max_siglip_run = 0
         siglip_run = 0  # consecutive SigLIP-only hit frames ending at the current frame
 
-        threshold = config.confidence_threshold
         enabled_labels = set(config.scan_labels) if config.scan_labels else set()
-        nudenet_model = str(getattr(config, "nudenet_model", "320n"))
-        nudenet_model_path = str(getattr(config, "nudenet_model_path", ""))
-        # A user-supplied model file; checked before the 640m download fills the path.
-        custom_model = bool(nudenet_model_path)
-
-        # Pre-warm 640m model under asyncio.Lock before dispatching threads so
-        # parallel workers do not race to download the same file concurrently.
-        if nudenet_model.startswith("640") and not nudenet_model_path:
-            nudenet_model_path = await _ensure_640m_model_async()
-            if not nudenet_model_path:
-                logger.warning("Could not prepare 640m model for %s; falling back to 320n", title)
-                nudenet_model = "320n"
-
-        siglip_on = bool(getattr(config, "siglip_enabled", False)) and bool(enabled_labels)
+        nudenet_model, nudenet_model_path, custom_model, siglip_on = await prepare_detectors(config, title)
         siglip_min_hits = max(1, int(getattr(config, "siglip_min_hits", 2)))
-        if siglip_on and not await siglip_detector.ensure_models_async():
-            logger.warning("SigLIP models unavailable; scanning %s with NudeNet only", title)
-            siglip_on = False
 
         # Frames from here on are credits: SigLIP reads text-heavy screens as nudity,
         # so it skips them while NudeNet keeps looking (a post-credits scene counts).
@@ -790,11 +832,7 @@ async def scan_video(plex_guid: str, config) -> None:
             if credits_start_ms is not None:
                 logger.info("Skipping SigLIP after credits start at %dms for %s", credits_start_ms, title)
 
-        # Frames are sized for NudeNet. SigLIP shrinks every frame to 224 px, so a
-        # 320 px frame loses it nothing, but it must never get less than that.
-        frame_size = _inference_resolution(nudenet_model)
-        if siglip_on:
-            frame_size = max(frame_size, siglip_detector.IMAGE_SIZE)
+        frame_size = frame_size_for(nudenet_model, siglip_on)
 
         # Recorded on each segment so the UI can say which model found it. Taken
         # after the 640m fallback above, so it names the model actually used.
@@ -809,27 +847,7 @@ async def scan_video(plex_guid: str, config) -> None:
         hardware = bool(getattr(config, "hw_decode", True))
         refine_step_ms = max(0, int(getattr(config, "refine_step_ms", 500)))
 
-        async def _judge(jpeg: bytes, at_ms: int, use_siglip: bool = True) -> tuple[bool, bool, float, list[str]]:
-            """Return (is_nude, siglip_hit, score, labels) for one frame at absolute time at_ms.
-
-            SigLIP only looks at frames NudeNet passed over: its job is the scenes NudeNet
-            misses, not a second opinion on its hits. asyncio runs inference on the pool, so
-            ffmpeg's pipe keeps filling while a frame is being scored.
-            """
-            is_nude, score, labels = await _infer(
-                _classify_frame, jpeg, threshold, enabled_labels, nudenet_model, nudenet_model_path,
-                config.label_thresholds,
-            )
-            siglip_hit = False
-            in_credits = credits_start_ms is not None and at_ms >= credits_start_ms
-            if not is_nude and use_siglip and siglip_on and not in_credits:
-                siglip_score, siglip_label = await _infer(siglip_detector.score_frame, jpeg, enabled_labels)
-                siglip_hit = siglip_score >= config.siglip_threshold_for(siglip_label)
-                if siglip_hit:
-                    # Ranked below any NudeNet score so a NudeNet frame always wins the
-                    # thumbnail and labels of a mixed cluster.
-                    score, labels = siglip_score - 1.0, [siglip_label]
-            return is_nude, siglip_hit, score, labels
+        _judge = make_judge(config, nudenet_model, nudenet_model_path, siglip_on, credits_start_ms)
 
         async def _refine_cluster(source: str) -> str:
             """Re-sample the open cluster's window densely; keep its peak frame and widen its bounds.
@@ -855,48 +873,15 @@ async def scan_video(plex_guid: str, config) -> None:
             # hits must not stretch a segment NudeNet already vouches for.
             use_siglip = source == "siglip"
 
-            async def scan(lo_ms: int, hi_ms: int, dstep: int) -> list[tuple[int, bool, float, list[str], bytes]]:
-                found = []
-                try:
-                    async for rel_ms, jpeg in extract_frames_window(
-                        part_file_now, lo_ms - part_offset_now, hi_ms - lo_ms, dstep, frame_size, hardware
-                    ):
-                        if not jpeg:
-                            continue
-                        at_ms = part_offset_now + rel_ms
-                        is_nude, siglip_hit, score, labels = await _judge(jpeg, at_ms, use_siglip)
-                        if is_nude or siglip_hit:
-                            found.append((at_ms, is_nude, score, labels, jpeg))
-                except Exception as exc:
-                    logger.warning("Re-sampling %d-%dms of '%s' failed, keeping the coarse result: %s",
-                                   lo_ms, hi_ms, title, exc)
-                return found
+            async def judge(jpeg: bytes, at_ms: int) -> tuple[bool, bool, float, list[str]]:
+                return await _judge(jpeg, at_ms, use_siglip)
 
-            lo = max(part_offset_now, cluster_start_ms - step_ms)
-            hi = min(part_end, cluster_prev_ms + step_ms)
-            dstep = max(refine_step_ms, -(-(hi - lo) // REFINE_MAX_FRAMES))
-            hits = await scan(lo, hi, dstep)
-            # A hit at the window's edge means the scene runs on: keep looking, up to one merge
-            # gap each way, in chunks of two coarse steps.
-            chunk = max(2 * step_ms, 4 * dstep)
-            grown = 0
-            while hits and grown < gap_ms and hi < part_end and max(h[0] for h in hits) >= hi - 2 * dstep:
-                new_hi = min(part_end, hi + chunk)
-                more = await scan(hi, new_hi, dstep)
-                hits += more
-                grown += new_hi - hi
-                hi = new_hi
-                if not more:
-                    break
-            grown = 0
-            while hits and grown < gap_ms and lo > part_offset_now and min(h[0] for h in hits) <= lo + 2 * dstep:
-                new_lo = max(part_offset_now, lo - chunk)
-                more = await scan(new_lo, lo, dstep)
-                hits += more
-                grown += lo - new_lo
-                lo = new_lo
-                if not more:
-                    break
+            hits = await dense_hits(
+                part_file=part_file_now, part_offset_ms=part_offset_now, part_end_ms=part_end,
+                start_ms=cluster_start_ms, last_ms=cluster_prev_ms, coarse_step_ms=step_ms, gap_ms=gap_ms,
+                refine_step_ms=refine_step_ms, frame_size=frame_size, hardware=hardware,
+                judge=judge, extract=extract_frames_window, label=title,
+            )
 
             if source == "siglip":
                 dense_nudenet = sum(1 for h in hits if h[1])
