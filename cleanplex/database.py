@@ -36,13 +36,22 @@ def get_db_path() -> Path:
     return _DB_PATH
 
 
+BUSY_TIMEOUT_MS = 30_000
+
+
 @asynccontextmanager
 async def get_connection():
     async with aiosqlite.connect(str(get_db_path())) as conn:
         conn.row_factory = aiosqlite.Row
-        # foreign_keys is connection-scoped and must be set per connection.
-        # journal_mode=WAL is persistent after init_db(); no need to repeat it here.
+        # foreign_keys, busy_timeout and synchronous are connection-scoped and must be
+        # set per connection. journal_mode=WAL is persistent after init_db().
         await conn.execute("PRAGMA foreign_keys=ON")
+        # Wait for a competing writer instead of failing at once: scan writes and UI
+        # reads overlap, and a busy host can hold a write lock for seconds (#124).
+        await conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+        # NORMAL is safe in WAL mode (a crash can lose the last commit, never corrupt
+        # the file) and avoids an fsync per commit.
+        await conn.execute("PRAGMA synchronous=NORMAL")
         yield conn
 
 
@@ -218,6 +227,11 @@ DEFAULT_SETTINGS = {
     "plex_token": "",
     "poll_interval": "5",
     "confidence_threshold": "0.6",
+    # JSON {label: threshold}; labels not listed inherit the global thresholds.
+    "label_thresholds": "{}",
+    "siglip_label_thresholds": "{}",
+    "ignore_credits": "1",
+    "inference_threads": "0",
     "skip_buffer_ms": "3000",
     # Segment bounds are widened by these before matching, so a skip lands ahead of
     # the flagged content and does not re-trigger on the tail. Seeded from

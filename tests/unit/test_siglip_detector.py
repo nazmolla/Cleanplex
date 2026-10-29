@@ -137,3 +137,11 @@ async def test_ensure_models_reports_failure_without_raising(monkeypatch, tmp_pa
     monkeypatch.setattr(sd, "_download_models", lambda: False)
 
     assert await sd.ensure_models_async() is False
+
+
+def test_credit_and_title_card_phrases_are_neutral_counter_examples():
+    """#122: text-heavy credit screens need prompts to land on that are never hits."""
+    prompts, owner, positive = sd.build_prompts({"BUTTOCKS_EXPOSED"})
+    for phrase in ("end credits scrolling text", "a film title card", "white text on a black background"):
+        i = prompts.index(phrase)
+        assert owner[i] == "" and positive[i] is False

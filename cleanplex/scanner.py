@@ -19,6 +19,7 @@ from .frame_extractor import extract_frames_batch, get_duration_ms
 from . import events, siglip_detector
 from .logger import get_logger
 from . import database as db
+from . import ort_runtime
 
 if TYPE_CHECKING:
     pass
@@ -394,6 +395,7 @@ def _get_detector(model_name: str = "320n", model_path: str = ""):
                 )
                 current_key = (320, "")
                 detector = NudeDetector(inference_resolution=320)
+            ort_runtime.limit_nudenet_threads(detector, current_key[1])
             _thread_local.nude_detector = detector
             _thread_local.nude_detector_key = current_key
             logger.info("NudeNet detector loaded in thread %s", threading.get_ident())
@@ -469,12 +471,16 @@ def _classify_frame(
     enabled_labels: set[str],
     model_name: str,
     model_path: str,
+    label_thresholds: dict[str, float] | None = None,
 ) -> tuple[bool, float, list[str]]:
     """Return (is_nude, confidence, detected_labels) for a JPEG frame.
-    
-    Only returns labels that are in enabled_labels.
-    Only returns is_nude=True if any enabled label meets threshold.
+
+    A detection counts only if its label is enabled and its score reaches that
+    label's entry in label_thresholds, else the global threshold (#120).
+    detected_labels holds just the labels that counted; confidence is the best
+    score among them, or among all enabled labels when none counted.
     """
+    overrides = label_thresholds or {}
     try:
         import tempfile, os
         detector = _get_detector(model_name=model_name, model_path=model_path)
@@ -492,23 +498,25 @@ def _classify_frame(
         if not results:
             return False, 0.0, []
 
-        max_score = 0.0
+        best_any = 0.0
+        best_passing = 0.0
         detected = []
-        
-        # Only process labels that are enabled
+
         for det in results:
             label = det.get("class")
             score = det.get("score", 0.0)
-            
-            # Only include if this label is enabled
-            if label in enabled_labels:
-                if label not in detected:
-                    detected.append(label)
-                if score > max_score:
-                    max_score = score
+            if label not in enabled_labels:
+                continue
+            best_any = max(best_any, score)
+            if score < overrides.get(label, threshold):
+                continue
+            if label not in detected:
+                detected.append(label)
+            best_passing = max(best_passing, score)
 
-        # Return is_nude only if we found enabled labels above threshold
-        return max_score >= threshold, max_score, detected
+        if detected:
+            return True, best_passing, detected
+        return False, best_any, []
     except Exception as exc:
         # The first occurrence of each distinct error is a warning: a failure that
         # repeats on every frame would otherwise look like a title with no nudity.
@@ -519,6 +527,26 @@ def _classify_frame(
         else:
             logger.debug("Classification error: %s", message)
         return False, 0.0, []
+
+
+async def _credits_start_ms(rating_key: str) -> int | None:
+    """Return where the end credits start per Plex, or None if unknown.
+
+    Prefers a marker Plex flags as final; failing that, the latest credits marker,
+    since an earlier one may be a mid-film credit roll. Any Plex error means "no
+    marker": the scan must not fail because credits could not be located (#121).
+    """
+    try:
+        markers = await plex_mod.get_client().get_markers(rating_key)
+    except Exception as exc:
+        logger.debug("No credits marker for rating_key=%s: %s", rating_key, exc)
+        return None
+    credits = [m for m in markers if m.get("marker_type") == "credits"]
+    final = [m for m in credits if m.get("final")]
+    chosen = final or credits
+    if not chosen:
+        return None
+    return max(int(m["start_ms"]) for m in chosen)
 
 
 def _segment_source(nudenet_hits: int, hit_count: int, max_siglip_run: int,
@@ -707,11 +735,18 @@ async def scan_video(plex_guid: str, config) -> None:
                 nudenet_model = "320n"
 
         siglip_on = bool(getattr(config, "siglip_enabled", False)) and bool(enabled_labels)
-        siglip_threshold = float(getattr(config, "siglip_threshold", 0.3))
         siglip_min_hits = max(1, int(getattr(config, "siglip_min_hits", 2)))
         if siglip_on and not await siglip_detector.ensure_models_async():
             logger.warning("SigLIP models unavailable; scanning %s with NudeNet only", title)
             siglip_on = False
+
+        # Frames from here on are credits: SigLIP reads text-heavy screens as nudity,
+        # so it skips them while NudeNet keeps looking (a post-credits scene counts).
+        credits_start_ms: int | None = None
+        if siglip_on and rating_key and bool(getattr(config, "ignore_credits", True)):
+            credits_start_ms = await _credits_start_ms(rating_key)
+            if credits_start_ms is not None:
+                logger.info("Skipping SigLIP after credits start at %dms for %s", credits_start_ms, title)
 
         # Frames are sized for NudeNet. SigLIP shrinks every frame to 224 px, so a
         # 320 px frame loses it nothing, but it must never get less than that.
@@ -832,15 +867,17 @@ async def scan_video(plex_guid: str, config) -> None:
                         enabled_labels,
                         nudenet_model,
                         nudenet_model_path,
+                        config.label_thresholds,
                     )
                     # SigLIP only looks at frames NudeNet passed over: its job is
                     # the scenes NudeNet misses, not a second opinion on its hits.
                     siglip_hit = False
-                    if not is_nude and siglip_on:
+                    in_credits = credits_start_ms is not None and offset_ms >= credits_start_ms
+                    if not is_nude and siglip_on and not in_credits:
                         siglip_score, siglip_label = await _infer(
                             siglip_detector.score_frame, jpeg, enabled_labels
                         )
-                        siglip_hit = siglip_score >= siglip_threshold
+                        siglip_hit = siglip_score >= config.siglip_threshold_for(siglip_label)
                     siglip_run = siglip_run + 1 if siglip_hit else 0
                     if siglip_hit:
                         # Ranked below any NudeNet score so a NudeNet frame always
@@ -981,6 +1018,8 @@ async def scanner_loop(get_config_fn) -> None:
         config = await get_config_fn()
         worker_count = max(1, int(getattr(config, "scan_workers", 2)))
         _worker_pool_size = worker_count
+        threads = ort_runtime.configure(worker_count, int(getattr(config, "inference_threads", 0)))
+        logger.info("Inference sessions capped at %d thread(s) each", threads)
         _restart_requested = False
         logger.info("Starting scanner pool with %d worker(s)", worker_count)
         _replace_inference_pool(worker_count)
