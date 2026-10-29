@@ -67,6 +67,17 @@ async function openLabel() {
 }
 
 describe('Analytics', () => {
+  it('shows when in the film each thumbnail was taken (#133)', async () => {
+    segmentsResponse = () => Promise.resolve({
+      segments: [seg(1, 'Movie One', { thumbnail_ms: 2_892_000, has_thumbnail: true, thumbnail_url: '/t/1' }), seg(2, 'Movie Two')],
+      total: 2,
+    })
+    await openLabel()
+    expect(screen.getByText('frame 0:48:12')).toBeInTheDocument()
+    // A segment scanned before the time was recorded shows none.
+    expect(screen.getAllByText(/^frame /)).toHaveLength(1)
+  })
+
   it('keeps the list on screen through the live refresh after a false-positive mark (#116)', async () => {
     await openLabel()
 

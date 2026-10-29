@@ -242,6 +242,8 @@ DEFAULT_SETTINGS = {
     "scan_workers": "2",
     "segment_gap_ms": "12000",
     "segment_min_hits": "1",
+    # Dense re-sample of each flagged window for thumbnail and bounds, in ms; 0 = off.
+    "refine_step_ms": "500",
     # SigLIP fallback: off by default because enabling it downloads ~815 MB of
     # model weights on the next scan. Its threshold is a softmax share, not a
     # NudeNet confidence, so it is tuned separately from confidence_threshold.
@@ -298,6 +300,9 @@ async def init_db() -> None:
             # Which scanner revision finished the scan (scanner.SCAN_VERSION), so a rescan can
             # be aimed at titles scanned before a change (#138). 0 = scanned before it existed.
             "ALTER TABLE scan_jobs ADD COLUMN scan_version INTEGER DEFAULT 0",
+            # Absolute time of the frame saved as the segment's thumbnail (#133); NULL for
+            # segments scanned before it was recorded.
+            "ALTER TABLE segments ADD COLUMN thumbnail_ms INTEGER",
             "ALTER TABLE scan_jobs ADD COLUMN content_rating TEXT DEFAULT ''",
             "ALTER TABLE scan_jobs ADD COLUMN media_type TEXT DEFAULT 'movie'",
             "ALTER TABLE scan_jobs ADD COLUMN force_scan INTEGER DEFAULT 0",
@@ -751,6 +756,38 @@ async def get_segments_by_rating_key(rating_key: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def get_summary_stats(plex_guid: str) -> dict | None:
+    """Return what the Plex summary describes for a title, or None for an unknown title.
+
+    {"job": {status, finished_at, duration_ms, rating_key},
+     "segments": active rows (start_ms, end_ms, labels, severity, source),
+     "false_positives": count marked, "relabeled": count of corrections kept}.
+    """
+    async with get_connection() as conn:
+        job = await (await conn.execute(
+            "SELECT status, finished_at, duration_ms, rating_key FROM scan_jobs WHERE plex_guid=?", (plex_guid,)
+        )).fetchone()
+        if job is None:
+            return None
+        rows = await conn.execute_fetchall(
+            f"SELECT start_ms, end_ms, labels, severity, source FROM segments WHERE plex_guid=? AND {_ACTIVE} "
+            "ORDER BY start_ms",
+            (plex_guid,),
+        )
+        fp = await (await conn.execute(
+            "SELECT COUNT(*) FROM segments WHERE plex_guid=? AND false_positive=1", (plex_guid,)
+        )).fetchone()
+        relabeled = await (await conn.execute(
+            "SELECT COUNT(*) FROM segment_feedback WHERE plex_guid=? AND verdict='relabeled'", (plex_guid,)
+        )).fetchone()
+        return {
+            "job": dict(job),
+            "segments": [dict(r) for r in rows],
+            "false_positives": fp[0],
+            "relabeled": relabeled[0],
+        }
+
+
 async def count_segments_for_guid(plex_guid: str) -> int:
     """Return segment count for a title using SELECT COUNT — avoids loading full rows."""
     async with get_connection() as conn:
@@ -791,6 +828,7 @@ async def insert_segment(
     channel: str = "both",
     source: str = "scanner",
     detector: str = "",
+    thumbnail_ms: int | None = None,
 ) -> int:
     """Insert one segment and return its row id.
 
@@ -800,10 +838,10 @@ async def insert_segment(
     async with get_connection() as conn:
         cursor = await conn.execute(
             "INSERT INTO segments(plex_guid, title, start_ms, end_ms, confidence, thumbnail_path, "
-            "labels, category, severity, action, channel, source, detector) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "labels, category, severity, action, channel, source, detector, thumbnail_ms) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (plex_guid, title, start_ms, end_ms, confidence, thumbnail_path, labels,
-             category, severity, action, channel, source, detector),
+             category, severity, action, channel, source, detector, thumbnail_ms),
         )
         segment_id = cursor.lastrowid
         # A rescan rewrites segments, so a window the user already marked as a false
@@ -1141,7 +1179,7 @@ async def get_segments_for_labels(
         rows = await conn.execute_fetchall(
             f"""
             SELECT s.id, s.plex_guid, s.title, s.start_ms, s.end_ms,
-                   s.confidence, s.labels, s.thumbnail_path, s.source, s.detector,
+                   s.confidence, s.labels, s.thumbnail_path, s.thumbnail_ms, s.source, s.detector,
                    s.hover_status, j.content_rating, j.media_type, j.rating_key,
                    j.show_rating_key
             FROM segments s
@@ -1177,7 +1215,7 @@ async def get_false_positive_segments(
         rows = await conn.execute_fetchall(
             f"""
             SELECT s.id, s.plex_guid, s.title, s.start_ms, s.end_ms,
-                   s.confidence, s.labels, s.thumbnail_path, s.source, s.detector,
+                   s.confidence, s.labels, s.thumbnail_path, s.thumbnail_ms, s.source, s.detector,
                    s.hover_status, j.content_rating, j.media_type, j.rating_key,
                    j.show_rating_key,
                    (SELECT MAX(f.created_at) FROM segment_feedback f

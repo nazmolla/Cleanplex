@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING
 import httpx
 import cleanplex.plex_client as plex_mod
 
-from .frame_extractor import extract_frames_batch, get_duration_ms
-from . import events, siglip_detector
+from .frame_extractor import extract_frames_batch, extract_frames_window, get_duration_ms
+from . import events, plex_summary, siglip_detector
 from .logger import get_logger
 from . import database as db
 from .importers._common import severity_for_labels
@@ -43,6 +43,9 @@ PROGRESS_EVENT_INTERVAL_S = 2.0
 # can find what an older scanner finished (#138). 1: per-label thresholds, credits skip, SigLIP
 # credit prompts. 2: severity from labels. 3: dense re-sample of flagged windows.
 SCAN_VERSION = 3
+# A flagged window is re-sampled at refine_step_ms, but never into more frames than this, so a
+# long segment costs a bounded amount: 120 frames is about 2 s of NudeNet at 320 px.
+REFINE_MAX_FRAMES = 120
 
 # Detection models are cached per thread (threading.local), so the number of
 # threads running inference is the number of model copies held in memory. A pool
@@ -752,6 +755,7 @@ async def scan_video(plex_guid: str, config) -> None:
         cluster_hit_count = 0
         cluster_best_jpeg: bytes = b""
         cluster_best_score = 0.0
+        cluster_best_ms: int | None = None  # absolute time of the frame kept as the thumbnail
         cluster_detected_labels: list[str] = []
         cluster_nudenet_hits = 0
         cluster_max_siglip_run = 0
@@ -798,10 +802,129 @@ async def scan_video(plex_guid: str, config) -> None:
 
         THUMBNAILS_DIR.mkdir(parents=True, exist_ok=True)
 
+        # The part being scanned, for re-sampling a flagged window inside it (#133).
+        part_file_now: str | None = None
+        part_offset_now = 0
+        part_duration_now = 0
+        hardware = bool(getattr(config, "hw_decode", True))
+        refine_step_ms = max(0, int(getattr(config, "refine_step_ms", 500)))
+
+        async def _judge(jpeg: bytes, at_ms: int, use_siglip: bool = True) -> tuple[bool, bool, float, list[str]]:
+            """Return (is_nude, siglip_hit, score, labels) for one frame at absolute time at_ms.
+
+            SigLIP only looks at frames NudeNet passed over: its job is the scenes NudeNet
+            misses, not a second opinion on its hits. asyncio runs inference on the pool, so
+            ffmpeg's pipe keeps filling while a frame is being scored.
+            """
+            is_nude, score, labels = await _infer(
+                _classify_frame, jpeg, threshold, enabled_labels, nudenet_model, nudenet_model_path,
+                config.label_thresholds,
+            )
+            siglip_hit = False
+            in_credits = credits_start_ms is not None and at_ms >= credits_start_ms
+            if not is_nude and use_siglip and siglip_on and not in_credits:
+                siglip_score, siglip_label = await _infer(siglip_detector.score_frame, jpeg, enabled_labels)
+                siglip_hit = siglip_score >= config.siglip_threshold_for(siglip_label)
+                if siglip_hit:
+                    # Ranked below any NudeNet score so a NudeNet frame always wins the
+                    # thumbnail and labels of a mixed cluster.
+                    score, labels = siglip_score - 1.0, [siglip_label]
+            return is_nude, siglip_hit, score, labels
+
+        async def _refine_cluster(source: str) -> str:
+            """Re-sample the open cluster's window densely; keep its peak frame and widen its bounds.
+
+            Sampling every few seconds means the best sampled frame is often the edge of a
+            scene, and a scene can start or run on between samples (#133). This looks at the
+            window at refine_step_ms, takes the highest-scoring frame as the thumbnail, and
+            moves the start earlier / the last flagged time later to cover frames above
+            threshold. Bounds only ever grow, and the segment is kept or dropped on the coarse
+            result as before. Best effort: any failure leaves the coarse result.
+
+            Returns the segment's source. A SigLIP-only cluster whose window turns out to hold
+            NudeNet hits becomes a scanner segment (if the usual hit count allows it), since
+            NudeNet now vouches for it; otherwise those hits are ignored so the cluster's
+            scores stay in one unit (SigLIP scores are stored offset by -1).
+            """
+            nonlocal cluster_start_ms, cluster_prev_ms, cluster_best_jpeg, cluster_best_score
+            nonlocal cluster_detected_labels, cluster_best_ms, cluster_nudenet_hits, cluster_hit_count
+            if part_file_now is None or cluster_start_ms is None:
+                return source
+            part_end = part_offset_now + part_duration_now
+            # A scanner segment (NudeNet hit) is refined by NudeNet alone: SigLIP's noisier
+            # hits must not stretch a segment NudeNet already vouches for.
+            use_siglip = source == "siglip"
+
+            async def scan(lo_ms: int, hi_ms: int, dstep: int) -> list[tuple[int, bool, float, list[str], bytes]]:
+                found = []
+                try:
+                    async for rel_ms, jpeg in extract_frames_window(
+                        part_file_now, lo_ms - part_offset_now, hi_ms - lo_ms, dstep, frame_size, hardware
+                    ):
+                        if not jpeg:
+                            continue
+                        at_ms = part_offset_now + rel_ms
+                        is_nude, siglip_hit, score, labels = await _judge(jpeg, at_ms, use_siglip)
+                        if is_nude or siglip_hit:
+                            found.append((at_ms, is_nude, score, labels, jpeg))
+                except Exception as exc:
+                    logger.warning("Re-sampling %d-%dms of '%s' failed, keeping the coarse result: %s",
+                                   lo_ms, hi_ms, title, exc)
+                return found
+
+            lo = max(part_offset_now, cluster_start_ms - step_ms)
+            hi = min(part_end, cluster_prev_ms + step_ms)
+            dstep = max(refine_step_ms, -(-(hi - lo) // REFINE_MAX_FRAMES))
+            hits = await scan(lo, hi, dstep)
+            # A hit at the window's edge means the scene runs on: keep looking, up to one merge
+            # gap each way, in chunks of two coarse steps.
+            chunk = max(2 * step_ms, 4 * dstep)
+            grown = 0
+            while hits and grown < gap_ms and hi < part_end and max(h[0] for h in hits) >= hi - 2 * dstep:
+                new_hi = min(part_end, hi + chunk)
+                more = await scan(hi, new_hi, dstep)
+                hits += more
+                grown += new_hi - hi
+                hi = new_hi
+                if not more:
+                    break
+            grown = 0
+            while hits and grown < gap_ms and lo > part_offset_now and min(h[0] for h in hits) <= lo + 2 * dstep:
+                new_lo = max(part_offset_now, lo - chunk)
+                more = await scan(new_lo, lo, dstep)
+                hits += more
+                grown += lo - new_lo
+                lo = new_lo
+                if not more:
+                    break
+
+            if source == "siglip":
+                dense_nudenet = sum(1 for h in hits if h[1])
+                if dense_nudenet and _segment_source(
+                    cluster_nudenet_hits + dense_nudenet, cluster_hit_count + dense_nudenet,
+                    cluster_max_siglip_run, min_hits, siglip_min_hits,
+                ) == "scanner":
+                    cluster_nudenet_hits += dense_nudenet
+                    cluster_hit_count += dense_nudenet
+                    source = "scanner"
+                else:
+                    hits = [h for h in hits if not h[1]]
+            for at_ms, is_nude, score, labels, jpeg in sorted(hits, key=lambda h: h[0]):
+                if score > cluster_best_score:
+                    cluster_best_jpeg, cluster_best_score = jpeg, score
+                    cluster_detected_labels, cluster_best_ms = labels.copy(), at_ms
+                elif is_nude:
+                    for label in labels:
+                        if label not in cluster_detected_labels:
+                            cluster_detected_labels.append(label)
+                cluster_start_ms = min(cluster_start_ms, at_ms)
+                cluster_prev_ms = max(cluster_prev_ms, at_ms)
+            return source
+
         async def _flush_cluster() -> None:
             nonlocal cluster_start_ms, cluster_prev_ms, cluster_hit_count
             nonlocal cluster_best_jpeg, cluster_best_score, cluster_detected_labels, segments_inserted
-            nonlocal cluster_nudenet_hits, cluster_max_siglip_run
+            nonlocal cluster_nudenet_hits, cluster_max_siglip_run, cluster_best_ms
 
             if cluster_start_ms is None:
                 return
@@ -810,6 +933,8 @@ async def scan_video(plex_guid: str, config) -> None:
                 cluster_nudenet_hits, cluster_hit_count, cluster_max_siglip_run, min_hits, siglip_min_hits
             )
             if source:
+                if refine_step_ms > 0:
+                    source = await _refine_cluster(source)
                 end_ms = cluster_prev_ms + gap_ms
                 thumb_path = ""
                 if cluster_best_jpeg:
@@ -838,6 +963,7 @@ async def scan_video(plex_guid: str, config) -> None:
                     severity=severity_for_labels(labels_str),
                     source=source,
                     detector=nudenet_detector if source == "scanner" else siglip_detector.DETECTOR_ID,
+                    thumbnail_ms=cluster_best_ms,
                 )
                 segments_inserted += 1
                 events.publish("segments_changed", guid=plex_guid)
@@ -847,6 +973,7 @@ async def scan_video(plex_guid: str, config) -> None:
             cluster_hit_count = 0
             cluster_best_jpeg = b""
             cluster_best_score = 0.0
+            cluster_best_ms = None
             cluster_detected_labels = []
             cluster_nudenet_hits = 0
             cluster_max_siglip_run = 0
@@ -864,6 +991,7 @@ async def scan_video(plex_guid: str, config) -> None:
                     part_idx + 1, len(all_parts), title, part_file, part_time_offset_ms,
                 )
 
+            part_file_now, part_offset_now, part_duration_now = part_file, part_time_offset_ms, part_duration_ms
             async for frame_offset_ms, jpeg in extract_frames_batch(
                 part_file, step_ms, part_duration_ms, frame_size,
                 hardware=bool(getattr(config, "hw_decode", True)),
@@ -896,31 +1024,8 @@ async def scan_video(plex_guid: str, config) -> None:
                     return
 
                 if jpeg:
-                    # asyncio.to_thread releases the event loop, allowing ffmpeg's pipe
-                    # buffer to continue filling while NudeNet runs in the thread pool.
-                    is_nude, score, detected_labels = await _infer(
-                        _classify_frame,
-                        jpeg,
-                        threshold,
-                        enabled_labels,
-                        nudenet_model,
-                        nudenet_model_path,
-                        config.label_thresholds,
-                    )
-                    # SigLIP only looks at frames NudeNet passed over: its job is
-                    # the scenes NudeNet misses, not a second opinion on its hits.
-                    siglip_hit = False
-                    in_credits = credits_start_ms is not None and offset_ms >= credits_start_ms
-                    if not is_nude and siglip_on and not in_credits:
-                        siglip_score, siglip_label = await _infer(
-                            siglip_detector.score_frame, jpeg, enabled_labels
-                        )
-                        siglip_hit = siglip_score >= config.siglip_threshold_for(siglip_label)
+                    is_nude, siglip_hit, score, detected_labels = await _judge(jpeg, offset_ms)
                     siglip_run = siglip_run + 1 if siglip_hit else 0
-                    if siglip_hit:
-                        # Ranked below any NudeNet score so a NudeNet frame always
-                        # wins the thumbnail and labels of a mixed cluster.
-                        score, detected_labels = siglip_score - 1.0, [siglip_label]
 
                     if is_nude or siglip_hit:
                         if cluster_start_ms is not None and offset_ms - cluster_prev_ms > gap_ms:
@@ -931,10 +1036,12 @@ async def scan_video(plex_guid: str, config) -> None:
                             cluster_hit_count = 0
                             cluster_best_jpeg = jpeg
                             cluster_best_score = score
+                            cluster_best_ms = offset_ms
                             cluster_detected_labels = detected_labels.copy()
                         elif score > cluster_best_score:
                             cluster_best_jpeg = jpeg
                             cluster_best_score = score
+                            cluster_best_ms = offset_ms
                             cluster_detected_labels = detected_labels.copy()
                         elif is_nude:
                             # Merge labels from lower-confidence detections
@@ -962,15 +1069,7 @@ async def scan_video(plex_guid: str, config) -> None:
         await db.update_scan_job_status(plex_guid, "done", progress=1.0, scan_version=SCAN_VERSION)
 
         if rating_key:
-            try:
-                client = plex_mod.get_client()
-                await client.update_cleanplex_summary(
-                    rating_key=rating_key,
-                    status="Scanned",
-                    segment_count=segments_inserted,
-                )
-            except Exception as exc:
-                logger.debug("Could not update Plex summary metadata for %s: %s", plex_guid, exc)
+            await plex_summary.refresh_now(plex_guid)
 
         logger.info("Scan complete: %s — found %d segment(s)", title, segments_inserted)
 
