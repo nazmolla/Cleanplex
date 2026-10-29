@@ -42,7 +42,7 @@ Every change — regardless of size — must follow these rules. No exceptions.
 | `scanner.py` | Frame extraction, NudeNet inference, segment writing |
 | `siglip_detector.py` | SigLIP zero-shot fallback for frames NudeNet did not flag — model download, prompts from `scan_labels`, scoring |
 | `ort_runtime.py` | Shared onnxruntime session options: caps threads per inference session so scan workers do not oversubscribe the CPU. Every `InferenceSession` the scanner or SigLIP builds goes through it |
-| `stream_proxy.py` | Prototype (#132): reverse proxy in front of Plex that forces HLS transcode and removes filtered ranges from the playlist so skips apply to every client. Standalone (`python -m cleanplex.stream_proxy`), not wired into `main.py` yet |
+| `stream_proxy.py` | Prototype (#132): reverse proxy in front of Plex that, only when a client cannot be skipped live, the viewer's filtering is on and the title has segments their levels would skip, forces an HLS transcode and removes those ranges from the playlist. Standalone (`python -m cleanplex.stream_proxy`), not wired into `main.py` yet |
 | `hover_previews.py` | Job rendering each active segment's hover preview (small silent MP4) inside its own window (default 00:00–07:00); separate from the scanner, never part of a scan |
 | `subtitle_scanner.py` | Subtitle parsing and profanity matching — emits muted language segments |
 | `importers/` | Skip file parsers and exporters (`.skp`, `.edl`, `.mcf`, pasted lists). One module per format; all return the same normalized segment dict |

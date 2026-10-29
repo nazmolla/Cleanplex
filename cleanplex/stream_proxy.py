@@ -16,9 +16,12 @@ measurements.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import ipaddress
 import os
 import re
-from collections import deque
+import time
+from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -145,39 +148,182 @@ class _Session:
     offset_ms: int
     spans: list[Range] = field(default_factory=list)
     removed: list[int] = field(default_factory=list)  # segment indexes the client must never be served
+    ranges: list[Range] = field(default_factory=list)  # what to cut, decided when the stream started
+    username: str | None = None
 
 
-RangesProvider = Callable[[str], Awaitable[list[Range]]]
+RangesProvider = Callable[[str, str | None], Awaitable[list[Range]]]  # (rating_key, username) -> ranges
+
+
+@dataclass
+class Decision:
+    """Whether a playback request gets its stream edited, and why."""
+
+    inject: bool
+    reason: str
+    ranges: list[Range] = field(default_factory=list)
+    username: str | None = None
+
+
+@dataclass
+class Policy:
+    """The three conditions that must all hold before a stream is forced to transcode and edited.
+
+    1. The client cannot be skipped live (client_controllable says it can't).
+    2. The viewer has filtering turned on (filter_enabled).
+    3. The title has segments that viewer's settings would actually skip (ranges_for is non-empty).
+
+    A check left as None is not applied, which is how the standalone --cuts mode edits everything.
+    Checks run cheapest first, and a failed one stops the rest: a client the live skip already
+    reaches never costs a plex.tv lookup or a database read.
+    """
+
+    ranges_for: RangesProvider
+    client_controllable: Callable[[str, str], Awaitable[bool]] | None = None  # (client_identifier, remote_ip)
+    resolve_user: Callable[[str], Awaitable[str | None]] | None = None  # plex token -> username
+    filter_enabled: Callable[[str], Awaitable[bool]] | None = None  # username
+    # Filtering is the safe default: a viewer who cannot be identified is treated as filtered.
+    unknown_user_filtered: bool = True
+    closers: list[Callable[[], Awaitable[None]]] = field(default_factory=list)
+
+
+async def decide(policy: Policy, rating_key: str, client_id: str, remote_ip: str, token: str) -> Decision:
+    """Apply the policy's conditions in order and return the outcome with the reason."""
+    if policy.client_controllable and await policy.client_controllable(client_id, remote_ip):
+        return Decision(False, "live skipping reaches this client")
+    username = await policy.resolve_user(token) if policy.resolve_user and token else None
+    if policy.filter_enabled:
+        if username is None and not policy.unknown_user_filtered:
+            return Decision(False, "viewer could not be identified")
+        if username is not None and not await policy.filter_enabled(username):
+            return Decision(False, f"filtering is off for {username}", username=username)
+    ranges = await policy.ranges_for(rating_key, username)
+    if not ranges:
+        return Decision(False, "no eligible segments for this title", username=username)
+    return Decision(True, f"{len(ranges)} range(s) to cut", ranges, username)
 
 
 def static_ranges(ranges: list[Range]) -> RangesProvider:
     """Provider that applies the same ranges to every title (for testing on any file)."""
 
-    async def provider(_rating_key: str) -> list[Range]:
+    async def provider(_rating_key: str, _username: str | None) -> list[Range]:
         return ranges
 
     return provider
 
 
-def db_ranges(pre_ms: int = 3000, post_ms: int = 3000) -> RangesProvider:
-    """Provider that cuts a title's active skip segments, widened by the usual buffers."""
-    from . import database as db
+def eligible_ranges(pre_ms: int = 3000, post_ms: int = 3000) -> RangesProvider:
+    """Provider of the ranges this viewer's settings would skip, widened by the usual buffers.
 
-    async def provider(rating_key: str) -> list[Range]:
-        return [(max(0, start - pre_ms), end + post_ms) for start, end in await db.get_skip_ranges_for_rating_key(rating_key)]
+    A segment counts when the viewer's category level makes it fire and the action that
+    results (their override, else the segment's own) is skip, exactly the live-skip rule.
+    """
+    from . import database as db
+    from .filter_engine import _is_filtered, _resolve_action
+
+    async def provider(rating_key: str, username: str | None) -> list[Range]:
+        segments = await db.get_active_segments_for_rating_key(rating_key)
+        prefs = await db.get_user_category_prefs(username) if username else {}
+        return [
+            (max(0, seg["start_ms"] - pre_ms), seg["end_ms"] + post_ms)
+            for seg in segments
+            if _is_filtered(seg, prefs) and _resolve_action(seg, prefs) == "skip"
+        ]
 
     return provider
 
 
+def is_lan_address(host: str) -> bool:
+    """True for a private, loopback or link-local address, i.e. a client on the server's network."""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local
+
+
+async def lan_client_controllable(client_id: str, remote_ip: str) -> bool:
+    """Whether live skipping reaches this client.
+
+    The session watcher records the truth per client (a player on the server's network
+    that reports state). A client it has never seen is guessed from its address: local
+    clients are assumed reachable, so they are left alone until the watcher learns better.
+    """
+    from . import database as db
+
+    known = await db.get_client_control(client_id) if client_id else None
+    return known if known is not None else is_lan_address(remote_ip)
+
+
+async def db_filter_enabled(username: str) -> bool:
+    """Filtering is on unless the user has an explicit record turning it off."""
+    from . import database as db
+
+    record = await db.get_user_filter(username)
+    return record is None or bool(record["enabled"])
+
+
+class PlexTvUsers:
+    """Resolve a Plex token to the account name Cleanplex keys its user settings by."""
+
+    TTL_S = 600  # a token's owner does not change; this only bounds a revoked token's lifetime
+
+    def __init__(self, transport: httpx.AsyncBaseTransport | None = None):
+        self._client = httpx.AsyncClient(base_url="https://plex.tv", transport=transport, timeout=10)
+        self._cache: dict[str, tuple[float, str]] = {}
+
+    async def __call__(self, token: str) -> str | None:
+        cached = self._cache.get(token)
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
+        try:
+            resp = await self._client.get(
+                "/api/v2/user", headers={"X-Plex-Token": token, "Accept": "application/json",
+                                         "X-Plex-Client-Identifier": "cleanplex-stream-proxy"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("Could not identify the Plex user for a token: %s", exc)
+            return None
+        # Managed users have no username; their title is what Plex shows (and what sessions report).
+        name = data.get("username") or data.get("title") or None
+        if name:
+            self._cache[token] = (time.monotonic() + self.TTL_S, name)
+        return name
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+
+def db_policy(pre_ms: int = 3000, post_ms: int = 3000, unknown_user_filtered: bool = True) -> Policy:
+    """The production policy: live-skip clients, filter switch and the viewer's own levels."""
+    users = PlexTvUsers()
+    return Policy(
+        ranges_for=eligible_ranges(pre_ms, post_ms),
+        client_controllable=lan_client_controllable,
+        resolve_user=users,
+        filter_enabled=db_filter_enabled,
+        unknown_user_filtered=unknown_user_filtered,
+        closers=[users.aclose],
+    )
+
+
 def create_proxy_app(
     plex_url: str,
-    ranges_for: RangesProvider,
+    policy: Policy,
     token: str = "",
     transport: httpx.AsyncBaseTransport | None = None,
+    trust_forwarded_for: bool = False,
 ) -> FastAPI:
-    """Build the proxy app. *token* is added to requests that carry none (local testing only)."""
+    """Build the proxy app. *token* is added to requests that carry none (local testing only).
+
+    *trust_forwarded_for* takes the client address from X-Forwarded-For; enable it only
+    behind a proxy you control, since the header is otherwise client-supplied.
+    """
     state: dict = {
         "sessions": {},  # Plex transcode session id -> _Session
+        "decisions": OrderedDict(),  # session id -> Decision, bounded
         "requests": deque(maxlen=5000),  # segment fetches: what the client really asked for
         "telemetry": deque(maxlen=2000),  # reports posted by the test page
     }
@@ -188,6 +334,8 @@ def create_proxy_app(
         app.state.client = httpx.AsyncClient(base_url=plex_url, transport=transport, timeout=60)
         yield
         await app.state.client.aclose()
+        for close in policy.closers:
+            await close()
 
     app = FastAPI(lifespan=lifespan)
     app.state.proxy_state = state
@@ -205,6 +353,35 @@ def create_proxy_app(
         headers.setdefault("accept-encoding", "identity")
         return headers
 
+    def _playback_ids(request: Request, params: dict[str, str]) -> tuple[str, str]:
+        """(session id, rating key) of a playback request; blank when it names neither."""
+        match = _RATING_KEY.search(params.get("path", ""))
+        session_id = params.get("session") or request.headers.get("x-plex-session-identifier", "")
+        return session_id, (match.group(1) if match else "")
+
+    def _remote_ip(request: Request) -> str:
+        if trust_forwarded_for and request.headers.get("x-forwarded-for"):
+            return request.headers["x-forwarded-for"].split(",")[0].strip()
+        return request.client.host if request.client else ""
+
+    async def _decide_playback(request: Request, params: dict[str, str]) -> Decision | None:
+        """The decision for this playback session, made once (on /decision or /start) and reused."""
+        session_id, rating_key = _playback_ids(request, params)
+        if not session_id or not rating_key:
+            return None
+        known = state["decisions"].get(session_id)
+        if known:
+            return known
+        client_id = params.get("X-Plex-Client-Identifier") or request.headers.get("x-plex-client-identifier", "")
+        plex_token = params.get("X-Plex-Token") or request.headers.get("x-plex-token", "")
+        decision = await decide(policy, rating_key, client_id, _remote_ip(request), plex_token)
+        logger.info("Stream decision for session %s (rating key %s, client %s): %s: %s",
+                    session_id, rating_key, client_id or "?", "EDIT" if decision.inject else "leave alone", decision.reason)
+        state["decisions"][session_id] = decision
+        while len(state["decisions"]) > 2000:
+            state["decisions"].popitem(last=False)
+        return decision
+
     @app.get("/_proxy/report")
     async def report() -> JSONResponse:
         """Segment fetches and test-page telemetry recorded so far, for verifying a run."""
@@ -212,8 +389,11 @@ def create_proxy_app(
             sid: {"rating_key": s.rating_key, "offset_ms": s.offset_ms, "spans": s.spans, "removed": s.removed}
             for sid, s in state["sessions"].items()
         }
+        decisions = {sid: {"inject": d.inject, "reason": d.reason, "username": d.username}
+                     for sid, d in state["decisions"].items()}
         return JSONResponse(
-            {"requests": list(state["requests"]), "telemetry": list(state["telemetry"]), "sessions": sessions}
+            {"requests": list(state["requests"]), "telemetry": list(state["telemetry"]),
+             "sessions": sessions, "decisions": decisions}
         )
 
     @app.get("/_proxy/plan")
@@ -243,14 +423,16 @@ def create_proxy_app(
         params = _params(request)
 
         if full_path in _START_PATHS or full_path == _DECISION_PATH:
-            # Direct play would bypass the edit entirely, so take it off the table.
-            params.update({"directPlay": "0", "directStream": "0"})
-            if full_path in _START_PATHS:
-                match = _RATING_KEY.search(params.get("path", ""))
-                session_id = params.get("session") or request.headers.get("x-plex-session-identifier", "")
-                if match and session_id:
+            decision = await _decide_playback(request, params)
+            if decision and decision.inject:
+                # Direct play would bypass the edit entirely, so take it off the table.
+                params.update({"directPlay": "0", "directStream": "0"})
+                if full_path in _START_PATHS:
+                    session_id, rating_key = _playback_ids(request, params)
                     offset_ms = int(float(params.get("offset", "0") or 0) * 1000)
-                    state["sessions"][session_id] = _Session(match.group(1), offset_ms)
+                    state["sessions"][session_id] = _Session(
+                        rating_key, offset_ms, ranges=decision.ranges, username=decision.username
+                    )
 
         variant = _VARIANT.match(full_path)
         if variant:
@@ -262,8 +444,7 @@ def create_proxy_app(
             session = state["sessions"].get(variant.group(1))
             if upstream.status_code != 200 or session is None:
                 return Response(upstream.content, upstream.status_code, _response_headers(upstream))
-            ranges = await ranges_for(session.rating_key)
-            edit = edit_playlist(upstream.text, ranges, session.offset_ms)
+            edit = edit_playlist(upstream.text, session.ranges, session.offset_ms)
             session.spans = edit.spans
             session.removed = edit.removed
             logger.info("Edited playlist for session %s: removed %d segment(s), %d ms",
@@ -377,6 +558,9 @@ def main() -> None:
     parser.add_argument("--plex", default="http://127.0.0.1:32400")
     parser.add_argument("--port", type=int, default=7981)
     parser.add_argument("--cuts", default="", help="ms ranges applied to every title, e.g. 60000-75000,300000-310000")
+    parser.add_argument("--unknown-user-unfiltered", action="store_true",
+                        help="leave a viewer alone when their Plex token cannot be resolved (default: treat as filtered)")
+    parser.add_argument("--trust-forwarded-for", action="store_true", help="take the client address from X-Forwarded-For")
     parser.add_argument("--db", default="", help="use each title's skip segments from this Cleanplex database instead of --cuts")
     parser.add_argument("--token", default=os.environ.get("PLEX_TOKEN", ""),
                         help="Plex token added to requests that carry none (default: $PLEX_TOKEN, keeps it out of ps)")
@@ -387,10 +571,11 @@ def main() -> None:
         from . import database as db
 
         db.set_db_path(Path(args.db))
-        provider = db_ranges()
+        asyncio.run(db.init_db())  # additive migrations: brings a copied database up to date
+        policy = db_policy(unknown_user_filtered=not args.unknown_user_unfiltered)
     else:
-        provider = static_ranges(parse_cuts(args.cuts))
-    app = create_proxy_app(args.plex, provider, args.token)
+        policy = Policy(ranges_for=static_ranges(parse_cuts(args.cuts)))
+    app = create_proxy_app(args.plex, policy, args.token, trust_forwarded_for=args.trust_forwarded_for)
     uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="info")
 
 

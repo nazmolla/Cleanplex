@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from cleanplex.stream_proxy import create_proxy_app, static_ranges
+from cleanplex.stream_proxy import Policy, create_proxy_app, static_ranges
 
 VARIANT = "\n".join(
     ["#EXTM3U", "#EXT-X-TARGETDURATION:5", "#EXT-X-MEDIA-SEQUENCE:0"]
@@ -44,8 +44,8 @@ def plex():
 
 @pytest.fixture
 async def proxy(plex):
-    app = create_proxy_app("http://plex.test", static_ranges([(7_000, 12_000)]), token="TESTTOKEN",
-                           transport=httpx.MockTransport(plex))
+    app = create_proxy_app("http://plex.test", Policy(ranges_for=static_ranges([(7_000, 12_000)])),
+                           token="TESTTOKEN", transport=httpx.MockTransport(plex))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://proxy") as client:
             yield client, app
@@ -74,7 +74,8 @@ async def test_a_client_supplied_token_is_not_replaced(proxy, plex):
 
 async def test_the_decision_request_is_forced_too(proxy, plex):
     client, _ = proxy
-    await client.get("/video/:/transcode/universal/decision", params={"directPlay": "1", "directStream": "1"})
+    await client.get("/video/:/transcode/universal/decision", params={
+        "path": "/library/metadata/42", "session": SESSION, "directPlay": "1", "directStream": "1"})
     assert plex.seen[-1].url.params["directPlay"] == "0"
 
 
@@ -155,13 +156,90 @@ async def test_a_clients_accept_encoding_is_forwarded(proxy, plex):
     assert plex.seen[-1].headers["accept-encoding"] == "gzip"
 
 
-async def test_db_ranges_widen_each_skip_segment_by_the_buffers(setup_db):
-    from cleanplex import database as db
-    from cleanplex.stream_proxy import db_ranges
+# ── the three conditions (client, user filter, eligible segments) ─────────────────
 
-    await db.upsert_scan_job(plex_guid="g", title="T", file_path="/m.mkv", rating_key="42",
-                             library_id="l", library_title="L")
-    await db.insert_segment("g", "T", 10_000, 20_000)
-    await db.insert_segment("g", "T", 1_000, 2_000)
+def _policy(*, controllable=False, user="alice", enabled=True, ranges=((7_000, 12_000),), unknown_filtered=True):
+    async def client_controllable(client_id, remote_ip):
+        return controllable
 
-    assert await db_ranges(3_000, 4_000)("42") == [(0, 6_000), (7_000, 24_000)]
+    async def resolve_user(token):
+        return user
+
+    async def filter_enabled(username):
+        return enabled
+
+    async def ranges_for(rating_key, username):
+        return list(ranges)
+
+    return Policy(ranges_for=ranges_for, client_controllable=client_controllable, resolve_user=resolve_user,
+                  filter_enabled=filter_enabled, unknown_user_filtered=unknown_filtered)
+
+
+async def _proxy(plex, policy):
+    app = create_proxy_app("http://plex.test", policy, token="T", transport=httpx.MockTransport(plex))
+    ctx = app.router.lifespan_context(app)
+    await ctx.__aenter__()
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://proxy")
+    return client, ctx
+
+
+@pytest.mark.parametrize("policy, expected", [
+    (_policy(), True),
+    (_policy(controllable=True), False),
+    (_policy(enabled=False), False),
+    (_policy(ranges=()), False),
+])
+async def test_the_stream_is_forced_and_edited_only_when_all_three_conditions_hold(plex, policy, expected):
+    client, ctx = await _proxy(plex, policy)
+    try:
+        await client.get("/video/:/transcode/universal/decision", params={
+            "path": "/library/metadata/42", "session": SESSION, "directPlay": "1", "directStream": "1"})
+        decision_params = plex.seen[-1].url.params
+        await _start(client)
+        start_params = plex.seen[-1].url.params
+        resp = await client.get(f"{BASE}/index.m3u8")
+    finally:
+        await client.aclose()
+        await ctx.__aexit__(None, None, None)
+    forced = decision_params["directPlay"] == "0" and start_params["directStream"] == "0"
+    assert forced is expected
+    assert (resp.text != VARIANT) is expected
+
+
+async def test_a_client_left_alone_keeps_the_direct_play_it_asked_for(plex):
+    client, ctx = await _proxy(plex, _policy(controllable=True))
+    try:
+        await _start(client)
+    finally:
+        await client.aclose()
+        await ctx.__aexit__(None, None, None)
+    assert plex.seen[-1].url.params["directPlay"] == "1"
+
+
+async def test_the_decision_is_made_once_per_session(plex):
+    calls = []
+
+    async def ranges_for(rating_key, username):
+        calls.append(rating_key)
+        return [(7_000, 12_000)]
+
+    client, ctx = await _proxy(plex, Policy(ranges_for=ranges_for))
+    try:
+        for path in ("decision", "start.m3u8"):
+            await client.get(f"/video/:/transcode/universal/{path}",
+                             params={"path": "/library/metadata/42", "session": SESSION})
+    finally:
+        await client.aclose()
+        await ctx.__aexit__(None, None, None)
+    assert calls == ["42"]
+
+
+async def test_report_lists_each_decision_with_its_reason(plex):
+    client, ctx = await _proxy(plex, _policy(enabled=False, user="bob"))
+    try:
+        await _start(client)
+        report = (await client.get("/_proxy/report")).json()
+    finally:
+        await client.aclose()
+        await ctx.__aexit__(None, None, None)
+    assert report["decisions"][SESSION] == {"inject": False, "reason": "filtering is off for bob", "username": "bob"}

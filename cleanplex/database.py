@@ -115,6 +115,15 @@ CREATE TABLE IF NOT EXISTS user_category_prefs (
     PRIMARY KEY (plex_username, category)
 );
 
+-- Whether live skipping can reach a client (a Plex player on the server's network that
+-- reports state), learned from the session watcher. The stream proxy leaves such
+-- clients alone and edits the stream only for the rest (#132).
+CREATE TABLE IF NOT EXISTS client_control (
+    client_identifier TEXT PRIMARY KEY,
+    controllable      INTEGER NOT NULL,
+    last_seen         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS user_filters (
     plex_username TEXT PRIMARY KEY,
     enabled       INTEGER DEFAULT 1
@@ -997,19 +1006,41 @@ async def get_detection_accuracy() -> list[dict]:
         return [dict(r) for r in rows]
 
 
-async def get_skip_ranges_for_rating_key(rating_key: str) -> list[tuple[int, int]]:
-    """Return (start_ms, end_ms) of the title's active skip segments, ordered by start.
+async def get_active_segments_for_rating_key(rating_key: str) -> list[dict]:
+    """Return the title's active segments (start_ms, end_ms, category, severity, action), by start.
 
-    Active means not marked a false positive; only the skip action is returned, since
-    mutes do not remove video. Empty for an unknown rating key.
+    Active means not marked a false positive. Every action is returned because a user's
+    own action override can turn a mute into a skip. Empty for an unknown rating key.
     """
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            "SELECT s.start_ms, s.end_ms FROM segments s JOIN scan_jobs j ON j.plex_guid = s.plex_guid "
-            f"WHERE j.rating_key = ? AND s.action = 'skip' AND {_ACTIVE_S} ORDER BY s.start_ms",
+            "SELECT s.start_ms, s.end_ms, s.category, s.severity, s.action "
+            "FROM segments s JOIN scan_jobs j ON j.plex_guid = s.plex_guid "
+            f"WHERE j.rating_key = ? AND {_ACTIVE_S} ORDER BY s.start_ms",
             (rating_key,),
         )
-        return [(row["start_ms"], row["end_ms"]) for row in rows]
+        return [dict(row) for row in rows]
+
+
+async def record_client_control(client_identifier: str, controllable: bool) -> None:
+    """Remember whether live skipping reaches this client, and when it was last seen."""
+    async with get_connection() as conn:
+        await conn.execute(
+            "INSERT INTO client_control(client_identifier, controllable) VALUES(?,?) "
+            "ON CONFLICT(client_identifier) DO UPDATE SET controllable=excluded.controllable, "
+            "last_seen=CURRENT_TIMESTAMP",
+            (client_identifier, 1 if controllable else 0),
+        )
+        await conn.commit()
+
+
+async def get_client_control(client_identifier: str) -> bool | None:
+    """Return whether live skipping reached this client last time, or None if never seen."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(
+            "SELECT controllable FROM client_control WHERE client_identifier=?", (client_identifier,)
+        )).fetchone()
+        return None if row is None else bool(row["controllable"])
 
 
 async def get_segment_by_id(segment_id: int) -> dict | None:
