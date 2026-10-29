@@ -47,7 +47,7 @@ async def _scan(nudenet_hits: set[int], siglip_hits: set[int], frames=20, enable
         seen.append(i)
         return (0.8, "BUTTOCKS_EXPOSED") if i in siglip_hits else (0.1, "FEMALE_BREAST_EXPOSED")
 
-    config = replace(Config(), scan_step_ms=STEP, segment_gap_ms=1500, segment_min_hits=1,
+    config = replace(Config(), refine_step_ms=0, scan_step_ms=STEP, segment_gap_ms=1500, segment_min_hits=1,
                      siglip_enabled=enabled, siglip_threshold=0.5, siglip_min_hits=2, hw_decode=hw)
     with patch.object(scanner, "extract_frames_batch", frames_gen), \
          patch.object(scanner, "get_duration_ms", AsyncMock(return_value=frames * STEP)), \
@@ -165,3 +165,15 @@ async def test_a_stalled_frame_stream_fails_the_scan(tmp_path):
     job = await db.get_scan_job_by_guid("g")
     assert job["status"] == "failed"
     assert "stuck" in (job["error_msg"] or "")
+
+
+async def test_a_finished_scan_refreshes_the_plex_summary_once(tmp_path):
+    """#136: the summary is written from the database after the scan, not from a local count."""
+    media = tmp_path / "m.mkv"
+    media.write_bytes(b"x")
+    await db.upsert_scan_job(plex_guid="g", title="T", file_path=str(media), rating_key="7",
+                             library_id="lib", library_title="Lib")
+    await db.set_force_scan("g", True)
+    with patch.object(scanner.plex_summary, "refresh_now", AsyncMock()) as refresh:
+        await _scan(nudenet_hits={6}, siglip_hits=set())
+    refresh.assert_awaited_once_with("g")

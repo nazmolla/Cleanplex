@@ -45,6 +45,8 @@ class SettingsPayload(BaseModel):
     siglip_threshold: str | None = Field(None, pattern=r"^(0(\.\d+)?|1(\.0+)?)$")
     siglip_min_hits: str | None = Field(None, pattern=r"^[1-9]$")
     ignore_credits: Literal["0", "1"] | None = None
+    # 0 (off) or 100-5000 ms; finer is slower on every flagged segment.
+    refine_step_ms: str | None = Field(None, pattern=r"^(0|[1-9]\d{2}|[1-4]\d{3}|5000)$")
     inference_threads: str | None = Field(None, pattern=r"^([0-9]|[1-5][0-9]|6[0-4])$")
     # JSON {LABEL: 0..1}; a label left out inherits the global threshold.
     label_thresholds: str | None = None

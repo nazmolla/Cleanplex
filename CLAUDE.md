@@ -43,6 +43,7 @@ Every change — regardless of size — must follow these rules. No exceptions.
 | `siglip_detector.py` | SigLIP zero-shot fallback for frames NudeNet did not flag — model download, prompts from `scan_labels`, scoring |
 | `ort_runtime.py` | Shared onnxruntime session options: caps threads per inference session so scan workers do not oversubscribe the CPU. Every `InferenceSession` the scanner or SigLIP builds goes through it |
 | `stream_proxy.py` | Prototype (#132): reverse proxy in front of Plex that, only when a client cannot be skipped live, the viewer's filtering is on and the title has segments their levels would skip, forces an HLS transcode and removes those ranges from the playlist. Standalone (`python -m cleanplex.stream_proxy`), not wired into `main.py` yet |
+| `plex_summary.py` | The Cleanplex block in a title's Plex summary: builds the description from the database (`db.get_summary_stats`) and refreshes it (debounced) after scans, deletes, false positives, relabels, imports and subtitle scans. Plex writes go through `PlexClient.update_cleanplex_summary` |
 | `hover_previews.py` | Job rendering each active segment's hover preview (small silent MP4) inside its own window (default 00:00–07:00); separate from the scanner, never part of a scan |
 | `subtitle_scanner.py` | Subtitle parsing and profanity matching — emits muted language segments |
 | `importers/` | Skip file parsers and exporters (`.skp`, `.edl`, `.mcf`, pasted lists). One module per format; all return the same normalized segment dict |
@@ -256,6 +257,8 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 
 - **One NudeNet detector per thread.** Use `threading.local()` — never instantiate inside a tight frame loop.
 - **Scanner global state (`_queued_guids`, `_current_scan_guids`, `_paused`) is guarded by a lock** before mutation.
+- **Bump `scanner.SCAN_VERSION` when a change means existing scan results are worth redoing** (thresholds, prompts, severity, thumbnails, bounds). It is stored per finished job so "rescan outdated titles" can find what an older scanner produced.
+- **Flagged windows are re-sampled densely before insert** (`_refine_cluster`): the thumbnail is the peak frame, bounds only grow, and a failure leaves the coarse result. A segment's kept-or-dropped decision stays with the coarse pass.
 - **Segments are clustered before DB insert.** Never insert a raw frame-level row; always cluster via `_cluster_frames` / `_flush_cluster`.
 
 ### 5.6 Frontend

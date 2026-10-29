@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import { CheckCircle2, XCircle, Loader2, Eye, EyeOff, RotateCcw } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { UsersPanel } from './Users'
+import BulkRescan from '../components/BulkRescan'
 
 interface Settings {
   plex_url: string
@@ -16,6 +17,7 @@ interface Settings {
   nudenet_model_path: string
   segment_gap_ms: string
   segment_min_hits: string
+  refine_step_ms: string
   scan_window_start: string
   scan_window_end: string
   log_level: string
@@ -65,6 +67,7 @@ const DEFAULT: Settings = {
   nudenet_model_path: '',
   segment_gap_ms: '12000',
   segment_min_hits: '1',
+  refine_step_ms: '500',
   scan_window_start: '23:00',
   scan_window_end: '06:00',
   log_level: 'INFO',
@@ -469,6 +472,15 @@ export default function SettingsPage() {
                 </div>
       </section>
               <section>
+                <h2 className={h2Cls}>Rescan Titles</h2>
+                <p className="text-xs text-gray-500 mb-4">
+                  Queue many titles to be scanned again, for example after an update to the detector. They wait for the scan
+                  window like any scheduled scan, in the usual order, and their current segments stay in use until the new scan
+                  replaces them.
+                </p>
+                <BulkRescan libraries={libraries} />
+              </section>
+              <section>
                 <h2 className={h2Cls}>Hover Previews</h2>
                 <p className="text-xs text-gray-500 mb-4">
                   A separate job renders a short silent loop of each segment (about 20 KB each), played when you hover its
@@ -706,6 +718,9 @@ export default function SettingsPage() {
               <div className="grid gap-4 lg:grid-cols-2 items-start">
                 <Field label="Segment Merge Gap (ms)" hint="Flagged frames closer than this are merged into one segment.">
                             <input type="number" min="1000" max="30000" step="500" value={form.segment_gap_ms} onChange={set('segment_gap_ms')} className={inputCls} />
+                          </Field>
+                <Field label="Refinement Step (ms)" hint="After a segment is found, its window is re-checked this finely to pick the best thumbnail and catch scenes that start or run on between samples. Smaller is more precise and slower for every flagged segment; 0 turns it off.">
+                            <input type="number" min="0" max="5000" step="100" value={form.refine_step_ms} onChange={set('refine_step_ms')} className={inputCls} />
                           </Field>
                 <Field label="Minimum Hits Per Segment" hint="Require at least this many flagged frames in a cluster to keep a segment. Increase to reduce false positives.">
                             <input type="number" min="1" max="6" step="1" value={form.segment_min_hits} onChange={set('segment_min_hits')} className={inputCls} />

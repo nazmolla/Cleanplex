@@ -241,3 +241,14 @@ async def test_import_handles_guids_containing_slashes(http_client):
 
     assert resp.status_code == 200
     assert resp.json()["imported"] == 2
+
+
+async def test_importing_refreshes_the_plex_summary(http_client):
+    from unittest.mock import patch
+    await db.upsert_scan_job(plex_guid="g-sum", title="T", file_path="/m.mkv", rating_key="9",
+                             library_id="l", library_title="L")
+    with patch("cleanplex.web.routes.import_routes.plex_summary.refresh_soon") as refresh:
+        resp = await http_client.post("/api/segments/import/paste", json={
+            "plex_guid": "g-sum", "text": "00:01:00 - 00:01:30 nudity", "replace": False})
+    assert resp.status_code == 200
+    refresh.assert_called_once_with("g-sum")

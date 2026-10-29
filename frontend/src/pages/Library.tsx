@@ -4,6 +4,7 @@ import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import FalsePositiveButton, { FalsePositiveTag } from '../components/FalsePositiveButton'
 import RelabelButton from '../components/RelabelButton'
+import ThumbnailTime from '../components/ThumbnailTime'
 import SkipFileImport from '../components/SkipFileImport'
 import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2, Eye, EyeOff, X, ThumbsDown } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
@@ -45,6 +46,8 @@ interface Segment {
   confidence: number
   has_thumbnail: boolean
   thumbnail_url: string
+  /** Film time the thumbnail frame was taken at (#133). */
+  thumbnail_ms?: number | null
   /** Short silent loop played on hover; empty until rendered (#114). */
   hover_url?: string
   created_at: string
@@ -468,6 +471,7 @@ export default function Library() {
               <div className="absolute bottom-0.5 left-0.5 bg-black/70 text-xs text-gray-300 px-1 py-0.5 rounded text-[10px]">
                 {Math.round(seg.confidence * 100)}%
               </div>
+              <ThumbnailTime ms={seg.thumbnail_ms} />
             </HoverPreview>
             <div className="flex-1 p-2 flex items-center justify-between gap-2 min-w-0">
               <div className="min-w-0">
