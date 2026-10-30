@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse, Response
 from ...logger import get_logger
 from ... import database as db
 import cleanplex.scanner as scan_mod
+from ... import segment_files
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["mcp"])
@@ -216,7 +217,7 @@ async def _call_tool(name: str, args: dict) -> object:
         plex_guid = args.get("plex_guid")
         if not plex_guid:
             raise ValueError("plex_guid is required")
-        deleted = await db.delete_segments_for_guid(plex_guid)
+        deleted = await segment_files.delete_segments_for_guid(plex_guid)
         return {"deleted_count": deleted, "plex_guid": plex_guid}
 
     if name == "get_settings":

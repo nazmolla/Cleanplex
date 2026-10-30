@@ -19,6 +19,7 @@ from ... import events
 from ... import frame_extractor
 from ... import hover_previews
 from ... import plex_summary
+from ... import segment_files
 from ...importers._common import DETECTOR_LABELS
 
 logger = get_logger(__name__)
@@ -602,7 +603,7 @@ class FalsePositiveUpdate(BaseModel):
 
 # Frames of segments marked as false positives, copied at mark time: rescans
 # overwrite thumbnails, and these frames are the sample for retraining later.
-FEEDBACK_DIR: Path = Path.home() / ".cleanplex" / "feedback"
+FEEDBACK_DIR: Path = segment_files.FEEDBACK_DIR
 
 
 @router.post("/segments/{segment_id}/false-positive")
@@ -678,7 +679,7 @@ async def delete_segment(segment_id: int):
     if not seg:
         raise HTTPException(status_code=404, detail="Segment not found")
 
-    deleted = await db.delete_segment(segment_id)
+    deleted = await segment_files.delete_segment(segment_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Segment not found")
 
@@ -691,7 +692,7 @@ async def delete_segment(segment_id: int):
 @router.delete("/titles/{plex_guid:path}/segments")
 async def delete_all_segments_for_title(plex_guid: str):
     """Delete all segments for a specific title."""
-    deleted = await db.delete_segments_for_guid(plex_guid)
+    deleted = await segment_files.delete_segments_for_guid(plex_guid)
     _refresh_cleanplex_summary_for_guid(plex_guid)
     events.publish("segments_changed", guid=plex_guid)
     return {"ok": True, "deleted": deleted}

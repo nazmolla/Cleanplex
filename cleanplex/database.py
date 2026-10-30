@@ -269,6 +269,8 @@ DEFAULT_SETTINGS = {
     "scan_window_end": "06:00",
     # Overnight job rendering hover previews (#114); its own window, set in Settings.
     "hover_previews_enabled": "1",
+    # Also render previews whenever the scan queue is empty, not only inside the window.
+    "hover_when_idle": "1",
     "hover_window_start": "00:00",
     "hover_window_end": "07:00",
     "log_level": "INFO",
@@ -806,6 +808,68 @@ async def count_segments_for_guid(plex_guid: str) -> int:
             await conn.execute(f"SELECT COUNT(*) FROM segments WHERE plex_guid=? AND {_ACTIVE}", (plex_guid,))
         ).fetchone()
         return row[0] if row else 0
+
+
+async def get_segment_file_ref(segment_id: int) -> tuple[int, str] | None:
+    """Return (id, thumbnail_path) of a segment, or None if it does not exist."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(
+            "SELECT id, COALESCE(thumbnail_path, '') FROM segments WHERE id=?", (segment_id,)
+        )).fetchone()
+        return (row[0], row[1]) if row else None
+
+
+async def get_segment_file_refs_for_guid(plex_guid: str) -> list[tuple[int, str]]:
+    """Return (id, thumbnail_path) of every segment of a title, so their files can be removed with them."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT id, COALESCE(thumbnail_path, '') FROM segments WHERE plex_guid=?", (plex_guid,)
+        )
+        return [(r[0], r[1]) for r in rows]
+
+
+async def get_referenced_thumbnail_paths() -> set[str]:
+    """Return every thumbnail path some segment points at (the sweep keeps these files)."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall("SELECT thumbnail_path FROM segments WHERE COALESCE(thumbnail_path, '') != ''")
+        return {r[0] for r in rows}
+
+
+async def get_feedback_frame_paths() -> set[str]:
+    """Return every frame path a feedback row owns (false positives and relabels keep their frame)."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall("SELECT frame_path FROM segment_feedback WHERE COALESCE(frame_path, '') != ''")
+        return {r[0] for r in rows}
+
+
+async def get_orphan_segment_refs(older_than_days: int) -> list[tuple[int, str]]:
+    """Return (id, thumbnail_path) of segments whose title has no scan job and that are older than the cutoff.
+
+    Library sync deletes a removed title's scan job but not its segments; the age cutoff leaves
+    them a while in case the title comes back.
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT s.id, COALESCE(s.thumbnail_path, '') FROM segments s "
+            "WHERE NOT EXISTS (SELECT 1 FROM scan_jobs j WHERE j.plex_guid = s.plex_guid) "
+            "AND s.created_at < datetime('now', ?)",
+            (f"-{int(older_than_days)} days",),
+        )
+        return [(r[0], r[1]) for r in rows]
+
+
+async def delete_segments_by_ids(segment_ids: list[int]) -> int:
+    """Delete segments by id (in chunks within SQLite's variable limit); return how many were deleted."""
+    total = 0
+    async with get_connection() as conn:
+        for i in range(0, len(segment_ids), 500):
+            chunk = segment_ids[i:i + 500]
+            cursor = await conn.execute(
+                f"DELETE FROM segments WHERE id IN ({','.join('?' * len(chunk))})", chunk
+            )
+            total += cursor.rowcount
+        await conn.commit()
+    return total
 
 
 async def delete_segments_for_guid(plex_guid: str) -> int:

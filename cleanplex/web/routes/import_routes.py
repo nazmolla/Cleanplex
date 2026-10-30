@@ -12,6 +12,7 @@ from ... import database as db
 from ... import events
 from ... import importers
 from ... import plex_summary
+from ... import segment_files
 from ...importers._common import ParseError
 
 logger = get_logger(__name__)
@@ -54,7 +55,7 @@ async def _store(plex_guid: str, segments: list[dict], source: str, replace: boo
         raise HTTPException(status_code=404, detail=f"Unknown title: {plex_guid}")
 
     if replace:
-        await db.delete_segments_for_guid(plex_guid)
+        await segment_files.delete_segments_for_guid(plex_guid)
 
     count = await db.insert_segments_bulk(plex_guid, job.get("title") or "", segments, source)
     events.publish("segments_changed", guid=plex_guid)
@@ -125,7 +126,7 @@ async def scan_subtitles(payload: SubtitleScanPayload):
         raise HTTPException(status_code=422, detail="This title has no file path on disk.")
 
     if payload.replace:
-        await db.delete_segments_for_guid(payload.plex_guid)
+        await segment_files.delete_segments_for_guid(payload.plex_guid)
 
     count = await subtitle_scanner.scan_title(
         payload.plex_guid, job.get("title") or "", job["file_path"]

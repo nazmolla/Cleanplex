@@ -252,3 +252,18 @@ async def test_importing_refreshes_the_plex_summary(http_client):
             "plex_guid": "g-sum", "text": "00:01:00 - 00:01:30 nudity", "replace": False})
     assert resp.status_code == 200
     refresh.assert_called_once_with("g-sum")
+
+
+async def test_importing_with_replace_removes_the_replaced_segments_thumbnails(http_client, tmp_path):
+    from unittest.mock import patch
+    await db.upsert_scan_job(plex_guid="g-rep", title="T", file_path="/m.mkv", rating_key="9",
+                             library_id="l", library_title="L")
+    thumb = tmp_path / "old.jpg"
+    thumb.write_bytes(b"x")
+    await db.insert_segment("g-rep", "T", 0, 1000, thumbnail_path=str(thumb))
+
+    with patch("cleanplex.web.routes.import_routes.plex_summary.refresh_soon"):
+        resp = await http_client.post("/api/segments/import/paste", json={
+            "plex_guid": "g-rep", "text": "00:01:00 - 00:01:30 nudity", "replace": True})
+
+    assert resp.status_code == 200 and not thumb.exists()

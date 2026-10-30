@@ -53,6 +53,7 @@ class SettingsPayload(BaseModel):
     siglip_label_thresholds: str | None = None
     hw_decode: Literal["0", "1"] | None = None
     hover_previews_enabled: Literal["0", "1"] | None = None
+    hover_when_idle: Literal["0", "1"] | None = None
     hover_window_start: str | None = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     hover_window_end: str | None = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 

@@ -16,7 +16,7 @@ import httpx
 import cleanplex.plex_client as plex_mod
 
 from .frame_extractor import extract_frames_batch, extract_frames_window, get_duration_ms
-from . import events, plex_summary, siglip_detector
+from . import events, plex_summary, segment_files, siglip_detector
 from .segment_refine import REFINE_MAX_FRAMES, dense_hits  # noqa: F401 (REFINE_MAX_FRAMES is re-exported)
 from .logger import get_logger
 from . import database as db
@@ -800,7 +800,7 @@ async def scan_video(plex_guid: str, config) -> None:
     async with _state_lock:
         _current_guids.add(plex_guid)
     # Fresh scan run: clear prior segments so retries/re-scans do not duplicate entries.
-    deleted = await db.delete_segments_for_guid(plex_guid)
+    deleted = await segment_files.delete_segments_for_guid(plex_guid)
     if deleted:
         logger.info("Cleared %d previous segment(s) for %s", deleted, title)
         events.publish("segments_changed", guid=plex_guid)

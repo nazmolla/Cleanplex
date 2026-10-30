@@ -370,3 +370,40 @@ async def test_refine_status_counts_waiting_segments(http_client):
 async def test_refine_status_reports_the_job_off_when_the_step_is_zero(http_client):
     await db.set_setting("refine_step_ms", "0")
     assert (await http_client.get("/api/segments/refine-status")).json()["enabled"] is False
+
+
+# ── deleting removes the files (#153) ──────────────────────────────────────────
+
+async def test_deleting_a_segment_through_the_api_removes_its_thumbnail(http_client, tmp_path, monkeypatch):
+    from cleanplex import hover_previews
+    monkeypatch.setattr(hover_previews, "HOVER_DIR", tmp_path / "hover")
+    (tmp_path / "hover").mkdir()
+    await db.upsert_scan_job(plex_guid="g", title="T", file_path="/m.mkv", rating_key="1",
+                             library_id="l", library_title="L")
+    thumb = tmp_path / "t.jpg"
+    thumb.write_bytes(b"x")
+    sid = await db.insert_segment("g", "T", 0, 1000, thumbnail_path=str(thumb))
+    hover_previews.hover_path(sid).write_bytes(b"clip")
+
+    with patch("cleanplex.web.routes.segments._refresh_cleanplex_summary_for_guid"):
+        resp = await http_client.delete(f"/api/segments/{sid}")
+
+    assert resp.status_code == 200
+    assert not thumb.exists() and not hover_previews.hover_path(sid).exists()
+
+
+async def test_deleting_all_of_a_titles_segments_removes_their_thumbnails(http_client, tmp_path):
+    await db.upsert_scan_job(plex_guid="g", title="T", file_path="/m.mkv", rating_key="1",
+                             library_id="l", library_title="L")
+    thumbs = []
+    for start in (0, 5000):
+        t = tmp_path / f"t{start}.jpg"
+        t.write_bytes(b"x")
+        thumbs.append(t)
+        await db.insert_segment("g", "T", start, start + 1000, thumbnail_path=str(t))
+
+    with patch("cleanplex.web.routes.segments._refresh_cleanplex_summary_for_guid"):
+        resp = await http_client.delete("/api/titles/g/segments")
+
+    assert resp.json()["deleted"] == 2
+    assert not any(t.exists() for t in thumbs)
