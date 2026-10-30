@@ -40,7 +40,31 @@ def session_options():
     options = ort.SessionOptions()
     options.intra_op_num_threads = intra_op_threads()
     options.inter_op_num_threads = 1
+    # By default the workers busy-wait after every call. A scan calls a session once per frame
+    # with decoding in between, so the spinning burned about 6x the CPU of the inference itself
+    # (4.26 s against 0.64 s measured, one frame per 50 ms on 4 threads) for no gain (#147).
+    options.add_session_config_entry("session.intra_op.allow_spinning", "0")
     return options
+
+
+def lower_process_priority() -> int:
+    """Raise this process's niceness by CLEANPLEX_NICE (default 10) so Plex wins CPU contention.
+
+    Scanning is background work: the Plex transcoder and the web UI should get the cores first.
+    0 or an unset-able platform (no os.nice, e.g. Windows) leaves the priority alone. Returns the
+    niceness now in effect, or 0 when nothing was changed (#147).
+    """
+    try:
+        increment = int(os.environ.get("CLEANPLEX_NICE", "10"))
+    except ValueError:
+        increment = 10
+    if increment <= 0 or not hasattr(os, "nice"):
+        return 0
+    try:
+        return os.nice(increment)
+    except OSError as exc:
+        logger.warning("Could not lower the process priority: %s", exc)
+        return 0
 
 
 def limit_nudenet_threads(detector, model_path: str = "") -> None:
