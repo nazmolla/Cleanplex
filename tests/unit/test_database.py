@@ -586,3 +586,19 @@ async def test_get_scan_jobs_by_guids_spans_multiple_chunks():
         for i in range(1200)
     ])
     assert len(await db.get_scan_jobs_by_guids([f"g{i}" for i in range(1200)])) == 1200
+
+
+async def test_get_segments_for_guids_with_setting_returns_all_guids_and_the_setting():
+    for guid in ("a", "b"):
+        await db.insert_segment(guid, "T", 0, 500, 0.9)
+    await db.set_setting("scan_labels", '["X"]')
+    segs, value = await db.get_segments_for_guids_with_setting(["a", "b", "zz"], "scan_labels", "[]")
+    assert [s["plex_guid"] for s in segs] == ["a", "b"] and value == '["X"]'
+
+
+async def test_get_segments_for_guids_with_setting_falls_back_to_default_when_empty():
+    assert await db.get_segments_for_guids_with_setting([], "nope", "[]") == ([], "[]")
+
+
+async def test_fail_unfinished_bg_jobs_marks_running_and_queued_only():
+    assert await db.fail_unfinished_bg_jobs("restart") == 0

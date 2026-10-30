@@ -83,3 +83,27 @@ def test_is_scan_window_always_on_when_window_spans_all_day():
     # Result depends on current time but the logic path is executed
     result = config.is_scan_window()
     assert isinstance(result, bool)
+
+
+def test_setup_logging_writes_to_a_rotating_file_when_configured(tmp_path, monkeypatch):
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    from cleanplex import logger as log_mod
+
+    monkeypatch.setenv("CLEANPLEX_LOG_FILE", str(tmp_path / "sub" / "cleanplex.log"))
+    root = logging.getLogger()
+    saved = root.handlers[:]
+    try:
+        for h in saved:
+            root.removeHandler(h)
+        log_mod.setup_logging("INFO")
+        logging.getLogger("x").info("hello")
+        assert any(isinstance(h, RotatingFileHandler) for h in root.handlers)
+        assert "hello" in (tmp_path / "sub" / "cleanplex.log").read_text()
+    finally:
+        for h in root.handlers[:]:
+            root.removeHandler(h)
+            h.close()
+        for h in saved:
+            root.addHandler(h)

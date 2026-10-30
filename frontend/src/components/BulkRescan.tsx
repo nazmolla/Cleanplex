@@ -12,6 +12,7 @@ interface Counts {
   matched: number
   queued: number
   skipped_ineligible: number
+  skipped_missing_file?: number
   ignored_cleared?: number
 }
 
@@ -112,6 +113,9 @@ export default function BulkRescan({ libraries }: { libraries: Library[] }) {
             {counts.queued} title{counts.queued === 1 ? '' : 's'} will be queued
             {counts.skipped_ineligible > 0 && (
               <span className="text-gray-500"> · {counts.skipped_ineligible} skipped by your rating filters or excluded libraries</span>
+            )}
+            {!!counts.skipped_missing_file && (
+              <span className="text-gray-500"> · {counts.skipped_missing_file} left failed because the media file is still missing</span>
             )}
             {!!counts.ignored_cleared && (
               <span className="text-gray-500"> · {counts.ignored_cleared} ignored title{counts.ignored_cleared === 1 ? '' : 's'} cleared from the Failed list</span>

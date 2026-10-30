@@ -6,6 +6,8 @@ dense sampling existed), so both pick thumbnails and bounds the same way.
 
 from __future__ import annotations
 
+from contextlib import aclosing
+
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 from .logger import get_logger
@@ -51,15 +53,16 @@ async def dense_hits(
     async def scan(lo_ms: int, hi_ms: int, dstep: int) -> list[Hit]:
         found: list[Hit] = []
         try:
-            async for rel_ms, jpeg in extract(
+            async with aclosing(extract(
                 part_file, lo_ms - part_offset_ms, hi_ms - lo_ms, dstep, frame_size, hardware
-            ):
-                if not jpeg:
-                    continue
-                at_ms = part_offset_ms + rel_ms
-                is_nude, siglip_hit, score, labels = await judge(jpeg, at_ms)
-                if is_nude or siglip_hit:
-                    found.append((at_ms, is_nude, score, labels, jpeg))
+            )) as frames:
+                async for rel_ms, jpeg in frames:
+                    if not jpeg:
+                        continue
+                    at_ms = part_offset_ms + rel_ms
+                    is_nude, siglip_hit, score, labels = await judge(jpeg, at_ms)
+                    if is_nude or siglip_hit:
+                        found.append((at_ms, is_nude, score, labels, jpeg))
         except Exception as exc:
             logger.warning("Re-sampling %d-%dms of '%s' failed, keeping what was found: %s", lo_ms, hi_ms, label, exc)
         return found

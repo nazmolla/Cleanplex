@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
@@ -177,6 +178,17 @@ async def scan_show(body: ScanShowRequest):
     return {"ok": True, "queued": len(guids), "already_scanning": len(jobs) - len(guids)}
 
 
+def _source_still_missing(job: dict) -> bool:
+    """True for a job that failed with 'File not found' and whose file is still not on disk (#160). Blocking."""
+    if not (job.get("error_msg") or "").startswith("File not found:"):
+        return False
+    try:
+        parts = json.loads(job.get("part_files") or "[]")
+    except ValueError:
+        parts = []
+    return not all(os.path.isfile(p) for p in (parts or [job.get("file_path") or ""]))
+
+
 @router.post("/rescan")
 async def bulk_rescan(body: BulkRescanRequest):
     """Queue every finished title matching a scope for a scheduled rescan.
@@ -193,7 +205,15 @@ async def bulk_rescan(body: BulkRescanRequest):
     )
     excluded = set(json.loads(await db.get_setting("excluded_library_ids", "[]")))
     ratings = set(json.loads(await db.get_setting("scan_ratings", "[]")))
-    eligible = [j["plex_guid"] for j in candidates if scan_mod.is_scan_eligible(j, excluded, ratings)]
+    # A retry cannot succeed while the media file is still gone; leave those on the Failed list.
+    missing: set[str] = set()
+    if body.scope == "failed":
+        flags = await asyncio.to_thread(lambda: [_source_still_missing(j) for j in candidates])
+        missing = {j["plex_guid"] for j, gone in zip(candidates, flags) if gone}
+    eligible = [
+        j["plex_guid"] for j in candidates
+        if j["plex_guid"] not in missing and scan_mod.is_scan_eligible(j, excluded, ratings)
+    ]
     # Failed titles that are ignored are never scanned; clearing them takes them off the Failed list.
     ignored_failed = await db.count_failed_ignored(body.library_id) if body.scope == "failed" else 0
     if not body.dry_run and body.scope == "failed" and ignored_failed:
@@ -208,7 +228,8 @@ async def bulk_rescan(body: BulkRescanRequest):
         "ok": True,
         "matched": len(candidates),
         "queued": len(eligible),
-        "skipped_ineligible": len(candidates) - len(eligible),
+        "skipped_ineligible": len(candidates) - len(eligible) - len(missing),
+        "skipped_missing_file": len(missing),
         "ignored_cleared": ignored_failed,
         "dry_run": body.dry_run,
     }

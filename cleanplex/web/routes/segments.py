@@ -307,15 +307,7 @@ async def get_segments_batch(data: dict):
         scan_labels_raw_str = _scan_labels_cache[1]
     else:
         # Fetch segments + setting in one connection.
-        async with db.get_connection() as conn:
-            placeholders = ",".join("?" * len(guids))
-            rows = await conn.execute_fetchall(
-                f"SELECT * FROM segments WHERE plex_guid IN ({placeholders}) ORDER BY plex_guid, start_ms",
-                guids,
-            )
-            segments = [dict(r) for r in rows]
-            row = await (await conn.execute("SELECT value FROM settings WHERE key=?", ("scan_labels",))).fetchone()
-            scan_labels_raw_str = row["value"] if row else "[]"
+        segments, scan_labels_raw_str = await db.get_segments_for_guids_with_setting(guids, "scan_labels", "[]")
         _scan_labels_cache = (now, scan_labels_raw_str)
 
     scan_labels_raw = json.loads(scan_labels_raw_str)

@@ -8,6 +8,7 @@ import os
 import re
 import threading
 import time
+from contextlib import aclosing
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -1014,74 +1015,77 @@ async def scan_video(plex_guid: str, config) -> None:
                 )
 
             part_file_now, part_offset_now, part_duration_now = part_file, part_time_offset_ms, part_duration_ms
-            async for frame_offset_ms, jpeg in extract_frames_batch(
+            # aclosing: leaving the loop early (pause, skip, error) must close the ffmpeg generator,
+            # not leave it for the event loop to finalize at shutdown (#159).
+            async with aclosing(extract_frames_batch(
                 part_file, step_ms, part_duration_ms, frame_size,
                 hardware=bool(getattr(config, "hw_decode", True)),
-            ):
-                # Absolute timestamp across all parts.
-                offset_ms = part_time_offset_ms + frame_offset_ms
-                idx = offset_ms // step_ms
+            )) as frames:
+                async for frame_offset_ms, jpeg in frames:
+                    # Absolute timestamp across all parts.
+                    offset_ms = part_time_offset_ms + frame_offset_ms
+                    idx = offset_ms // step_ms
 
-                # User requested skip of this title — leave it as pending (not re-scanned).
-                if plex_guid in _skip_requested_guids:
-                    _skip_requested_guids.discard(plex_guid)
-                    logger.info("Scan of '%s' skipped by user request", title)
-                    await db.update_scan_job_status(plex_guid, "pending", progress=0.0)
-                    return
+                    # User requested skip of this title — leave it as pending (not re-scanned).
+                    if plex_guid in _skip_requested_guids:
+                        _skip_requested_guids.discard(plex_guid)
+                        logger.info("Scan of '%s' skipped by user request", title)
+                        await db.update_scan_job_status(plex_guid, "pending", progress=0.0)
+                        return
 
-                if _paused:
-                    # Re-queue for later
-                    await db.update_scan_job_status(plex_guid, "pending", progress=idx / total_steps)
-                    await enqueue(plex_guid)
-                    logger.info("Scan paused mid-way through %s, re-queued", title)
-                    return
+                    if _paused:
+                        # Re-queue for later
+                        await db.update_scan_job_status(plex_guid, "pending", progress=idx / total_steps)
+                        await enqueue(plex_guid)
+                        logger.info("Scan paused mid-way through %s, re-queued", title)
+                        return
 
-                # Periodically check the scan window; abort if it has ended.
-                if idx % 5 == 0 and not is_force_scan and not config.is_scan_window():
-                    await db.update_scan_job_status(plex_guid, "pending", progress=idx / total_steps)
-                    await enqueue(plex_guid)
-                    logger.info("Scan window ended during scan of '%s', re-queued", title)
-                    if not _paused:
-                        pause_scanner()
-                    return
+                    # Periodically check the scan window; abort if it has ended.
+                    if idx % 5 == 0 and not is_force_scan and not config.is_scan_window():
+                        await db.update_scan_job_status(plex_guid, "pending", progress=idx / total_steps)
+                        await enqueue(plex_guid)
+                        logger.info("Scan window ended during scan of '%s', re-queued", title)
+                        if not _paused:
+                            pause_scanner()
+                        return
 
-                if jpeg:
-                    is_nude, siglip_hit, score, detected_labels = await _judge(jpeg, offset_ms)
-                    siglip_run = siglip_run + 1 if siglip_hit else 0
+                    if jpeg:
+                        is_nude, siglip_hit, score, detected_labels = await _judge(jpeg, offset_ms)
+                        siglip_run = siglip_run + 1 if siglip_hit else 0
 
-                    if is_nude or siglip_hit:
-                        if cluster_start_ms is not None and offset_ms - cluster_prev_ms > gap_ms:
-                            # Previous segment is complete; persist it immediately.
-                            await _flush_cluster()
-                        if cluster_start_ms is None:
-                            cluster_start_ms = offset_ms
-                            cluster_hit_count = 0
-                            cluster_best_jpeg = jpeg
-                            cluster_best_score = score
-                            cluster_best_ms = offset_ms
-                            cluster_detected_labels = detected_labels.copy()
-                        elif score > cluster_best_score:
-                            cluster_best_jpeg = jpeg
-                            cluster_best_score = score
-                            cluster_best_ms = offset_ms
-                            cluster_detected_labels = detected_labels.copy()
-                        elif is_nude:
-                            # Merge labels from lower-confidence detections
-                            for label in detected_labels:
-                                if label not in cluster_detected_labels:
-                                    cluster_detected_labels.append(label)
-                        cluster_prev_ms = offset_ms
-                        cluster_hit_count += 1
-                        cluster_nudenet_hits += int(is_nude)
-                        cluster_max_siglip_run = max(cluster_max_siglip_run, siglip_run)
+                        if is_nude or siglip_hit:
+                            if cluster_start_ms is not None and offset_ms - cluster_prev_ms > gap_ms:
+                                # Previous segment is complete; persist it immediately.
+                                await _flush_cluster()
+                            if cluster_start_ms is None:
+                                cluster_start_ms = offset_ms
+                                cluster_hit_count = 0
+                                cluster_best_jpeg = jpeg
+                                cluster_best_score = score
+                                cluster_best_ms = offset_ms
+                                cluster_detected_labels = detected_labels.copy()
+                            elif score > cluster_best_score:
+                                cluster_best_jpeg = jpeg
+                                cluster_best_score = score
+                                cluster_best_ms = offset_ms
+                                cluster_detected_labels = detected_labels.copy()
+                            elif is_nude:
+                                # Merge labels from lower-confidence detections
+                                for label in detected_labels:
+                                    if label not in cluster_detected_labels:
+                                        cluster_detected_labels.append(label)
+                            cluster_prev_ms = offset_ms
+                            cluster_hit_count += 1
+                            cluster_nudenet_hits += int(is_nude)
+                            cluster_max_siglip_run = max(cluster_max_siglip_run, siglip_run)
 
-                progress = (idx + 1) / total_steps
-                if idx % 30 == 0:  # Update DB every ~2.5 min of video at 5 s steps
-                    await db.update_scan_job_status(plex_guid, "scanning", progress=progress)
-                now = time.monotonic()
-                if now - last_progress_event >= PROGRESS_EVENT_INTERVAL_S:
-                    last_progress_event = now
-                    events.publish("scan_progress", guid=plex_guid, progress=round(progress, 4))
+                    progress = (idx + 1) / total_steps
+                    if idx % 30 == 0:  # Update DB every ~2.5 min of video at 5 s steps
+                        await db.update_scan_job_status(plex_guid, "scanning", progress=progress)
+                    now = time.monotonic()
+                    if now - last_progress_event >= PROGRESS_EVENT_INTERVAL_S:
+                        last_progress_event = now
+                        events.publish("scan_progress", guid=plex_guid, progress=round(progress, 4))
 
             # Flush any open cluster before the next part starts; the time gap
             # between parts would prevent natural flushing via the gap_ms check.
