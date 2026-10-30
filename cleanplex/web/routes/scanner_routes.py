@@ -34,13 +34,15 @@ class ScanShowRequest(BaseModel):
     show_guid: str = ""
     # Fallback for episodes that carry no show GUID: match "<show> – ..." titles in the library.
     show_title: str = ""
+    # One season of the show, as it appears in titles ("Season 1"); needs show_title.
+    season: str = ""
     library_id: str | None = None
     now: bool = False
 
 
 class BulkRescanRequest(BaseModel):
     """Request body for rescanning many titles chosen by scope rather than by name (#138)."""
-    scope: Literal["outdated", "with_segments", "all_scanned", "scanned_before"]
+    scope: Literal["outdated", "with_segments", "all_scanned", "scanned_before", "whole_library"]
     library_id: str | None = None
     before: str | None = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="YYYY-MM-DD, UTC; for scanned_before")
     dry_run: bool = False
@@ -153,9 +155,11 @@ async def scan_show(body: ScanShowRequest):
     """
     if not body.show_guid and not body.show_title:
         raise HTTPException(status_code=422, detail="show_guid or show_title is required")
-    jobs = await db.get_show_episode_jobs(body.show_guid, body.show_title, body.library_id)
+    if body.season and not body.show_title:
+        raise HTTPException(status_code=422, detail="a season needs show_title")
+    jobs = await db.get_show_episode_jobs(body.show_guid, body.show_title, body.library_id, body.season)
     if not jobs:
-        raise HTTPException(status_code=404, detail="No episodes of this show have scan jobs")
+        raise HTTPException(status_code=404, detail="No episodes of this show or season have scan jobs")
     guids = [j["plex_guid"] for j in jobs if j["status"] != "scanning"]
     await _queue_rescan(guids, body.now)
     logger.info("Queued %d episodes of '%s' for rescan (now=%s)", len(guids), body.show_title or body.show_guid, body.now)
@@ -171,6 +175,8 @@ async def bulk_rescan(body: BulkRescanRequest):
     """
     if body.scope == "scanned_before" and not body.before:
         raise HTTPException(status_code=422, detail="scanned_before needs a date")
+    if body.scope == "whole_library" and not body.library_id:
+        raise HTTPException(status_code=422, detail="whole_library needs a library_id")
     candidates = await db.get_rescan_candidates(
         body.scope, scan_mod.SCAN_VERSION, body.library_id, f"{body.before} 00:00:00" if body.before else None
     )

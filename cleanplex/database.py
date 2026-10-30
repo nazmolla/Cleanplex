@@ -1496,7 +1496,7 @@ async def update_scan_job_status(
         await conn.commit()
 
 
-RESCAN_SCOPES = ("outdated", "with_segments", "all_scanned", "scanned_before")
+RESCAN_SCOPES = ("outdated", "with_segments", "all_scanned", "scanned_before", "whole_library")
 
 
 async def get_rescan_candidates(
@@ -1509,12 +1509,16 @@ async def get_rescan_candidates(
 
     outdated: scanned by an older scanner revision than current_version; with_segments: has at
     least one active segment; all_scanned: every finished title; scanned_before: finished before
-    the SQLite timestamp *before*. Optionally limited to one library. Pending, scanning and failed
-    jobs are never returned. Raises ValueError for an unknown scope or a missing date.
+    the SQLite timestamp *before*; whole_library: every title of *library_id*, finished or failed.
+    Optionally limited to one library. Pending and scanning jobs are never returned (pending ones
+    are queued already). Raises ValueError for an unknown scope or a missing date or library.
     """
     if scope not in RESCAN_SCOPES:
         raise ValueError(f"unknown rescan scope {scope!r}")
-    where = ["j.status = 'done'", "COALESCE(j.ignored, 0) = 0"]
+    if scope == "whole_library" and not library_id:
+        raise ValueError("whole_library needs a library")
+    where = ["j.status IN ('done', 'failed')" if scope == "whole_library" else "j.status = 'done'",
+             "COALESCE(j.ignored, 0) = 0"]
     params: list = []
     if scope == "outdated":
         where.append("COALESCE(j.scan_version, 0) < ?")
@@ -1537,24 +1541,34 @@ async def get_rescan_candidates(
         return [dict(r) for r in rows]
 
 
-async def get_show_episode_jobs(show_guid: str = "", show_title: str = "", library_id: str | None = None) -> list[dict]:
+def _like_literal(text: str) -> str:
+    """Escape LIKE wildcards so a title such as "100% Wolf" matches literally (ESCAPE '\\')."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+async def get_show_episode_jobs(
+    show_guid: str = "", show_title: str = "", library_id: str | None = None, season: str = ""
+) -> list[dict]:
     """Return a show's non-ignored episode jobs, by show GUID or, failing that, by "<show> – " title.
 
     Some episodes carry no show GUID, so the title prefix ("Show – Season – Episode") is the fallback.
+    With *season* (needs show_title) only that season's episodes are returned.
     """
+    season_like = f"{_like_literal(show_title)} – {_like_literal(season)} – %" if season and show_title else ""
     async with get_connection() as conn:
         rows: list = []
         if show_guid:
-            rows = await conn.execute_fetchall(
-                "SELECT plex_guid, library_id, content_rating, ignored, status FROM scan_jobs "
-                "WHERE show_guid = ? AND COALESCE(ignored, 0) = 0",
-                (show_guid,),
-            )
+            sql = ("SELECT plex_guid, library_id, content_rating, ignored, status FROM scan_jobs "
+                   "WHERE show_guid = ? AND COALESCE(ignored, 0) = 0")
+            params = [show_guid]
+            if season_like:
+                sql += " AND title LIKE ? ESCAPE '\\'"
+                params.append(season_like)
+            rows = await conn.execute_fetchall(sql, params)
         if not rows and show_title:
-            escaped = show_title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             sql = ("SELECT plex_guid, library_id, content_rating, ignored, status FROM scan_jobs "
                    "WHERE media_type = 'episode' AND title LIKE ? ESCAPE '\\' AND COALESCE(ignored, 0) = 0")
-            params: list = [f"{escaped} – %"]
+            params: list = [season_like or f"{_like_literal(show_title)} – %"]
             if library_id:
                 sql += " AND library_id = ?"
                 params.append(library_id)
