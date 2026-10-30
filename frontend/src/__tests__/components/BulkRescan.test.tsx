@@ -108,4 +108,16 @@ describe('BulkRescan (#138)', () => {
 
     expect(await screen.findByText(/Could not queue the rescan: 503 scanner down/)).toBeInTheDocument()
   })
+
+  it('offers the failed scope and says how many ignored failures it clears (#150)', async () => {
+    post.mockResolvedValue({ ok: true, matched: 4, queued: 4, skipped_ineligible: 0, ignored_cleared: 59 })
+    render(<BulkRescan libraries={LIBS} />)
+    await screen.findByText(/titles will be queued/)
+
+    fireEvent.click(screen.getByLabelText(/Titles whose scan failed/))
+
+    expect(await screen.findByText(/59 ignored titles cleared from the Failed list/)).toBeInTheDocument()
+    await waitFor(() => expect(post).toHaveBeenLastCalledWith(
+      '/api/scan/rescan', { scope: 'failed', library_id: null, before: null, dry_run: true }))
+  })
 })

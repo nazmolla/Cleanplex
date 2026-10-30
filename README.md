@@ -104,7 +104,7 @@ All configuration is done via the **web UI** at `http://your-server:7979/setting
 | Inference threads | 0 (auto) | onnxruntime threads per scan worker (`inference_threads`, API only). Auto leaves about one worker's share of CPU free for Plex and the web UI |
 | SigLIP Consecutive Frames | 2 | SigLIP-only hits must repeat on this many consecutive sampled frames before a segment is created |
 | Refinement Step | 500 ms | After a segment is found, its window is re-sampled this finely so the thumbnail is the highest-scoring frame and the segment also covers scene frames the coarse scan stepped over. Segments only ever grow; 0 turns it off. The card shows the time the thumbnail frame was taken at (Settings → Segments). Segments found before this existed are refined by a background job inside the scan window, one at a time (no rescan needed); Settings → Segments shows how many are still waiting |
-| Content Ratings | — | Only scan and filter titles matching your selected ratings |
+| Content Ratings | — | Only scan and filter titles matching your selected ratings. `NR` also covers titles Plex reports as "Not Rated" or "Unrated" |
 
 ## Segment Expansion & Skip Logic
 
@@ -216,6 +216,7 @@ only. Those categories are populated by importing skip files, where humans have 
 - **Segment details** — Timestamp range, confidence score, a thumbnail from the detected scene, and what found it (e.g. *NudeNet 640m*, *SigLIP*, *Subtitles*, *VideoSkip (.skp)*)
 - **Delete false positives** — Remove incorrectly flagged segments
 - **Right-click to rescan** — On a movie, episode, season or show: *Rescan now* or *Rescan tonight* (queued for the scan window). The Segments page lists only titles that have segments, so on a show the first pair rescans those listed episodes; *Rescan whole show now / tonight* and *whole season now / tonight* queue every non-ignored episode, including ones with no segments; right-clicking a library offers *Rescan whole library tonight* (finished and failed titles, scheduled only, never jumped to the front)
+- **Failed scans** — On the Library page, the *Failed* tab has *Retry failed*: every failed title of the library is queued again (inside your rating filter) and ignored titles are taken off the Failed list. The same choice is in Settings → *Rescan Titles*
 - **Rescan many titles** — Settings → Scan Scope & Schedule → *Rescan Titles*: pick titles scanned by an older scanner (the right choice after an update), titles with segments, every scanned title, or titles scanned before a date, optionally for one library. A live count shows what will be queued and how many your rating filters skip; they go through the normal scan queue (scan window, usual order) and keep their current segments until the new scan replaces them
 - **Live updates** — The open title's segments and the tree counts refresh as a rescan runs and when it finishes
 - **Hover preview** — Hovering a segment's thumbnail plays a 5 s silent loop of it (sped up for long segments), in Library, Segments and Analytics. Rendered overnight by the hover-preview job, so new segments get one the next night

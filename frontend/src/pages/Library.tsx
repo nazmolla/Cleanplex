@@ -4,6 +4,7 @@ import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
 import FalsePositiveButton, { FalsePositiveTag } from '../components/FalsePositiveButton'
 import RelabelButton from '../components/RelabelButton'
+import { ratingAllowed } from '../utils/ratings'
 import ThumbnailTime from '../components/ThumbnailTime'
 import SkipFileImport from '../components/SkipFileImport'
 import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2, Eye, EyeOff, X, ThumbsDown } from 'lucide-react'
@@ -225,6 +226,8 @@ export default function Library() {
   const [filter, setFilter] = useState('')
   const [ratingFilter, setRatingFilter] = useState<string>('all')
   const [statusFilter, setStatusFilter] = useState<StatusTab>('all')
+  const [retrying, setRetrying] = useState(false)
+  const [retryNotice, setRetryNotice] = useState('')
   const [sortBy, setSortBy] = useState<SortOption>('date-added')
   const [sortDesc, setSortDesc] = useState(true)
   const [showIgnored, setShowIgnored] = useState(false)
@@ -584,6 +587,26 @@ export default function Library() {
     }
   }
 
+  // Retries every failed title of the library through the scheduled queue and takes ignored ones
+  // off the Failed list (#150); the server counts what it did.
+  const retryFailed = async () => {
+    if (!selected) return
+    setRetrying(true)
+    try {
+      const r = await api.post<{ queued: number; ignored_cleared: number; skipped_ineligible: number }>(
+        '/api/scan/rescan', { scope: 'failed', library_id: selected.id })
+      const parts = [`${r.queued} failed title${r.queued === 1 ? '' : 's'} queued for another try`]
+      if (r.ignored_cleared) parts.push(`${r.ignored_cleared} ignored cleared from the list`)
+      if (r.skipped_ineligible) parts.push(`${r.skipped_ineligible} outside your rating filter`)
+      setRetryNotice(parts.join(' · '))
+      setTitles(await loadTitles(selected.id))
+    } catch (err: any) {
+      setRetryNotice(`Could not retry the failed titles: ${err.message || 'unknown error'}`)
+    } finally {
+      setRetrying(false)
+    }
+  }
+
   const scanLibrary = async (libId: string, now: boolean) => {
     try {
       await api.post(`/api/scan/library/${libId}`, { now })
@@ -669,7 +692,7 @@ export default function Library() {
   // A pending title whose rating the scanner excludes will never be scanned, so it
   // is not listed at all; already-scanned ones keep their results visible.
   const ratingExcluded = (t: Title) =>
-    t.status === 'pending' && scanRatings.length > 0 && !scanRatings.includes((t.content_rating || '').trim())
+    t.status === 'pending' && !ratingAllowed(t.content_rating, scanRatings)
 
   // Every filter except the status tab, so each tab's count matches what it lists.
   const visible = titles.filter(t => {
@@ -928,6 +951,16 @@ export default function Library() {
                   </button>
                 ))}
               </div>
+              {statusFilter === 'failed' && (
+                <button
+                  onClick={retryFailed}
+                  disabled={retrying}
+                  title="Queue every failed title in this library again and clear ignored ones from the list"
+                  className="px-2.5 py-1 text-xs rounded-lg border border-plex-orange/40 text-plex-orange hover:bg-plex-orange/10 disabled:opacity-40 whitespace-nowrap"
+                >
+                  Retry failed
+                </button>
+              )}
               <input
                 type="text"
                 placeholder="Filter titles..."
@@ -979,6 +1012,7 @@ export default function Library() {
                 {showIgnored ? <Eye size={15} /> : <EyeOff size={15} />}
               </button>
             </div>
+            {retryNotice && <p className="px-3 pt-2 text-xs text-gray-400" role="status">{retryNotice}</p>}
 
             {/* Title list */}
             <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pr-1 pb-6">

@@ -115,6 +115,26 @@ _restart_requested: bool = False
 _state_lock = asyncio.Lock()
 
 
+# Plex says "Not Rated" (or "Unrated") where the scan list says "NR"; they are the same rating (#149).
+_RATING_ALIASES = {"not rated": "NR", "unrated": "NR", "nr": "NR"}
+
+
+def normalize_rating(rating: str | None) -> str:
+    """Return a rating as the scan list spells it: "Not Rated" and "Unrated" become "NR", others are trimmed."""
+    clean = (rating or "").strip()
+    return _RATING_ALIASES.get(clean.lower(), clean)
+
+
+def rating_allowed(content_rating: str | None, scan_ratings) -> bool:
+    """True if *content_rating* passes the scan list, comparing both sides through normalize_rating.
+
+    An empty list means "scan everything".
+    """
+    if not scan_ratings:
+        return True
+    return normalize_rating(content_rating) in {normalize_rating(r) for r in scan_ratings}
+
+
 def is_scan_eligible(job: dict, excluded_library_ids: set[str], scan_ratings: set[str]) -> bool:
     """Return True if a scan job should enter the normal (non-force) queue.
 
@@ -131,7 +151,7 @@ def is_scan_eligible(job: dict, excluded_library_ids: set[str], scan_ratings: se
         return False
     if job.get("library_id") in excluded_library_ids:
         return False
-    if scan_ratings and (job.get("content_rating") or "").strip() not in scan_ratings:
+    if not rating_allowed(job.get("content_rating"), scan_ratings):
         return False
     return True
 
@@ -741,7 +761,7 @@ async def scan_video(plex_guid: str, config) -> None:
         scan_ratings: set[str] = set(config.scan_ratings) if config.scan_ratings else set()
         if scan_ratings:
             job_rating = (job.get("content_rating") or "").strip()
-            if job_rating not in scan_ratings:
+            if not rating_allowed(job_rating, scan_ratings):
                 logger.info(
                     "Skipping %s: content rating '%s' not in scan_ratings %s",
                     job["title"],
