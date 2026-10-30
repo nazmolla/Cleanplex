@@ -227,6 +227,19 @@ describe('Settings sections', () => {
     expect(screen.getByRole('status')).toHaveTextContent('3,358 existing segments are still waiting to be refined')
   })
 
+  it('saves the render-when-the-queue-is-empty option for hover previews (#152)', async () => {
+    mockApi.put.mockResolvedValue({})
+    renderSettings()
+    await waitFor(() => screen.getByDisplayValue('http://plex:32400'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Scan Scope & Schedule' }))
+    fireEvent.click(screen.getByLabelText(/Also render as soon as the scan queue is empty/))
+    fireEvent.click(screen.getByRole('button', { name: /Save Settings/ }))
+
+    await waitFor(() => expect(mockApi.put).toHaveBeenCalled())
+    expect(mockApi.put.mock.calls[0][1].hover_when_idle).toBe('0')
+  })
+
   it('shows Users as a section without the Save bar (#118)', async () => {
     render(<MemoryRouter initialEntries={['/settings?section=users']}><Settings /></MemoryRouter>)
     await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument())

@@ -51,6 +51,8 @@ class Config:
     scan_window_start: time = field(default_factory=lambda: time(23, 0))
     scan_window_end: time = field(default_factory=lambda: time(6, 0))
     hover_previews_enabled: bool = True
+    # Also render hover previews whenever the scan queue is empty, not only inside the hover window (#152).
+    hover_when_idle: bool = True
     hover_window_start: time = field(default_factory=lambda: time(0, 0))
     hover_window_end: time = field(default_factory=lambda: time(7, 0))
     log_level: str = "INFO"
@@ -118,6 +120,7 @@ class Config:
             scan_window_start=_time(s.get("scan_window_start", "23:00")),
             scan_window_end=_time(s.get("scan_window_end", "06:00")),
             hover_previews_enabled=s.get("hover_previews_enabled", "1") == "1",
+            hover_when_idle=s.get("hover_when_idle", "1") == "1",
             hover_window_start=_time(s.get("hover_window_start", "00:00")),
             hover_window_end=_time(s.get("hover_window_end", "07:00")),
             log_level=s.get("log_level", "INFO"),

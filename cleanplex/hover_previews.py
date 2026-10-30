@@ -22,8 +22,8 @@ from .logger import get_logger
 logger = get_logger(__name__)
 
 HOVER_DIR: Path = Path.home() / ".cleanplex" / "hover"
-# How often to check whether the window has opened.
-CHECK_INTERVAL_S = 300
+# How often to check whether the window has opened or the scanner has gone idle.
+CHECK_INTERVAL_S = 60
 # Segments fetched per query; the window is re-checked between batches.
 BATCH_SIZE = 25
 
@@ -75,12 +75,22 @@ async def render_pending(should_continue: Callable[[], Awaitable[bool]]) -> int:
     return rendered
 
 
-async def hover_preview_loop(get_config_fn: Callable[[], Awaitable[Config]]) -> None:
-    """Run render_pending whenever the hover window is open and the job is enabled."""
+async def hover_preview_loop(
+    get_config_fn: Callable[[], Awaitable[Config]],
+    scanner_idle: Callable[[], bool] = lambda: False,
+) -> None:
+    """Run render_pending whenever the job is enabled and the hover window is open or the scanner is idle.
+
+    With hover_when_idle the job also runs as soon as the scan queue is empty and nothing is
+    scanning (#152), and a run in progress stops at the next segment once a scan starts, so the
+    previews never compete with a scan for the machine.
+    """
 
     async def in_window() -> bool:
         config = await get_config_fn()
-        return config.hover_previews_enabled and config.is_hover_window()
+        if not config.hover_previews_enabled:
+            return False
+        return config.is_hover_window() or (config.hover_when_idle and scanner_idle())
 
     while True:
         try:

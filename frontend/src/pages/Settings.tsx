@@ -32,6 +32,7 @@ interface Settings {
   siglip_label_thresholds: string
   hw_decode: string
   hover_previews_enabled: string
+  hover_when_idle: string
   hover_window_start: string
   hover_window_end: string
 }
@@ -82,6 +83,7 @@ const DEFAULT: Settings = {
   siglip_label_thresholds: '{}',
   hw_decode: '1',
   hover_previews_enabled: '1',
+  hover_when_idle: '1',
   hover_window_start: '00:00',
   hover_window_end: '07:00',
 }
@@ -488,7 +490,7 @@ export default function SettingsPage() {
                 <h2 className={h2Cls}>Hover Previews</h2>
                 <p className="text-xs text-gray-500 mb-4">
                   A separate job renders a short silent loop of each segment (about 20 KB each), played when you hover its
-                  thumbnail. It runs only in this window, one segment at a time, and picks up segments it has not done yet.
+                  thumbnail. It runs in this window, and when the scan queue is empty if that option is on, one segment at a time, and picks up segments it has not done yet.
                   The window may cross midnight (e.g. 22:00 to 07:00).
                 </p>
                 <label className="flex items-start gap-3 cursor-pointer mb-4">
@@ -499,6 +501,19 @@ export default function SettingsPage() {
                     className="w-4 h-4 mt-0.5 accent-plex-orange"
                   />
                   <span className="text-sm text-gray-300">Render hover previews</span>
+                </label>
+                <label className="flex items-start gap-3 cursor-pointer mb-4">
+                  <input
+                    type="checkbox"
+                    checked={form.hover_when_idle !== '0'}
+                    onChange={e => setForm(f => ({ ...f, hover_when_idle: e.target.checked ? '1' : '0' }))}
+                    disabled={form.hover_previews_enabled === '0'}
+                    className="w-4 h-4 mt-0.5 accent-plex-orange disabled:opacity-40"
+                  />
+                  <span className="text-sm text-gray-300">
+                    Also render as soon as the scan queue is empty
+                    <span className="block text-xs text-gray-600">Stops again when a scan starts. Outside this, it only runs in the window below.</span>
+                  </span>
                 </label>
                 <div className="flex gap-4">
                   <Field label="Start Time">

@@ -286,3 +286,11 @@ async def test_put_accepts_a_refine_step(http_client, value):
 async def test_put_rejects_an_invalid_refine_step(http_client, value):
     resp, _ = await _put(http_client, {"refine_step_ms": value})
     assert resp.status_code == 422
+
+
+async def test_hover_when_idle_is_on_by_default_and_can_be_turned_off(http_client):
+    assert (await http_client.get("/api/settings")).json()["hover_when_idle"] == "1"
+    resp, _ = await _put(http_client, {"hover_when_idle": "0"})
+    assert resp.status_code == 200 and await db.get_setting("hover_when_idle") == "0"
+    resp, _ = await _put(http_client, {"hover_when_idle": "maybe"})
+    assert resp.status_code == 422

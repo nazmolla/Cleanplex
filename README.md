@@ -93,6 +93,7 @@ All configuration is done via the **web UI** at `http://your-server:7979/setting
 | Skip Event Retention | 90 days | How long skip history is kept before being pruned at startup |
 | Scan Window | 23:00–06:00 | Time window when background scanning runs |
 | Hover Previews | on | Render a short silent loop of each active segment, played when you hover its thumbnail (~20–40 KB each, stored in `~/.cleanplex/hover`) |
+| Hover previews when idle | on | Also render hover previews as soon as the scan queue is empty and nothing is scanning, not only inside the window below; stops when a scan starts |
 | Hover Preview Window | 00:00–07:00 | When the hover preview job runs (Settings → Schedule). It renders one segment at a time, picks up segments it has not done yet, and removes files of deleted segments |
 | Scanner Workers | 2 | Number of parallel scans (higher = more CPU/memory usage) |
 | Detector Labels | — | Select which nudity types to detect (and skip). Only selected labels trigger skips |
@@ -215,6 +216,7 @@ only. Those categories are populated by importing skip files, where humans have 
 - **Live scanner banner** — shows which titles are currently being scanned with progress bars
 - **Segment details** — Timestamp range, confidence score, a thumbnail from the detected scene, and what found it (e.g. *NudeNet 640m*, *SigLIP*, *Subtitles*, *VideoSkip (.skp)*)
 - **Delete false positives** — Remove incorrectly flagged segments
+- **File cleanup** — Deleting a segment (or a title's segments, a rescan, or an import that replaces them) removes its thumbnail and hover preview. A sweep at startup and every 6 hours removes thumbnails, hover previews and feedback frames nothing references (older than an hour), and segments whose title no longer exists once they are 30 days old. Feedback frames kept for false-positive and relabel verdicts are never removed
 - **Right-click to rescan** — On a movie, episode, season or show: *Rescan now* or *Rescan tonight* (queued for the scan window). The Segments page lists only titles that have segments, so on a show the first pair rescans those listed episodes; *Rescan whole show now / tonight* and *whole season now / tonight* queue every non-ignored episode, including ones with no segments; right-clicking a library offers *Rescan whole library tonight* (finished and failed titles, scheduled only, never jumped to the front)
 - **Failed scans** — On the Library page, the *Failed* tab has *Retry failed*: every failed title of the library is queued again (inside your rating filter) and ignored titles are taken off the Failed list. The same choice is in Settings → *Rescan Titles*
 - **Rescan many titles** — Settings → Scan Scope & Schedule → *Rescan Titles*: pick titles scanned by an older scanner (the right choice after an update), titles with segments, every scanned title, or titles scanned before a date, optionally for one library. A live count shows what will be queued and how many your rating filters skip; they go through the normal scan queue (scan window, usual order) and keep their current segments until the new scan replaces them
