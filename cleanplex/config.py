@@ -34,6 +34,8 @@ class Config:
     siglip_enabled: bool = False
     siglip_threshold: float = 0.3
     siglip_min_hits: int = 2
+    # Share of kept segments the feedback-trained verifier may drop (5/10/20); 0 = off (#165).
+    verifier_loss_pct: int = 0
     # Do not run SigLIP after a title's Plex credits marker (#121).
     ignore_credits: bool = True
     # onnxruntime threads per session; 0 derives it from scan_workers (#123).
@@ -112,6 +114,7 @@ class Config:
             siglip_enabled=s.get("siglip_enabled", "0") == "1",
             siglip_threshold=float(s.get("siglip_threshold", "0.3")),
             siglip_min_hits=max(1, int(s.get("siglip_min_hits", "2"))),
+            verifier_loss_pct=int(s.get("verifier_loss_pct", "0")),
             ignore_credits=s.get("ignore_credits", "1") == "1",
             inference_threads=max(0, int(s.get("inference_threads", "0"))),
             hw_decode=s.get("hw_decode", "1") == "1",

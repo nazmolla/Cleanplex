@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import asyncio
 import pytest
 
 from cleanplex import database as db
@@ -245,3 +246,22 @@ async def test_scan_library_resets_all_jobs_with_one_batched_call(http_client):
     assert resp.json()["queued"] == 3
     batched.assert_called_once()
     single.assert_not_called()
+
+
+async def test_verifier_status_reports_untrained_state(http_client):
+    data = (await http_client.get("/api/scan/verifier")).json()
+    assert data["running"] is False and data["trained_at"] is None and data["groups"] == {}
+
+
+async def test_train_verifier_starts_a_background_run(http_client):
+    with patch("cleanplex.web.routes.scanner_routes.verifier.train", new=AsyncMock()) as train:
+        resp = await http_client.post("/api/scan/verifier/train")
+        await asyncio.sleep(0)
+    assert resp.status_code == 200
+    train.assert_awaited_once()
+
+
+async def test_train_verifier_rejects_a_second_run_while_one_is_going(http_client):
+    with patch("cleanplex.web.routes.scanner_routes.verifier.status", return_value={"running": True}):
+        resp = await http_client.post("/api/scan/verifier/train")
+    assert resp.status_code == 409

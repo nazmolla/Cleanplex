@@ -16,7 +16,7 @@ import httpx
 import cleanplex.plex_client as plex_mod
 
 from .frame_extractor import extract_frames_batch, extract_frames_window, get_duration_ms
-from . import events, plex_summary, segment_files, siglip_detector
+from . import events, plex_summary, segment_files, siglip_detector, verifier
 from .segment_refine import REFINE_MAX_FRAMES, dense_hits  # noqa: F401 (REFINE_MAX_FRAMES is re-exported)
 from .logger import get_logger
 from . import database as db
@@ -43,7 +43,7 @@ PROGRESS_EVENT_INTERVAL_S = 2.0
 # redoing (thresholds, prompts, severity, thumbnails and bounds), so "rescan outdated titles"
 # can find what an older scanner finished (#138). 1: per-label thresholds, credits skip, SigLIP
 # credit prompts. 2: severity from labels. 3: dense re-sample of flagged windows.
-SCAN_VERSION = 3
+SCAN_VERSION = 4
 
 # Detection models are cached per thread (threading.local), so the number of
 # threads running inference is the number of model copies held in memory. A pool
@@ -926,6 +926,20 @@ async def scan_video(plex_guid: str, config) -> None:
                 cluster_prev_ms = max(cluster_prev_ms, at_ms)
             return source
 
+        verifier_pct = int(getattr(config, "verifier_loss_pct", 0))
+
+        async def _rejected_by_verifier(source: str) -> bool:
+            """True when the feedback-trained verifier says the cluster's peak frame looks like a false positive (#165)."""
+            if not verifier_pct or not cluster_best_jpeg:
+                return False
+            group = "siglip" if source == "siglip" else "nudenet"
+            drop, score = await _infer(verifier.judge_jpeg, cluster_best_jpeg, group, verifier_pct)
+            if drop:
+                logger.info(
+                    "Verifier dropped a %s segment in %s at %dms (score %.2f)", group, title, cluster_start_ms or 0, score or 0.0
+                )
+            return drop
+
         async def _flush_cluster() -> None:
             nonlocal cluster_start_ms, cluster_prev_ms, cluster_hit_count
             nonlocal cluster_best_jpeg, cluster_best_score, cluster_detected_labels, segments_inserted
@@ -940,6 +954,9 @@ async def scan_video(plex_guid: str, config) -> None:
             if source:
                 if refine_step_ms > 0:
                     source = await _refine_cluster(source)
+                if await _rejected_by_verifier(source):
+                    source = ""
+            if source:
                 end_ms = cluster_prev_ms + gap_ms
                 thumb_path = ""
                 if cluster_best_jpeg:
