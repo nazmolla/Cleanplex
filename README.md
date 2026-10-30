@@ -1,32 +1,30 @@
 # Cleanplex
 
-A home server service that monitors your Plex instance for active streams and automatically skips past inappropriate (nudity/sexual) content for configured user accounts.
+A home server service that watches your Plex streams and, for the accounts you choose, **skips or mutes** the parts of a film that contain nudity or profanity. The scenes are found ahead of time by scanning your library (or imported from skip files other people have made); at playback time it is only a database lookup.
 
 ## How It Works
 
-### 1. Pre-scan (Background Analysis)
-When videos are added to your Plex library, Cleanplex queues them for background analysis:
-- Extracts frames from the video every 10 seconds using `ffmpeg`
-- Runs each frame through [NudeNet](https://github.com/notAI-tech/NudeNet) (lightweight, CPU-friendly ONNX model running fully locally)
-- Each detected scene is **expanded by 5 seconds before and after** to catch any leading/trailing content the detector might have missed
-- Flagged frames are clustered into skip segments and stored in a local SQLite database
-- A 2-hour movie takes ~20–30 minutes to scan on a Raspberry Pi 4
+### 1. Pre-scan (background analysis)
+New titles are queued and scanned inside the **scan window** (23:00–06:00 by default), a few at a time:
+- `ffmpeg` extracts a frame every **Scan Frame Interval** (5 s by default), using the machine's hardware video decoder when it has one
+- Each frame goes through [NudeNet](https://github.com/notAI-tech/NudeNet), a local ONNX body-part detector (the bundled 320n model, or the larger 640m)
+- Optionally, frames NudeNet passed over are judged by a second, whole-frame model, **SigLIP**, to catch scenes NudeNet misses (see [Detection Pipeline](#detection-pipeline-and-accuracy))
+- Flagged frames are grouped into **segments**; each flagged window is then re-sampled every 500 ms so the thumbnail is the strongest frame and the segment covers the whole scene
+- A segment's severity comes from what was detected, and the optional **false-positive verifier** can reject detections that look like ones you have rejected before
+- Titles with an imported skip file are never scanned, and subtitles are scanned for profanity without touching a frame (see below)
+- Scan time depends on the frame interval, worker count and hardware decoding; everything runs locally, nothing is uploaded
 
-### 2. Real-time Playback Monitoring
-While someone watches, the service polls Plex every few seconds:
-- Checks if a filtered user's playback position enters a flagged segment
-- The monitor uses a **5-second lookahead** before each segment start to compensate for polling latency
-- When triggered, automatically sends a seek command to jump **past the entire segment** (including the 5-second buffers)
-- This is just a database lookup — no ML at playback time
+### 2. Real-time playback monitoring
+While someone watches, the service polls Plex (every 5 s by default, tighter as a stream approaches a segment):
+- Checks whether a filtered user's position is entering a flagged segment, widened by the **pre/post buffers** (3 s each by default)
+- Sends a seek past the whole segment (or lowers the volume for a `mute` segment) and verifies on the next tick that the client really moved
+- This is a database lookup; no ML runs at playback time
 
-### 3. Web UI Dashboard
+### 3. Web UI
+A full browser interface at `http://your-server:7979`. Every page updates live: the server pushes changes (scans, new segments, synced titles, skips, active streams, user and marker changes) over Server-Sent Events, so nothing needs a manual refresh. Pages: Dashboard, Library, Segments, Markers, Analytics, Users and Settings (see [Web UI Pages](#web-ui-pages)).
 
-Every page updates live: the server pushes changes (scans starting, progressing and finishing, new segments, titles synced from Plex, skips, active streams, user and marker changes) over Server-Sent Events, so nothing needs a manual refresh.
-Full browser interface at `http://your-server:7979` for:
-- Configuring Plex connection and scan settings
-- Reviewing and editing detected segments
-- Monitoring active scans with live progress indicators
-- Viewing recent skip events
+### 4. Plex integration
+Cleanplex also writes a short **"Cleanplex scan:" block into each scanned title's Plex summary** (status, segment count and what found them, false positives and corrections). It is refreshed a couple of seconds after scans, deletes, false-positive marks, relabels and imports, and only touches its own block.
 
 ## Requirements
 
@@ -89,7 +87,7 @@ sudo journalctl -u cleanplex -f   # View logs
 
 ## Configuration
 
-All configuration is done via the **web UI** at `http://your-server:7979/settings`, grouped into sections (Plex Connection, Playback, Scan Scope & Schedule, NudeNet Detection, SigLIP Fallback, Segments, Sharing). No config files to edit.
+All configuration is done via the **web UI** at `http://your-server:7979/settings`, grouped into sections (Plex Connection, Users, Playback, Scan Scope & Schedule, NudeNet Detection, SigLIP Fallback, Segments, Sharing). No config files to edit.
 
 | Setting | Default | Description |
 |---|---|---|
@@ -97,27 +95,51 @@ All configuration is done via the **web UI** at `http://your-server:7979/setting
 | Plex Token | — | Your Plex authentication token |
 | Poll Interval | 5s | How often to check active streams |
 | Confidence Threshold | 0.6 | NudeNet score threshold (0–1). Lower = more sensitive. |
+| NudeNet Model | 320n | `320n` is bundled and fastest; `640m` is larger and more accurate, downloaded once on first use (or pre-download it in the same section) |
+| Scan Frame Interval | 5000 ms | How often a frame is sampled while scanning. Lower catches shorter scenes but scans slower |
+| Hardware video decoding | on | Use the machine's video decoder for scans when it has one (much faster on 4K HEVC); a file it cannot decode falls back to software |
 | Per-Label Thresholds | blank | Optional per-label NudeNet threshold (NudeNet Detection section). A blank label uses the Confidence Threshold. Stored in `label_thresholds` |
-| Pre Buffer | 3000ms | Milliseconds to start the skip *before* a segment, so the flagged content is never briefly shown |
-| Post Buffer | 3000ms | Milliseconds to hold past the end of a segment before the filter can re-trigger |
+| Pre / Post Buffer | 3000 ms each | How far a segment is widened before its start and after its end (`pre_buffer_ms`, `post_buffer_ms`), so the flagged content is never briefly shown and the filter does not re-trigger on the tail |
 | Profanity Wordlist | built-in | JSON array of words the subtitle scanner mutes. Empty uses the bundled list |
 | Skip Event Retention | 90 days | How long skip history is kept before being pruned at startup |
-| Scan Window | 23:00–06:00 | Time window when background scanning runs |
+| Scan Window | 23:00–06:00 | Time window when background scanning runs; *Scan now* ignores it |
+| Library Exclusions | none | Libraries that are not scanned or synced |
 | Hover Previews | on | Render a short silent loop of each active segment, played when you hover its thumbnail (~20–40 KB each, stored in `~/.cleanplex/hover`) |
 | Hover previews when idle | on | Also render hover previews as soon as the scan queue is empty and nothing is scanning, not only inside the window below; stops when a scan starts |
 | Hover Preview Window | 00:00–07:00 | When the hover preview job runs (Settings → Schedule). It renders one segment at a time, picks up segments it has not done yet, and removes files of deleted segments |
 | Scanner Workers | 2 | Number of parallel scans (higher = more CPU/memory usage) |
 | Detector Labels | — | Select which nudity types to detect (and skip). Only selected labels trigger skips |
 | SigLIP Fallback | off | Second, whole-frame check that runs only on frames NudeNet did not flag, to catch scenes it misses. Follows Detector Labels. Downloads ~815 MB of model files on first use. Its segments have source `siglip`, and their severity follows the label they are tagged with |
-| SigLIP Threshold | 0.3 | Share (0–1) of a frame's match that must go to enabled-label descriptions. Separate from Confidence Threshold |
+| SigLIP Threshold | 0.3 | Share (0–1) of a frame's match that must go to enabled-label descriptions. Separate from Confidence Threshold. Higher = fewer, surer hits |
 | Per-label SigLIP thresholds | blank | Optional threshold per label; a SigLIP hit is judged by the label it is tagged with. Blank uses the SigLIP Threshold. Stored in `siglip_label_thresholds` |
-| False-positive verifier | off | Learns from the segments you marked as false positives and drops new detections whose frame looks like them. Train it in Settings → SigLIP Fallback (needs SigLIP's models and at least 30 false positives and 30 kept segments per detector), then choose how many good segments you accept losing (5, 10 or 20%). Stored in `verifier_loss_pct`; the model file is `models/verifier.npz` in the data folder. Rescan to apply it to titles already scanned. Rejected detections are kept, inactive, under Analytics → False positives (filter: Rejected by the verifier) with their frame, so a wrong rejection can be restored |
+| False-positive verifier | off | Filters detections that look like ones you rejected; train it and pick a level (5/10/20% of good segments you accept losing) in Settings → SigLIP Fallback. Stored in `verifier_loss_pct`, model in `models/verifier.npz`. See [Detection Pipeline](#detection-pipeline-and-accuracy) |
 | Ignore end credits | on | SigLIP is not run on frames at or after the title's Plex credits marker, since text-heavy credit screens are read as nudity. NudeNet still runs. No marker, no effect |
-| `CLEANPLEX_NICE` (environment) | 10 | How much to lower the service's CPU priority at startup, so Plex's transcoder wins when the scanner is busy. `0` leaves the priority alone |
 | Inference threads | 0 (auto) | onnxruntime threads per scan worker (`inference_threads`, API only). Auto leaves about one worker's share of CPU free for Plex and the web UI |
 | SigLIP Consecutive Frames | 2 | SigLIP-only hits must repeat on this many consecutive sampled frames before a segment is created |
+| Segment Merge Gap | 12000 ms | Flagged frames closer than this are merged into one segment |
+| Minimum Hits Per Segment | 1 | Flagged frames a cluster needs to be kept. Raise it to cut false positives |
 | Refinement Step | 500 ms | After a segment is found, its window is re-sampled this finely so the thumbnail is the highest-scoring frame and the segment also covers scene frames the coarse scan stepped over. Segments only ever grow; 0 turns it off. The card shows the time the thumbnail frame was taken at (Settings → Segments). Segments found before this existed are refined by a background job inside the scan window, one at a time (no rescan needed); Settings → Segments shows how many are still waiting |
 | Content Ratings | — | Only scan and filter titles matching your selected ratings. `NR` also covers titles Plex reports as "Not Rated" or "Unrated" |
+
+## Detection Pipeline and Accuracy
+
+**NudeNet** finds body parts and gives each a confidence. A frame is flagged when a label you enabled under *Detector Labels* reaches its threshold (the global *Confidence Threshold*, or a per-label override). Covered labels are not scanned by default.
+
+**SigLIP fallback** (off by default; downloads ~815 MB on first use) catches scenes NudeNet misses: wide, dim or partly hidden frames. It only runs on frames NudeNet did *not* flag, and, unless *Ignore end credits* is turned off, never after the title's Plex credits marker (credit rolls read as nudity). It embeds the whole frame once and compares it with short text descriptions ("bare buttocks", "people having sex", but also counter-examples like "a couple fully clothed in bed", "end credits scrolling text", "a landscape"). The frame's score is the share of probability that lands on descriptions of labels you enabled, so clothed or ordinary scenes pull it down. A hit is tagged with the existing label whose own descriptions scored highest, is judged by that label's SigLIP threshold, and must repeat on *SigLIP Consecutive Frames* sampled frames before it becomes a segment. SigLIP segments are marked as such (source `siglip`) so you can tell them apart and threshold them separately.
+
+**Segments** group flagged frames closer together than the *Segment Merge Gap* (12 s). A cluster needs *Minimum Hits* flagged frames to be kept. Severity follows the labels (see [Categories, severity and actions](#categories-severity-and-actions)).
+
+**False-positive verifier** (off by default) is a small filter trained on *your* verdicts. Frames you marked as false positives are compared with frames of segments you kept, using SigLIP's image embedding, and a per-detector classifier (NudeNet hits and SigLIP hits separately) learns what your rejects look like. At scan time a flagged segment whose peak frame looks like them is **rejected**: stored inactive, with its frame, under Analytics → False positives (filter *Rejected by the verifier*), where the undo button restores a wrong rejection. Setup: mark false positives as you review, then Settings → SigLIP Fallback → *Train* (needs at least 30 false positives and 30 kept segments per detector and SigLIP's models), pick a level, save, and rescan (*Rescan Titles → scanned by an older scanner*). The level is how many good segments you accept losing: **5% Gentle, 10% Balanced, 20% Strict**. Retrain after you have marked more.
+
+### Tuning accuracy
+
+1. Review segments and mark wrong ones as false positives (the thumbs-down on a segment); correct wrong labels with the tag button. Both are kept as feedback.
+2. Open **Analytics → Accuracy** to see, per detector and label, how often detections were marked false and the mean scores of kept versus marked ones.
+3. Raise the threshold of labels with a high false-positive rate (Settings → NudeNet Detection / SigLIP Fallback → per-label thresholds). Raising a threshold also drops some real detections, so move it a little at a time. SigLIP is weakest on the genital labels, where it reacts to the scene rather than the body part; give those a high threshold or leave the label out of Detector Labels, which stops both detectors flagging it.
+4. Train the verifier (above) to catch what thresholds cannot, such as clothed bed scenes, swimming, credits and skin close-ups.
+5. Rescan to apply new settings to titles already scanned: Settings → *Rescan Titles* with *Scanned by an older scanner* after an update, or *Titles that have segments*.
+
+Detection is statistical: expect some misses and some false positives, and review what matters to you. Imported skip files are human-graded and are the most accurate source where they exist.
 
 ## Segment Expansion & Skip Logic
 
@@ -203,13 +225,14 @@ only. Those categories are populated by importing skip files, where humans have 
 
 ## Finding Your Plex Token
 
-Once saved, the token is never sent back to the browser: Settings shows "Saved. Leave blank to keep it", and saving with the field empty keeps the stored token. The web UI and API have no login, so on a network you do not fully trust bind to `127.0.0.1` (`CLEANPLEX_HOST`) behind a reverse proxy.
-
-
 1. Sign in to Plex Web
 2. Browse to any media item
 3. Click the three-dot menu → **Get Info** → **View XML**
 4. The URL will contain `?X-Plex-Token=XXXXXX`
+
+## Security
+
+Once saved, the token is never sent back to the browser: Settings shows "Saved. Leave blank to keep it", and saving with the field empty keeps the stored token. The web UI and API have **no login**, and anyone who can reach the port can change settings and delete segments, so on a network you do not fully trust bind to `127.0.0.1` (`CLEANPLEX_HOST`) behind a reverse proxy that adds authentication. Cross-origin API calls are refused unless you list the origin in `CLEANPLEX_CORS_ORIGINS`.
 
 ## Web UI Pages
 
@@ -241,24 +264,42 @@ Once saved, the token is never sent back to the browser: Settings shows "Saved. 
 - **Jump to segment** — Send Plex seek command to that spot in the video
 - **Scan completion info** — Timestamp when the title finished scanning
 
+#### Markers
+- Lists the titles of a library with their **Plex intro and credits markers**, and lets you create, edit and delete them (and refresh them from Plex). A title's credits marker is what stops SigLIP from reading end credits as nudity
+
 #### Analytics
 Tabs (linkable with `?tab=`), and sections that can be minimised (remembered per browser):
 - **Detections** — Segments per label (click a bar for a per-rating breakdown), a label filter, and the matching segments with preview, jump, false-positive and delete actions
 - **Skips** — Skip and mute history by category, client and title
-- **Accuracy** — How often each detector and label was marked a false positive, with mean scores of kept vs. marked segments
-- **False positives** — Every segment marked as a false positive, newest mark first, with an undo button
+- **Accuracy** — How often each detector and label was marked a false positive by you (verifier rejections are counted separately and left out of the rate), with mean scores of kept vs. marked segments
+- **False positives** — Every inactive segment, newest first, with an undo button: the ones you marked and the ones the verifier rejected (filter *Flagged by you / Rejected by the verifier*, each tagged)
 
 #### Users (under Settings)
 - **Toggle filtering per Plex account** — Turn skipping on/off for specific user accounts
 - **Category preferences** — Expand a user to set a 0–3 strictness level per content category, with an optional skip/mute override
 
 #### Settings
-- **Plex connection** — Server URL and authentication token
-- **Scanner tuning** — Frame extraction interval, confidence threshold, parallel workers
-- **Rating filter** — Only scan titles matching your selected content ratings (exact match, "Unrated" is explicit)
-- **Detector labels** — Checkboxes to select which nudity types trigger skips (e.g., "female genitalia", "male genitalia", "breast", "butt", "anus")
-- **Skip behavior** — Pre/post buffers around segments, scan window, segment merge gap, minimum hits per segment
-- **Profanity wordlist** — Words the subtitle scanner mutes
+- **Plex Connection** — Server URL and token, with a connection test
+- **Users** — Per-account filtering and category levels (above)
+- **Playback** — Poll interval. (The *Skip Buffer* field does not currently change playback; the pre/post buffers are `pre_buffer_ms` and `post_buffer_ms` in the settings API, see issue #170)
+- **Scan Scope & Schedule** — Scan window, *Rescan Titles*, hover previews, scanner workers and hardware decoding, content-rating filter, library exclusions
+- **NudeNet Detection** — Model (320n / 640m), confidence threshold, scan frame interval, detector labels, per-label thresholds
+- **SigLIP Fallback** — Enable it, threshold, per-label thresholds, consecutive frames, end-credits handling, the false-positive verifier
+- **Segments** — Merge gap, refinement step (with how many older segments still wait for refinement), minimum hits
+- **Sharing** — Optional crowdsourced segment library (below)
+- Profanity wordlist and log level are stored as settings (`profanity_wordlist`, `log_level`)
+
+## Segment Library Sharing
+
+Optional and **always manual**: Settings → Sharing connects to one shared GitHub repository where users publish detections keyed by a hash of the media file. *Upload* sends your segments (labelled with your instance name); *Download* fetches other instances' segments for titles you have, merging them by consensus: segments agreed by at least *verified threshold* instances (2 by default) within *timing tolerance* (2 s) count as verified, and a conflict-resolution mode decides disagreements. Nothing syncs in the background.
+
+## AI Agent (MCP) Endpoint
+
+`POST /mcp` speaks the Model Context Protocol (Streamable HTTP). Point an MCP client at `http://your-server:7979/mcp` to list libraries and titles, read segments, check scanner status, queue a scan, delete segments and read settings. Like the rest of the API it has no login (see [Security](#security)).
+
+## Experimental: Stream Proxy
+
+`cleanplex/stream_proxy.py` is a standalone prototype (`python -m cleanplex.stream_proxy`, issue #132) that sits in front of Plex and, for clients that cannot be skipped live, serves an HLS playlist with filtered ranges removed. It is not part of the service, and it has not been verified on real Plex clients.
 
 ## Data, Backups & Maintenance
 
@@ -323,6 +364,7 @@ Titles can be marked as **ignored** to skip them during background scans:
 | `CLEANPLEX_PORT` | `7979` | Web UI port |
 | `CLEANPLEX_HOST` | `0.0.0.0` | Bind address. The API has no login, so use `127.0.0.1` behind a reverse proxy if the network is not trusted |
 | `CLEANPLEX_LOG_FILE` | none | Write the log to this file, rotated at 10 MB with 4 backups, instead of stdout. The macOS install script sets it to `~/.cleanplex/cleanplex.log` |
+| `CLEANPLEX_NICE` | `10` | How much to lower the service's CPU priority at startup, so Plex's transcoder wins when the scanner is busy. `0` leaves the priority alone |
 | `CLEANPLEX_CORS_ORIGINS` | none | Comma-separated origins allowed to call the API from another site; same-origin use needs nothing |
 
 ## Troubleshooting
@@ -335,6 +377,12 @@ Titles can be marked as **ignored** to skip them during background scans:
 
 **Detector labels not filtering correctly?**
 - Ensure the labels are selected in Settings → Detector Labels. Previously stored segments are filtered at API response time to respect your current settings.
+
+**Too many false positives?**
+- See [Tuning accuracy](#tuning-accuracy): per-label thresholds, then the verifier.
+
+**Scans are slow or the machine is busy?**
+- Raise the Scan Frame Interval, lower Scanner Workers, keep hardware decoding on, and keep SigLIP off if you do not need it. The service already runs at lower CPU priority (`CLEANPLEX_NICE`).
 
 **Some rated titles still appear in the library?**
 - Check Settings → Content Ratings. The filter uses exact matching (e.g., "PG" ≠ "PG-13"). "Unrated" is an explicit checkbox option, not the same as empty rating.
