@@ -106,15 +106,24 @@ async def get_false_positives(
     offset: int = Query(0, ge=0),
     sort: Literal["marked", "score", "added"] = Query("marked", description="marked = when flagged, score = confidence, added = date added"),
     order: Literal["asc", "desc"] = Query("desc"),
+    kind: Literal["all", "marked", "verifier"] = Query("all", description="marked = by you, verifier = rejected by the verifier"),
 ):
-    """Return segments marked as false positives (newest mark first by default), with a total."""
+    """Return inactive false-positive segments (newest mark first by default), with totals per kind (#165)."""
     import asyncio
-    segs, total = await asyncio.gather(
-        db.get_false_positive_segments(limit, offset, sort, order),
-        db.count_false_positive_segments(),
+    segs, total, marked, verifier = await asyncio.gather(
+        db.get_false_positive_segments(limit, offset, sort, order, kind),
+        db.count_false_positive_segments(kind),
+        db.count_false_positive_segments("marked"),
+        db.count_false_positive_segments("verifier"),
     )
-    rows = [{**_segment_payload(seg), "false_positive": True, "marked_at": seg.get("marked_at")} for seg in segs]
-    return {"segments": rows, "total": total}
+    rows = [
+        {
+            **_segment_payload(seg), "false_positive": True, "auto_rejected": seg.get("fp_state") == db.FP_VERIFIER,
+            "marked_at": seg.get("marked_at"),
+        }
+        for seg in segs
+    ]
+    return {"segments": rows, "total": total, "counts": {"marked": marked, "verifier": verifier}}
 
 
 @router.get("/detection-accuracy")
@@ -122,7 +131,9 @@ async def get_detection_accuracy():
     """Per detector and label: segments found, marked false positives, mean scores."""
     rows = await db.get_detection_accuracy()
     for r in rows:
-        r["false_positive_rate"] = round(r["false_positives"] / r["total"], 3) if r["total"] else 0.0
+        # Verifier rejections are not human verdicts, so they stay out of the rate's denominator.
+        judged = r["total"] - r["verifier_rejected"]
+        r["false_positive_rate"] = round(r["false_positives"] / judged, 3) if judged else 0.0
     return {"rows": rows, "marked": sum(r["false_positives"] for r in rows)}
 
 

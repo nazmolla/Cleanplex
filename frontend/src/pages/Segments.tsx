@@ -44,6 +44,8 @@ interface Segment {
   source?: string
   detector?: string
   false_positive?: boolean
+  /** Inactive because the verifier rejected it (not a mark by you); restore it if it was real. */
+  auto_rejected?: boolean
 }
 
 interface ScannerStatus {
@@ -171,7 +173,7 @@ function SegmentCard({
             <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.end_ms)}</span>
             <span className="text-xs text-gray-600">({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)</span>
             <SegmentOriginBadge seg={seg} />
-            {seg.false_positive && <FalsePositiveTag />}
+            {seg.false_positive && <FalsePositiveTag autoRejected={seg.auto_rejected} />}
           </div>
           <p className="text-xs text-gray-500">Detected {new Date(seg.created_at).toLocaleDateString()}</p>
           {renderLabels(seg.labels)}

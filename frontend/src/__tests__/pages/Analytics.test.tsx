@@ -161,4 +161,13 @@ describe('Analytics', () => {
     fireEvent.change(screen.getByLabelText('Sort by'), { target: { value: 'score' } })
     await waitFor(() => expect(lastUrl('/api/analytics/false-positives')).toContain('sort=score&order=desc'))
   })
+
+  it('asks the server for only the verifier rejections when that kind is picked', async () => {
+    renderAt('/analytics?tab=false-positives')
+    await waitFor(() => expect(lastUrl('/api/analytics/false-positives')).toContain('kind=all'))
+
+    fireEvent.change(screen.getByLabelText('Show'), { target: { value: 'verifier' } })
+
+    await waitFor(() => expect(lastUrl('/api/analytics/false-positives')).toContain('kind=verifier'))
+  })
 })
