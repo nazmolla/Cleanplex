@@ -110,25 +110,16 @@ async def sync_library(library_id: str):
         if removed:
             logger.info(f"Library {library_id} sync: removed {removed} stale titles")
 
-        added = 0
-        for item in file_items:
-            if item.plex_guid in existing_guids:
-                continue
-            await db.upsert_scan_job(
-                plex_guid=item.plex_guid,
-                title=item.title,
-                file_path=item.file_path,
-                rating_key=item.rating_key,
-                library_id=item.library_id,
-                library_title=item.library_title,
-                content_rating=item.content_rating,
-                media_type=item.media_type,
-                year=item.year,
-                show_guid=item.show_guid,
-                show_rating_key=item.show_rating_key,
-                part_files=json.dumps(item.part_files),
-            )
-            added += 1
+        added = await db.upsert_scan_jobs_batch([
+            {
+                "plex_guid": i.plex_guid, "title": i.title, "file_path": i.file_path,
+                "rating_key": i.rating_key, "library_id": i.library_id, "library_title": i.library_title,
+                "content_rating": i.content_rating, "media_type": i.media_type, "year": i.year,
+                "show_guid": i.show_guid, "show_rating_key": i.show_rating_key,
+                "part_files": json.dumps(i.part_files),
+            }
+            for i in file_items if i.plex_guid not in existing_guids
+        ])
 
         logger.info(f"Library {library_id} synced: {added} new titles added")
         events.publish("titles_changed", library_id=library_id)

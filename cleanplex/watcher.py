@@ -23,6 +23,8 @@ skip_events: deque[dict] = deque(maxlen=50)
 # Floor for adaptive polling, so a session sitting right before a segment cannot
 # drive the poll rate high enough to hammer the Plex API.
 MIN_POLL_INTERVAL_S = 1.0
+# Every pass lists the whole Plex library, which almost never changes; 5 min is quick enough for new items (#162).
+LIBRARY_POLL_INTERVAL_S = 300
 _last_sessions_signature: tuple = ()
 
 
@@ -158,7 +160,7 @@ async def library_watcher_loop(get_config_fn, get_client_fn) -> None:
     first_run = True
     while True:
         if not first_run:
-            await asyncio.sleep(60)
+            await asyncio.sleep(LIBRARY_POLL_INTERVAL_S)
         first_run = False
 
         config = await get_config_fn()
@@ -175,35 +177,34 @@ async def library_watcher_loop(get_config_fn, get_client_fn) -> None:
                 if section.section_id in excluded:
                     continue
                 items = await client.get_library_items(section.section_id)
-                for item in items:
-                    if not item.file_path:
+                candidates = [
+                    i for i in items
+                    if i.file_path and rating_allowed(i.content_rating, scan_ratings)
+                ]
+                # One chunked query for the whole section instead of one per item (#162).
+                known = await db.get_scan_jobs_by_guids([i.plex_guid for i in candidates])
+                fresh = [i for i in candidates if i.plex_guid not in known]
+                await db.upsert_scan_jobs_batch([
+                    {
+                        "plex_guid": i.plex_guid, "title": i.title, "file_path": i.file_path,
+                        "rating_key": i.rating_key, "library_id": i.library_id,
+                        "library_title": i.library_title, "content_rating": i.content_rating,
+                        "media_type": i.media_type, "year": i.year, "show_guid": i.show_guid,
+                        "part_files": json.dumps(i.part_files), "duration_ms": i.duration_ms,
+                    }
+                    for i in fresh
+                ])
+                for item in fresh:
+                    # A skip file sitting beside the media is authoritative and
+                    # free: importing it skips frame extraction and inference
+                    # entirely, so only enqueue a scan when there isn't one.
+                    if await _import_sidecar(item):
                         continue
-                    if not rating_allowed(item.content_rating, scan_ratings):
-                        continue
-                    existing = await db.get_scan_job_by_guid(item.plex_guid)
-                    if existing is None:
-                        await db.upsert_scan_job(
-                            plex_guid=item.plex_guid,
-                            title=item.title,
-                            file_path=item.file_path,
-                            rating_key=item.rating_key,
-                            library_id=item.library_id,
-                            library_title=item.library_title,
-                            content_rating=item.content_rating,
-                            media_type=item.media_type,
-                            year=item.year,
-                            show_guid=item.show_guid,
-                            part_files=json.dumps(item.part_files),
-                            duration_ms=item.duration_ms,
-                        )
-                        # A skip file sitting beside the media is authoritative and
-                        # free: importing it skips frame extraction and inference
-                        # entirely, so only enqueue a scan when there isn't one.
-                        if await _import_sidecar(item):
-                            continue
-                        await enqueue(item.plex_guid)
-                        logger.info("New item queued for scan: %s", item.title)
-                    elif not existing.get("part_files") and len(item.part_files) > 1:
+                    await enqueue(item.plex_guid)
+                    logger.info("New item queued for scan: %s", item.title)
+                for item in candidates:
+                    existing = known.get(item.plex_guid)
+                    if existing is not None and not existing.get("part_files") and len(item.part_files) > 1:
                         # Backfill part_files for existing jobs that predate multi-part support.
                         await db.update_part_files(item.plex_guid, json.dumps(item.part_files))
                         logger.info("Updated part_files for existing job: %s (%d parts)", item.title, len(item.part_files))
