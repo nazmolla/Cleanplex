@@ -8,6 +8,7 @@ from pathlib import Path
 
 import uvicorn
 
+from . import ort_runtime
 from .logger import setup_logging, get_logger
 from . import database as db
 from .config import Config
@@ -25,6 +26,7 @@ logger = get_logger(__name__)
 
 async def _amain() -> None:
     # ── Bootstrap ──────────────────────────────────────────────────────────
+    nice = ort_runtime.lower_process_priority()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     db.set_db_path(DATA_DIR / "cleanplex.db")
     await db.init_db()
@@ -42,7 +44,7 @@ async def _amain() -> None:
     if pruned:
         logger.info("Pruned %d skip event(s) past the retention window", pruned)
 
-    logger.info("Cleanplex starting — data dir: %s", DATA_DIR)
+    logger.info("Cleanplex starting — data dir: %s%s", DATA_DIR, f" (niceness {nice})" if nice else "")
 
     if config.is_configured():
         client = plex_mod.init_client(config.plex_url, config.plex_token)
