@@ -12,7 +12,7 @@ from . import database as db
 from . import events
 from . import filter_engine
 from . import importers
-from .scanner import enqueue, enqueue_pending, scanner_loop
+from .scanner import enqueue, enqueue_pending, rating_allowed, scanner_loop
 
 logger = get_logger(__name__)
 
@@ -178,7 +178,7 @@ async def library_watcher_loop(get_config_fn, get_client_fn) -> None:
                 for item in items:
                     if not item.file_path:
                         continue
-                    if scan_ratings and (item.content_rating or "") not in scan_ratings:
+                    if not rating_allowed(item.content_rating, scan_ratings):
                         continue
                     existing = await db.get_scan_job_by_guid(item.plex_guid)
                     if existing is None:

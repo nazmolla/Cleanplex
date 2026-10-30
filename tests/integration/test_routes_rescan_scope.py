@@ -95,7 +95,8 @@ async def test_dry_run_counts_without_changing_anything(http_client):
     with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()) as enqueue:
         resp = await http_client.post("/api/scan/rescan", json={"scope": "all_scanned", "dry_run": True})
 
-    assert resp.json() == {"ok": True, "matched": 2, "queued": 2, "skipped_ineligible": 0, "dry_run": True}
+    assert resp.json() == {"ok": True, "matched": 2, "queued": 2, "skipped_ineligible": 0, "ignored_cleared": 0,
+                           "dry_run": True}
     enqueue.assert_not_called()
     assert await _status("a") == "done"
 
@@ -297,3 +298,57 @@ async def test_whole_library_over_http_queues_through_the_normal_queue(http_clie
     enqueue.assert_awaited_once()
     force.assert_not_called()
     assert {await _status(g) for g in "ab"} == {"pending"}
+
+
+# ── failed titles (#150) ────────────────────────────────────────────────────────
+
+async def test_the_failed_scope_picks_only_non_ignored_failed_titles():
+    await _job("bad", status="failed")
+    await _job("bad-ignored", status="failed", ignored=True)
+    await _job("fine")
+    assert await _guids("failed") == ["bad"]
+
+
+async def test_retrying_failed_titles_queues_them_and_clears_the_ignored_ones(http_client):
+    await _job("bad", status="failed")
+    await _job("bad-ignored", status="failed", ignored=True)
+    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()) as enqueue:
+        dry = (await http_client.post("/api/scan/rescan", json={"scope": "failed", "dry_run": True})).json()
+        assert (dry["queued"], dry["ignored_cleared"]) == (1, 1)
+        assert await _status("bad") == "failed" and await _status("bad-ignored") == "failed"  # dry run changes nothing
+
+        real = (await http_client.post("/api/scan/rescan", json={"scope": "failed"})).json()
+
+    assert (real["queued"], real["ignored_cleared"]) == (1, 1)
+    enqueue.assert_awaited_once()
+    assert await _status("bad") == "pending"
+    assert await _status("bad-ignored") == "pending"  # off the Failed list, still ignored
+    assert (await db.get_scan_job_by_guid("bad-ignored"))["ignored"] == 1
+    assert (await db.get_scan_job_by_guid("bad-ignored"))["error_msg"] is None
+
+
+async def test_retry_failed_respects_the_rating_filter(http_client):
+    await db.set_setting("scan_ratings", '["R"]')
+    await _job("r", status="failed", rating="R")
+    await _job("g", status="failed", rating="G")
+    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()):
+        resp = await http_client.post("/api/scan/rescan", json={"scope": "failed"})
+    assert (resp.json()["queued"], resp.json()["skipped_ineligible"]) == (1, 1)
+    assert await _status("g") == "failed"
+
+
+async def test_retry_failed_with_nothing_failed_does_nothing(http_client):
+    await _job("fine")
+    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()) as enqueue:
+        resp = await http_client.post("/api/scan/rescan", json={"scope": "failed"})
+    assert resp.json()["queued"] == 0 and resp.json()["ignored_cleared"] == 0
+    enqueue.assert_not_called()
+
+
+async def test_clearing_ignored_failures_can_be_limited_to_one_library(http_client):
+    await _job("one", status="failed", ignored=True, library_id="1")
+    await _job("two", status="failed", ignored=True, library_id="2")
+    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()):
+        resp = await http_client.post("/api/scan/rescan", json={"scope": "failed", "library_id": "1"})
+    assert resp.json()["ignored_cleared"] == 1
+    assert await _status("one") == "pending" and await _status("two") == "failed"

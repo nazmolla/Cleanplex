@@ -42,7 +42,7 @@ class ScanShowRequest(BaseModel):
 
 class BulkRescanRequest(BaseModel):
     """Request body for rescanning many titles chosen by scope rather than by name (#138)."""
-    scope: Literal["outdated", "with_segments", "all_scanned", "scanned_before", "whole_library"]
+    scope: Literal["outdated", "with_segments", "all_scanned", "scanned_before", "whole_library", "failed"]
     library_id: str | None = None
     before: str | None = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="YYYY-MM-DD, UTC; for scanned_before")
     dry_run: bool = False
@@ -183,6 +183,10 @@ async def bulk_rescan(body: BulkRescanRequest):
     excluded = set(json.loads(await db.get_setting("excluded_library_ids", "[]")))
     ratings = set(json.loads(await db.get_setting("scan_ratings", "[]")))
     eligible = [j["plex_guid"] for j in candidates if scan_mod.is_scan_eligible(j, excluded, ratings)]
+    # Failed titles that are ignored are never scanned; clearing them takes them off the Failed list.
+    ignored_failed = await db.count_failed_ignored(body.library_id) if body.scope == "failed" else 0
+    if not body.dry_run and body.scope == "failed" and ignored_failed:
+        await db.clear_failed_ignored(body.library_id)
     if not body.dry_run and eligible:
         await db.reset_scan_jobs(eligible)
         # Rebuilds the normal queue in priority order and keeps the force queue as it is.
@@ -194,6 +198,7 @@ async def bulk_rescan(body: BulkRescanRequest):
         "matched": len(candidates),
         "queued": len(eligible),
         "skipped_ineligible": len(candidates) - len(eligible),
+        "ignored_cleared": ignored_failed,
         "dry_run": body.dry_run,
     }
 

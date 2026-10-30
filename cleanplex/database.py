@@ -1496,7 +1496,7 @@ async def update_scan_job_status(
         await conn.commit()
 
 
-RESCAN_SCOPES = ("outdated", "with_segments", "all_scanned", "scanned_before", "whole_library")
+RESCAN_SCOPES = ("outdated", "with_segments", "all_scanned", "scanned_before", "whole_library", "failed")
 
 
 async def get_rescan_candidates(
@@ -1509,7 +1509,8 @@ async def get_rescan_candidates(
 
     outdated: scanned by an older scanner revision than current_version; with_segments: has at
     least one active segment; all_scanned: every finished title; scanned_before: finished before
-    the SQLite timestamp *before*; whole_library: every title of *library_id*, finished or failed.
+    the SQLite timestamp *before*; whole_library: every title of *library_id*, finished or failed;
+    failed: titles whose last scan failed.
     Optionally limited to one library. Pending and scanning jobs are never returned (pending ones
     are queued already). Raises ValueError for an unknown scope or a missing date or library.
     """
@@ -1517,8 +1518,10 @@ async def get_rescan_candidates(
         raise ValueError(f"unknown rescan scope {scope!r}")
     if scope == "whole_library" and not library_id:
         raise ValueError("whole_library needs a library")
-    where = ["j.status IN ('done', 'failed')" if scope == "whole_library" else "j.status = 'done'",
-             "COALESCE(j.ignored, 0) = 0"]
+    status_sql = {"whole_library": "j.status IN ('done', 'failed')", "failed": "j.status = 'failed'"}.get(
+        scope, "j.status = 'done'"
+    )
+    where = [status_sql, "COALESCE(j.ignored, 0) = 0"]
     params: list = []
     if scope == "outdated":
         where.append("COALESCE(j.scan_version, 0) < ?")
@@ -1544,6 +1547,36 @@ async def get_rescan_candidates(
 def _like_literal(text: str) -> str:
     """Escape LIKE wildcards so a title such as "100% Wolf" matches literally (ESCAPE '\\')."""
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+async def count_failed_ignored(library_id: str | None = None) -> int:
+    """Return how many ignored titles are still marked failed (they are never scanned, so it is noise).
+
+    Optionally limited to one library.
+    """
+    sql, params = "SELECT COUNT(*) FROM scan_jobs WHERE status='failed' AND COALESCE(ignored, 0) = 1", []
+    if library_id:
+        sql, params = sql + " AND library_id = ?", [library_id]
+    async with get_connection() as conn:
+        row = await (await conn.execute(sql, params)).fetchone()
+        return row[0]
+
+
+async def clear_failed_ignored(library_id: str | None = None) -> int:
+    """Reset ignored titles from failed to pending, dropping their stale error; return how many.
+
+    Ignored titles are never queued, so pending just means "not scanned" and they leave the Failed list.
+    Optionally limited to one library.
+    """
+    sql = ("UPDATE scan_jobs SET status='pending', progress=0, started_at=NULL, finished_at=NULL, error_msg=NULL "
+           "WHERE status='failed' AND COALESCE(ignored, 0) = 1")
+    params: list = []
+    if library_id:
+        sql, params = sql + " AND library_id = ?", [library_id]
+    async with get_connection() as conn:
+        cursor = await conn.execute(sql, params)
+        await conn.commit()
+        return cursor.rowcount
 
 
 async def get_show_episode_jobs(

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 
-type Scope = 'outdated' | 'with_segments' | 'all_scanned' | 'scanned_before'
+type Scope = 'outdated' | 'with_segments' | 'all_scanned' | 'scanned_before' | 'failed'
 
 interface Library {
   id: string
@@ -12,6 +12,7 @@ interface Counts {
   matched: number
   queued: number
   skipped_ineligible: number
+  ignored_cleared?: number
 }
 
 const SCOPES: { id: Scope; label: string; hint: string }[] = [
@@ -19,6 +20,7 @@ const SCOPES: { id: Scope; label: string; hint: string }[] = [
   { id: 'with_segments', label: 'Titles that have segments', hint: 'Re-checks what was found; titles with nothing found are left alone.' },
   { id: 'all_scanned', label: 'Every scanned title', hint: 'The whole library again.' },
   { id: 'scanned_before', label: 'Scanned before a date', hint: 'Titles whose last scan finished before this day (UTC).' },
+  { id: 'failed', label: 'Titles whose scan failed', hint: 'Retries them, and takes ignored titles off the Failed list.' },
 ]
 
 /**
@@ -110,6 +112,9 @@ export default function BulkRescan({ libraries }: { libraries: Library[] }) {
             {counts.queued} title{counts.queued === 1 ? '' : 's'} will be queued
             {counts.skipped_ineligible > 0 && (
               <span className="text-gray-500"> · {counts.skipped_ineligible} skipped by your rating filters or excluded libraries</span>
+            )}
+            {!!counts.ignored_cleared && (
+              <span className="text-gray-500"> · {counts.ignored_cleared} ignored title{counts.ignored_cleared === 1 ? '' : 's'} cleared from the Failed list</span>
             )}
           </>
         )}

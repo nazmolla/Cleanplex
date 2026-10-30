@@ -375,3 +375,58 @@ describe('Library', () => {
     expect(screen.queryByRole('button', { name: /^Refresh$/ })).not.toBeInTheDocument()
   })
 })
+
+
+describe('Library: Not Rated and failed titles (#149, #150)', () => {
+  const tv = (over: object) => ({ ...titles[0], ...over })
+
+  async function open(items: object[], scanRatings = '["R","NR"]') {
+    mockApi.get.mockImplementation((path: string) => {
+      if (path.includes('scanner-status')) return Promise.resolve(scannerIdle)
+      if (path === '/api/settings') return Promise.resolve({ plex_url: '', scan_ratings: scanRatings })
+      if (path.includes('libraries') && !path.includes('titles')) return Promise.resolve({ libraries })
+      if (path.includes('titles')) return Promise.resolve({ titles: items })
+      return Promise.resolve({})
+    })
+    renderLibrary()
+    await waitFor(() => screen.getAllByText('Movies')[0])
+    await act(async () => { fireEvent.change(screen.getByRole('combobox'), { target: { value: 'lib1' } }) })
+  }
+
+  it('lists a pending Not Rated title when NR is in the scan list', async () => {
+    await open([tv({ plex_guid: 'nr', title: 'Asfour El Sat7', status: 'pending', content_rating: 'Not Rated' })])
+    expect(await screen.findByText('Asfour El Sat7')).toBeInTheDocument()
+  })
+
+  it('still hides a pending title whose rating is not listed', async () => {
+    await open([tv({ plex_guid: 'nr', title: 'Asfour El Sat7', status: 'pending', content_rating: 'Not Rated' }),
+                tv({ plex_guid: 'k', title: 'Kids Movie', status: 'pending', content_rating: 'G' })], '["R","NR"]')
+    await screen.findByText('Asfour El Sat7')
+    expect(screen.queryByText('Kids Movie')).not.toBeInTheDocument()
+  })
+
+  it('retries the failed titles of the library and reports what the server did', async () => {
+    mockApi.post.mockResolvedValue({ ok: true, queued: 3, ignored_cleared: 2, skipped_ineligible: 1 })
+    await open([tv({ plex_guid: 'f', title: 'Broken Movie', status: 'failed' })])
+    fireEvent.click(await screen.findByRole('button', { name: /^Failed/ }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry failed' }))
+
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/scan/rescan', { scope: 'failed', library_id: 'lib1' }))
+    expect(await screen.findByText('3 failed titles queued for another try · 2 ignored cleared from the list · 1 outside your rating filter')).toBeInTheDocument()
+  })
+
+  it('only offers the retry on the Failed tab', async () => {
+    await open([tv({ plex_guid: 'f', title: 'Broken Movie', status: 'failed' })])
+    await screen.findByText('Broken Movie')
+    expect(screen.queryByRole('button', { name: 'Retry failed' })).not.toBeInTheDocument()
+  })
+
+  it('shows the error when the retry fails', async () => {
+    mockApi.post.mockRejectedValue(new Error('503 down'))
+    await open([tv({ plex_guid: 'f', title: 'Broken Movie', status: 'failed' })])
+    fireEvent.click(await screen.findByRole('button', { name: /^Failed/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Retry failed' }))
+    expect(await screen.findByText(/Could not retry the failed titles: 503 down/)).toBeInTheDocument()
+  })
+})
