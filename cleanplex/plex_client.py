@@ -426,16 +426,19 @@ class PlexClient:
             logger.warning("Failed to fetch items for section %s: %s", section_id, exc)
             return []
 
-        result = []
-        for item in raw_items:
-            try:
-                media_item = self._media_item_from_plex(item, section_id, section.title)
-                if media_item:
-                    result.append(media_item)
-            except Exception as exc:
-                logger.debug("Error parsing library item: %s", exc)
+        def _parse() -> list[MediaItem]:
+            parsed = []
+            for item in raw_items:
+                try:
+                    media_item = self._media_item_from_plex(item, section_id, section.title)
+                    if media_item:
+                        parsed.append(media_item)
+                except Exception as exc:
+                    logger.debug("Error parsing library item: %s", exc)
+            return parsed
 
-        return result
+        # Thousands of items: parse off the event loop so polling and the API stay responsive.
+        return await asyncio.to_thread(_parse)
 
     def _media_item_from_plex(self, item: Any, library_id: str, library_title: str) -> MediaItem | None:
         try:

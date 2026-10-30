@@ -1466,6 +1466,33 @@ async def upsert_scan_job(
         await conn.commit()
 
 
+async def upsert_scan_jobs_batch(jobs: list[dict]) -> int:
+    """Insert scan jobs that do not exist yet, in one transaction; return how many were inserted.
+
+    Each dict takes the keyword arguments of upsert_scan_job; existing guids are left untouched.
+    """
+    if not jobs:
+        return 0
+    rows = [
+        (
+            j["plex_guid"], j["title"], j["file_path"], j.get("part_files", ""), j["rating_key"],
+            j["library_id"], j["library_title"], j.get("content_rating", ""), j.get("media_type", "movie"),
+            j.get("year"), j.get("show_guid", ""), j.get("show_rating_key", ""), j.get("duration_ms", 0),
+        )
+        for j in jobs
+    ]
+    async with get_connection() as conn:
+        before = conn.total_changes
+        await conn.executemany(
+            "INSERT OR IGNORE INTO scan_jobs"
+            "(plex_guid, title, file_path, part_files, rating_key, library_id, library_title, content_rating, media_type, year, show_guid, show_rating_key, duration_ms) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        await conn.commit()
+        return conn.total_changes - before
+
+
 async def get_existing_guids(guids: list[str]) -> set[str]:
     """Return the subset of guids that already exist as scan jobs (single query)."""
     if not guids:
@@ -1766,16 +1793,19 @@ async def set_ignored(plex_guid: str, ignored: bool) -> None:
 
 
 async def get_scan_jobs_by_guids(guids: list[str]) -> dict[str, dict]:
-    """Return {plex_guid: job} for all provided guids in a single IN query."""
+    """Return {plex_guid: job} for the provided guids, queried in chunks of 500 (SQLite variable limit)."""
+    out: dict[str, dict] = {}
     if not guids:
-        return {}
-    placeholders = ",".join(["?"] * len(guids))
+        return out
     async with get_connection() as conn:
-        rows = await conn.execute_fetchall(
-            f"SELECT * FROM scan_jobs WHERE plex_guid IN ({placeholders})",
-            guids,
-        )
-        return {row["plex_guid"]: dict(row) for row in rows}
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            placeholders = ",".join("?" * len(chunk))
+            rows = await conn.execute_fetchall(
+                f"SELECT * FROM scan_jobs WHERE plex_guid IN ({placeholders})", chunk
+            )
+            out.update({row["plex_guid"]: dict(row) for row in rows})
+    return out
 
 
 async def get_scan_jobs_by_library(library_id: str) -> list[dict]:

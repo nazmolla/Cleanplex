@@ -562,3 +562,27 @@ async def test_thumbnail_time_is_null_when_not_given():
                              library_id="l", library_title="L")
     sid = await db.insert_segment("g", "T", 10_000, 20_000)
     assert (await db.get_segment_by_id(sid))["thumbnail_ms"] is None
+
+
+async def test_upsert_scan_jobs_batch_inserts_only_new_jobs_in_one_call():
+    await db.upsert_scan_job("old", "Old", "/m/old.mkv", "1", "l", "L")
+    jobs = [
+        {"plex_guid": g, "title": g, "file_path": f"/m/{g}.mkv", "rating_key": "2",
+         "library_id": "l", "library_title": "L"}
+        for g in ("old", "a", "b")
+    ]
+    assert await db.upsert_scan_jobs_batch(jobs) == 2
+    assert set(await db.get_scan_jobs_by_guids(["old", "a", "b", "zz"])) == {"old", "a", "b"}
+
+
+async def test_upsert_scan_jobs_batch_returns_zero_for_empty_input():
+    assert await db.upsert_scan_jobs_batch([]) == 0
+
+
+async def test_get_scan_jobs_by_guids_spans_multiple_chunks():
+    await db.upsert_scan_jobs_batch([
+        {"plex_guid": f"g{i}", "title": "t", "file_path": "/m", "rating_key": "1",
+         "library_id": "l", "library_title": "L"}
+        for i in range(1200)
+    ])
+    assert len(await db.get_scan_jobs_by_guids([f"g{i}" for i in range(1200)])) == 1200

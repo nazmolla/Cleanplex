@@ -233,3 +233,15 @@ async def test_get_scan_queue_excludes_done_jobs_and_reports_counts(http_client)
     assert [j["plex_guid"] for j in data["jobs"]] == ["a"]
     assert data["counts"] == {"pending": 1, "done": 1}
     assert len(paged["jobs"]) == 1
+
+
+async def test_scan_library_resets_all_jobs_with_one_batched_call(http_client):
+    for g in ("a", "b", "c"):
+        await _make_job(g)
+    with patch("cleanplex.web.routes.scanner_routes.db.reset_scan_jobs", wraps=db.reset_scan_jobs) as batched, \
+         patch("cleanplex.web.routes.scanner_routes.db.reset_scan_job", new=AsyncMock()) as single, \
+         patch("cleanplex.web.routes.scanner_routes.scan_mod.enqueue", new=AsyncMock()):
+        resp = await http_client.post("/api/scan/library/lib1", json={"now": False})
+    assert resp.json()["queued"] == 3
+    batched.assert_called_once()
+    single.assert_not_called()

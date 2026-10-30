@@ -220,20 +220,15 @@ async def scan_library(library_id: str, body: ScanLibraryRequest):
         try:
             client = plex_mod.get_client()
             items = await client.get_library_items(library_id)
-            for item in items:
-                if item.file_path:
-                    await db.upsert_scan_job(
-                        plex_guid=item.plex_guid,
-                        title=item.title,
-                        file_path=item.file_path,
-                        rating_key=item.rating_key,
-                        library_id=item.library_id,
-                        library_title=item.library_title,
-                        content_rating=item.content_rating,
-                        media_type=item.media_type,
-                        year=item.year,
-                        part_files=json.dumps(item.part_files),
-                    )
+            await db.upsert_scan_jobs_batch([
+                {
+                    "plex_guid": i.plex_guid, "title": i.title, "file_path": i.file_path,
+                    "rating_key": i.rating_key, "library_id": i.library_id, "library_title": i.library_title,
+                    "content_rating": i.content_rating, "media_type": i.media_type, "year": i.year,
+                    "part_files": json.dumps(i.part_files),
+                }
+                for i in items if i.file_path
+            ])
             jobs = await db.get_scan_jobs_by_library(library_id)
         except RuntimeError:
             return {"ok": False, "error": "Plex not configured"}
@@ -246,21 +241,20 @@ async def scan_library(library_id: str, body: ScanLibraryRequest):
         excluded_library_ids = set(json.loads(await db.get_setting("excluded_library_ids", "[]")))
         scan_ratings_set = set(json.loads(await db.get_setting("scan_ratings", "[]")))
 
-    queued = 0
-    skipped = 0
-    for job in jobs:
-        if job["status"] not in ("pending", "failed"):
-            continue
+    todo = [j for j in jobs if j["status"] in ("pending", "failed")]
+    if body.now:
+        chosen, skipped = todo, 0
+    else:
+        chosen = [j for j in todo if scan_mod.is_scan_eligible(j, excluded_library_ids, scan_ratings_set)]
+        skipped = len(todo) - len(chosen)
+    # One transaction for all resets instead of one connection per title (#163).
+    await db.reset_scan_jobs([j["plex_guid"] for j in chosen])
+    for job in chosen:
         if body.now:
-            await db.reset_scan_job(job["plex_guid"])
             await scan_mod.force_scan_job(job["plex_guid"])
-            queued += 1
-        elif scan_mod.is_scan_eligible(job, excluded_library_ids, scan_ratings_set):
-            await db.reset_scan_job(job["plex_guid"])
-            await scan_mod.enqueue(job["plex_guid"])
-            queued += 1
         else:
-            skipped += 1
+            await scan_mod.enqueue(job["plex_guid"])
+    queued = len(chosen)
 
     events.publish("scanner_changed")
     return {"ok": True, "queued": queued, "skipped_ineligible": skipped}
