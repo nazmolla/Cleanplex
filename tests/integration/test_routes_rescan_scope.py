@@ -222,3 +222,78 @@ async def test_resetting_more_titles_than_one_chunk_resets_them_all():
     for g in guids:
         await db.upsert_scan_job(plex_guid=g, title=g, file_path="/m.mkv", rating_key="1", library_id="l", library_title="L")
     assert await db.reset_scan_jobs(guids) == 1200
+
+
+# ── whole season and whole library (right-click menus) ─────────────────────────────
+
+async def _season_show():
+    for season, count in (("Season 1", 3), ("Season 2", 2)):
+        for i in range(count):
+            await _job(f"s{season[-1]}e{i}", title=f"The Show – {season} – Ep {i}", media_type="episode",
+                       show_guid="show-1")
+
+
+async def test_a_whole_season_queues_only_that_seasons_episodes(http_client):
+    await _season_show()
+    with patch(f"{SCAN}.enqueue", new=AsyncMock()) as enqueue:
+        resp = await http_client.post("/api/scan/show", json={"show_guid": "show-1", "show_title": "The Show",
+                                                              "season": "Season 2"})
+
+    assert resp.json()["queued"] == 2
+    assert sorted(c.args[0] for c in enqueue.await_args_list) == ["s2e0", "s2e1"]
+
+
+async def test_a_season_is_found_by_title_when_episodes_have_no_show_guid(http_client):
+    for i in range(2):
+        await _job(f"x{i}", title=f"No Guid – Season 3 – E{i}", media_type="episode")
+    await _job("y", title="No Guid – Season 4 – E1", media_type="episode")
+    with patch(f"{SCAN}.enqueue", new=AsyncMock()) as enqueue:
+        resp = await http_client.post("/api/scan/show", json={"show_title": "No Guid", "season": "Season 3"})
+    assert resp.json()["queued"] == 2
+    assert sorted(c.args[0] for c in enqueue.await_args_list) == ["x0", "x1"]
+
+
+async def test_a_season_needs_the_show_title_and_an_unknown_season_is_404(http_client):
+    await _season_show()
+    assert (await http_client.post("/api/scan/show", json={"show_guid": "show-1", "season": "Season 1"})).status_code == 422
+    resp = await http_client.post("/api/scan/show", json={"show_guid": "show-1", "show_title": "The Show",
+                                                          "season": "Season 9"})
+    assert resp.status_code == 404
+
+
+async def test_season_names_with_sql_wildcards_match_literally(http_client):
+    await _job("a", title="Show – Season_1 – E1", media_type="episode", show_guid="g")
+    await _job("b", title="Show – SeasonX1 – E1", media_type="episode", show_guid="g")
+    with patch(f"{SCAN}.enqueue", new=AsyncMock()) as enqueue:
+        await http_client.post("/api/scan/show", json={"show_guid": "g", "show_title": "Show", "season": "Season_1"})
+    assert [c.args[0] for c in enqueue.await_args_list] == ["a"]
+
+
+async def test_whole_library_covers_finished_and_failed_titles_of_that_library_only():
+    await _job("done", library_id="one")
+    await _job("failed", library_id="one", status="failed")
+    await _job("pending", library_id="one", status="pending")
+    await _job("busy", library_id="one", status="scanning")
+    await _job("ignored", library_id="one", ignored=True)
+    await _job("elsewhere", library_id="two")
+    got = await db.get_rescan_candidates("whole_library", current_version=3, library_id="one")
+    assert sorted(j["plex_guid"] for j in got) == ["done", "failed"]
+
+
+async def test_whole_library_needs_a_library(http_client):
+    with pytest.raises(ValueError):
+        await db.get_rescan_candidates("whole_library", 3)
+    resp = await http_client.post("/api/scan/rescan", json={"scope": "whole_library"})
+    assert resp.status_code == 422
+
+
+async def test_whole_library_over_http_queues_through_the_normal_queue(http_client):
+    await _job("a", library_id="one")
+    await _job("b", library_id="one", status="failed")
+    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()) as enqueue, patch(f"{SCAN}.force_scan_job", new=AsyncMock()) as force:
+        resp = await http_client.post("/api/scan/rescan", json={"scope": "whole_library", "library_id": "one"})
+
+    assert (resp.json()["matched"], resp.json()["queued"]) == (2, 2)
+    enqueue.assert_awaited_once()
+    force.assert_not_called()
+    assert {await _status(g) for g in "ab"} == {"pending"}
