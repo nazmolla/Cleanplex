@@ -1,7 +1,7 @@
 import json
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from ...logger import get_logger
@@ -58,10 +58,18 @@ class SkipCurrentScanRequest(BaseModel):
 
 
 @router.get("/queue")
-async def get_scan_queue():
-    jobs = await db.get_scan_jobs()
+async def get_scan_queue(
+    status: str | None = Query(None, description="Comma-separated job statuses; default is everything except done"),
+    limit: int = Query(500, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
+):
+    """Return a page of scan jobs (finished ones excluded by default) with per-status counts (#156)."""
+    counts = await db.count_scan_jobs_by_status()
+    wanted = [x.strip() for x in status.split(",") if x.strip()] if status else [s for s in counts if s != "done"]
+    jobs = await db.get_scan_jobs_page(wanted, limit, offset)
     return {
         "jobs": jobs,
+        "counts": counts,
         "queue_size": scan_mod.get_queue_size(),
         "current": scan_mod.get_current_scan(),
         "currents": scan_mod.get_current_scans(),

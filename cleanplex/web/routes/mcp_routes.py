@@ -189,16 +189,12 @@ async def _call_tool(name: str, args: dict) -> object:
         ]
 
     if name == "get_scanner_status":
-        jobs = await db.get_scan_jobs()
-        by_status: dict[str, int] = {}
-        for j in jobs:
-            st = j.get("status", "unknown")
-            by_status[st] = by_status.get(st, 0) + 1
+        by_status = await db.count_scan_jobs_by_status()
         return {
             "paused": scan_mod.is_paused(),
             "current_scan_guid": scan_mod.get_current_scan(),
             "queue_size": scan_mod.get_queue_size(),
-            "total_titles": len(jobs),
+            "total_titles": sum(by_status.values()),
             "by_status": by_status,
         }
 

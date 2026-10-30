@@ -218,3 +218,18 @@ async def test_scan_titles_rejects_an_empty_list(http_client):
     resp = await http_client.post("/api/scan/titles", json={"plex_guids": []})
 
     assert resp.status_code == 422
+
+
+async def test_get_scan_queue_excludes_done_jobs_and_reports_counts(http_client):
+    await _make_job("a")
+    await _make_job("b")
+    await db.update_scan_job_status("b", "done")
+    with patch("cleanplex.web.routes.scanner_routes.scan_mod.get_queue_size", return_value=0), \
+         patch("cleanplex.web.routes.scanner_routes.scan_mod.get_current_scan", return_value=None), \
+         patch("cleanplex.web.routes.scanner_routes.scan_mod.get_current_scans", return_value=[]), \
+         patch("cleanplex.web.routes.scanner_routes.scan_mod.is_paused", return_value=False):
+        data = (await http_client.get("/api/scan/queue")).json()
+        paged = (await http_client.get("/api/scan/queue?status=done,pending&limit=1")).json()
+    assert [j["plex_guid"] for j in data["jobs"]] == ["a"]
+    assert data["counts"] == {"pending": 1, "done": 1}
+    assert len(paged["jobs"]) == 1

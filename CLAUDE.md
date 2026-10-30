@@ -47,6 +47,7 @@ Every change — regardless of size — must follow these rules. No exceptions.
 | `segment_refine.py` | Dense sampling of a flagged window (`dense_hits`): the frames above threshold inside it, growing while the scene runs on. Shared by the scanner and the backfill, so both choose thumbnails and bounds the same way |
 | `thumbnail_backfill.py` | Background job (scan window, one segment at a time) that re-samples segments stored before dense sampling existed: better thumbnail, bounds that only grow, `refined_at` so each is processed once, hover preview reset when the window changes |
 | `segment_files.py` | Files that belong to segments (thumbnails, hover previews, feedback frames): deletes them with their segment (`delete_segment`, `delete_segments_for_guid`: use these, never `db.delete_segment*` directly) and sweeps orphans on a schedule |
+| `db_backup.py` | Daily `VACUUM INTO` backup to `~/.cleanplex/backups/` (newest 7 kept) and pruning of deploy-time `cleanplex.db.bak-*` copies (newest 3 kept) |
 | `hover_previews.py` | Job rendering each active segment's hover preview (small silent MP4) inside its own window (default 00:00–07:00); separate from the scanner, never part of a scan |
 | `subtitle_scanner.py` | Subtitle parsing and profanity matching — emits muted language segments |
 | `importers/` | Skip file parsers and exporters (`.skp`, `.edl`, `.mcf`, pasted lists). One module per format; all return the same normalized segment dict |

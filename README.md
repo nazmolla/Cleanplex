@@ -289,7 +289,8 @@ Titles can be marked as **ignored** to skip them during background scans:
 |---|---|---|
 | `CLEANPLEX_DATA` | `~/.cleanplex` | Data directory for DB and thumbnails |
 | `CLEANPLEX_PORT` | `7979` | Web UI port |
-| `CLEANPLEX_HOST` | `0.0.0.0` | Bind address |
+| `CLEANPLEX_HOST` | `0.0.0.0` | Bind address. The API has no login, so use `127.0.0.1` behind a reverse proxy if the network is not trusted |
+| `CLEANPLEX_CORS_ORIGINS` | none | Comma-separated origins allowed to call the API from another site; same-origin use needs nothing |
 
 ## Troubleshooting
 

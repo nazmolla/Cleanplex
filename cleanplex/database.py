@@ -356,6 +356,7 @@ async def init_db() -> None:
             # missing (source file unreachable; retried on the next run).
             "ALTER TABLE segments ADD COLUMN hover_status TEXT DEFAULT ''",
             "CREATE INDEX IF NOT EXISTS idx_segments_hover_status ON segments(hover_status)",
+            "CREATE INDEX IF NOT EXISTS idx_scan_jobs_status ON scan_jobs(status)",
         ]
         for stmt in migrations:
             try:
@@ -1516,6 +1517,7 @@ async def delete_scan_jobs_not_in(library_id: str, keep_guids: list[str]) -> int
 
 
 async def get_scan_jobs(status: str | None = None) -> list[dict]:
+    """Return every scan job (optionally one status), newest first. Prefer the paged and counting variants for UI/API use."""
     async with get_connection() as conn:
         if status:
             rows = await conn.execute_fetchall(
@@ -1524,6 +1526,26 @@ async def get_scan_jobs(status: str | None = None) -> list[dict]:
         else:
             rows = await conn.execute_fetchall("SELECT * FROM scan_jobs ORDER BY created_at DESC")
         return [dict(r) for r in rows]
+
+
+async def get_scan_jobs_page(statuses: list[str], limit: int, offset: int = 0) -> list[dict]:
+    """Return scan jobs whose status is in *statuses*, newest first, at most *limit* rows from *offset*."""
+    if not statuses:
+        return []
+    marks = ",".join("?" * len(statuses))
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            f"SELECT * FROM scan_jobs WHERE status IN ({marks}) ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            (*statuses, limit, offset),
+        )
+        return [dict(r) for r in rows]
+
+
+async def count_scan_jobs_by_status() -> dict[str, int]:
+    """Return {status: count} over all scan jobs."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall("SELECT status, COUNT(*) AS n FROM scan_jobs GROUP BY status")
+        return {(r["status"] or "unknown"): r["n"] for r in rows}
 
 
 async def get_scan_job_by_guid(plex_guid: str) -> dict | None:
