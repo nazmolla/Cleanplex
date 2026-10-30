@@ -711,6 +711,10 @@ async def upsert_user_filter(username: str, enabled: bool) -> None:
 
 # Segments the user marked as false positives stay in the table for review but are
 # excluded from playback, counts, analytics, exports and sync.
+# segments.false_positive: 0 acts, 1 marked false by the user, 2 rejected by the verifier (#165).
+# Both non-zero states are inactive; only 1 is a human verdict.
+FP_MARKED = 1
+FP_VERIFIER = 2
 _ACTIVE = "COALESCE(false_positive, 0) = 0"
 _ACTIVE_S = "COALESCE(s.false_positive, 0) = 0"
 
@@ -961,8 +965,9 @@ async def insert_segment(
     source: str = "scanner",
     detector: str = "",
     thumbnail_ms: int | None = None,
+    false_positive: int = 0,
 ) -> int:
-    """Insert one segment and return its row id.
+    """Insert one segment and return its row id; false_positive 2 stores a verifier rejection (inactive, undoable).
 
     Classification defaults describe scanner output so existing callers keep
     their behaviour; importers pass the values parsed from the source file.
@@ -970,10 +975,10 @@ async def insert_segment(
     async with get_connection() as conn:
         cursor = await conn.execute(
             "INSERT INTO segments(plex_guid, title, start_ms, end_ms, confidence, thumbnail_path, "
-            "labels, category, severity, action, channel, source, detector, thumbnail_ms) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "labels, category, severity, action, channel, source, detector, thumbnail_ms, false_positive) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (plex_guid, title, start_ms, end_ms, confidence, thumbnail_path, labels,
-             category, severity, action, channel, source, detector, thumbnail_ms),
+             category, severity, action, channel, source, detector, thumbnail_ms, false_positive),
         )
         segment_id = cursor.lastrowid
         # A rescan rewrites segments, so a window the user already marked as a false
@@ -1156,7 +1161,8 @@ async def get_detection_accuracy() -> list[dict]:
                    COALESCE(s.detector, '') AS detector,
                    CASE WHEN TRIM(l.value) = '' THEN '(none)' ELSE TRIM(l.value) END AS label,
                    COUNT(*) AS total,
-                   SUM(COALESCE(s.false_positive, 0)) AS false_positives,
+                   SUM(CASE WHEN s.false_positive = 1 THEN 1 ELSE 0 END) AS false_positives,
+                   SUM(CASE WHEN s.false_positive = 2 THEN 1 ELSE 0 END) AS verifier_rejected,
                    AVG(CASE WHEN COALESCE(s.false_positive, 0) = 0 THEN s.confidence END) AS avg_score_kept,
                    AVG(CASE WHEN s.false_positive = 1 THEN s.confidence END) AS avg_score_false
             FROM segments s,
@@ -1427,12 +1433,17 @@ async def get_segments_for_labels(
         return [dict(r) for r in rows]
 
 
+_FP_KIND_SQL = {"all": "IN (1, 2)", "marked": "= 1", "verifier": "= 2"}
+
+
 async def get_false_positive_segments(
-    limit: int, offset: int, sort: str = "marked", order: str = "desc"
+    limit: int, offset: int, sort: str = "marked", order: str = "desc", kind: str = "all"
 ) -> list[dict]:
     """Return segments marked as false positives, by default most recently marked first.
 
     sort is "marked" (time of the latest mark), "score" or "added"; order asc/desc.
+
+    kind is "all", "marked" (by the user) or "verifier" (rejected by the verifier); fp_state is 1 or 2.
 
     Same columns as get_segments_for_labels plus marked_at, the time of the
     latest mark in segment_feedback (NULL for rows marked by a rescan's overlap
@@ -1451,12 +1462,12 @@ async def get_false_positive_segments(
             SELECT s.id, s.plex_guid, s.title, s.start_ms, s.end_ms,
                    s.confidence, s.labels, s.thumbnail_path, s.thumbnail_ms, s.source, s.detector,
                    s.hover_status, j.content_rating, j.media_type, j.rating_key,
-                   j.show_rating_key,
+                   j.show_rating_key, s.false_positive AS fp_state,
                    (SELECT MAX(f.created_at) FROM segment_feedback f
                      WHERE f.segment_id = s.id AND f.verdict = 'false_positive') AS marked_at
             FROM segments s
             JOIN scan_jobs j ON j.plex_guid = s.plex_guid
-            WHERE COALESCE(s.false_positive, 0) = 1
+            WHERE COALESCE(s.false_positive, 0) {_FP_KIND_SQL[kind]}
             ORDER BY {order_by}
             LIMIT ? OFFSET ?
             """,
@@ -1465,12 +1476,12 @@ async def get_false_positive_segments(
         return [dict(r) for r in rows]
 
 
-async def count_false_positive_segments() -> int:
-    """Return how many segments are marked as false positives."""
+async def count_false_positive_segments(kind: str = "all") -> int:
+    """Return how many segments are marked as false positives (kind as in get_false_positive_segments)."""
     async with get_connection() as conn:
         row = await (await conn.execute(
             "SELECT COUNT(*) FROM segments s JOIN scan_jobs j ON j.plex_guid = s.plex_guid "
-            "WHERE COALESCE(s.false_positive, 0) = 1"
+            f"WHERE COALESCE(s.false_positive, 0) {_FP_KIND_SQL[kind]}"
         )).fetchone()
         return row[0]
 
@@ -1901,7 +1912,7 @@ async def get_false_positive_counts_for_library(library_id: str) -> dict[str, in
             SELECT s.plex_guid, COUNT(*) as cnt
             FROM segments s
             JOIN scan_jobs j ON j.plex_guid = s.plex_guid
-            WHERE j.library_id = ? AND COALESCE(s.false_positive, 0) = 1
+            WHERE j.library_id = ? AND COALESCE(s.false_positive, 0) IN (1, 2)
             GROUP BY s.plex_guid
             """,
             (library_id,),

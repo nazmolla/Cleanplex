@@ -342,6 +342,7 @@ async def get_segments_batch(data: dict):
             "source": seg.get("source") or "scanner",
             "detector": seg.get("detector") or "",
             "false_positive": bool(seg.get("false_positive")),
+            "auto_rejected": seg.get("false_positive") == db.FP_VERIFIER,
         })
     return Response(
         content=json.dumps({"segments": result}),
@@ -400,6 +401,7 @@ async def get_segments_for_title(plex_guid: str):
             "source": seg.get("source") or "scanner",
             "detector": seg.get("detector") or "",
             "false_positive": bool(seg.get("false_positive")),
+            "auto_rejected": seg.get("false_positive") == db.FP_VERIFIER,
         })
     return Response(
         content=json.dumps({"segments": result}),
@@ -598,7 +600,7 @@ async def set_segment_false_positive(segment_id: int, body: FalsePositiveUpdate)
     if body.false_positive:
         frame_path = ""
         thumb = seg.get("thumbnail_path") or ""
-        if thumb and os.path.isfile(thumb) and not seg.get("false_positive"):
+        if thumb and os.path.isfile(thumb) and seg.get("false_positive") != db.FP_MARKED:
             FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
             dest = FEEDBACK_DIR / f"{segment_id}_{int(time.time())}.jpg"
             await asyncio.to_thread(shutil.copyfile, thumb, dest)

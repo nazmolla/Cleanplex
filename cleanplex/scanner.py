@@ -937,7 +937,7 @@ async def scan_video(plex_guid: str, config) -> None:
             drop, score = await _infer(verifier.judge_jpeg, cluster_best_jpeg, group, verifier_pct)
             if drop:
                 logger.info(
-                    "Verifier dropped a %s segment in %s at %dms (score %.2f)", group, title, cluster_start_ms or 0, score or 0.0
+                    "Verifier rejected a %s segment in %s at %dms (score %.2f)", group, title, cluster_start_ms or 0, score or 0.0
                 )
             return drop
 
@@ -949,14 +949,14 @@ async def scan_video(plex_guid: str, config) -> None:
             if cluster_start_ms is None:
                 return
 
+            rejected = False  # set when the verifier rejects the cluster; it is stored inactive so it can be undone
             source = _segment_source(
                 cluster_nudenet_hits, cluster_hit_count, cluster_max_siglip_run, min_hits, siglip_min_hits
             )
             if source:
                 if refine_step_ms > 0:
                     source = await _refine_cluster(source)
-                if await _rejected_by_verifier(source):
-                    source = ""
+                rejected = await _rejected_by_verifier(source)
             if source:
                 end_ms = cluster_prev_ms + gap_ms
                 thumb_path = ""
@@ -987,8 +987,10 @@ async def scan_video(plex_guid: str, config) -> None:
                     source=source,
                     detector=nudenet_detector if source == "scanner" else siglip_detector.DETECTOR_ID,
                     thumbnail_ms=cluster_best_ms,
+                    false_positive=db.FP_VERIFIER if rejected else 0,
                 )
-                segments_inserted += 1
+                if not rejected:
+                    segments_inserted += 1
                 events.publish("segments_changed", guid=plex_guid)
 
             cluster_start_ms = None

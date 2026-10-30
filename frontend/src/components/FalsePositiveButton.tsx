@@ -3,7 +3,7 @@ import { ThumbsDown, Undo2 } from 'lucide-react'
 import { api } from '../api/client'
 
 interface Props {
-  seg: { id: number; false_positive?: boolean }
+  seg: { id: number; false_positive?: boolean; auto_rejected?: boolean }
   /** Called after the server accepted the change, so the list can update in place. */
   onChange: (id: number, falsePositive: boolean) => void
 }
@@ -34,8 +34,11 @@ export default function FalsePositiveButton({ seg, onChange }: Props) {
     <button
       onClick={toggle}
       disabled={busy}
-      title={marked ? 'Undo: this segment is real' : 'Not nudity: mark as a false positive'}
-      aria-label={marked ? 'Undo false positive' : 'Mark as false positive'}
+      title={
+        seg.auto_rejected ? 'Restore: the verifier was wrong, this segment is real'
+          : marked ? 'Undo: this segment is real' : 'Not nudity: mark as a false positive'
+      }
+      aria-label={seg.auto_rejected ? 'Restore segment' : marked ? 'Undo false positive' : 'Mark as false positive'}
       aria-pressed={marked}
       className={`p-2 rounded-lg transition-colors disabled:opacity-40 ${
         marked
@@ -49,10 +52,16 @@ export default function FalsePositiveButton({ seg, onChange }: Props) {
 }
 
 /** Shown next to a marked segment's time range. */
-export function FalsePositiveTag() {
+export function FalsePositiveTag({ autoRejected = false }: { autoRejected?: boolean }) {
   return (
-    <span className="text-[10px] px-1.5 py-0.5 rounded border bg-amber-400/10 border-amber-400/30 text-amber-300 whitespace-nowrap">
-      False positive
+    <span
+      className={`text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap ${
+        autoRejected
+          ? 'bg-sky-400/10 border-sky-400/30 text-sky-300'
+          : 'bg-amber-400/10 border-amber-400/30 text-amber-300'
+      }`}
+    >
+      {autoRejected ? 'Rejected by verifier' : 'False positive'}
     </span>
   )
 }

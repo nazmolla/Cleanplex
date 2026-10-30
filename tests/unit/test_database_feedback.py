@@ -59,7 +59,7 @@ async def test_marking_records_one_verdict_with_the_segment_details():
     rows = await db.get_detection_accuracy()
     assert rows == [{
         "source": "siglip", "detector": "siglip-base-224", "label": "BUTTOCKS_EXPOSED",
-        "total": 1, "false_positives": 1, "avg_score_kept": None, "avg_score_false": pytest.approx(0.7),
+        "total": 1, "false_positives": 1, "verifier_rejected": 0, "avg_score_kept": None, "avg_score_false": pytest.approx(0.7),
     }]
 
 

@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { useLiveRefresh } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
-import FalsePositiveButton from '../components/FalsePositiveButton'
+import FalsePositiveButton, { FalsePositiveTag } from '../components/FalsePositiveButton'
 import RelabelButton from '../components/RelabelButton'
 import ThumbnailTime from '../components/ThumbnailTime'
 import SkipAnalytics from '../components/SkipAnalytics'
@@ -43,6 +43,8 @@ interface Segment {
   source?: string
   detector?: string
   false_positive?: boolean
+  /** Inactive because the verifier rejected it (not a mark by you); restore it if it was real. */
+  auto_rejected?: boolean
   /** When it was marked (UTC, SQLite format); False positives tab only. */
   marked_at?: string | null
 }
@@ -258,21 +260,25 @@ export default function Analytics() {
   // False positives tab (#117): every marked segment, newest mark first.
   const [fpSegments, setFpSegments] = useState<Segment[]>([])
   const [fpTotal, setFpTotal] = useState(0)
+  // Marked by you, or rejected by the verifier (#165); counts are per kind whatever is shown.
+  const [fpKind, setFpKind] = useState<'all' | 'marked' | 'verifier'>('all')
+  const [fpCounts, setFpCounts] = useState({ marked: 0, verifier: 0 })
   const [fpPage, setFpPage] = useState(0)
   const [fpSort, setFpSort] = useState<SortSpec>({ sort: 'marked', order: 'desc' })
   const [loadingFp, setLoadingFp] = useState(false)
   const fpCtl = useRef<AbortController | null>(null)
-  const fetchFalsePositives = useCallback(async (p: number, spec: SortSpec, silent = false) => {
+  const fetchFalsePositives = useCallback(async (p: number, spec: SortSpec, silent = false, kind = 'all') => {
     fpCtl.current?.abort()
     const controller = (fpCtl.current = new AbortController())
     if (!silent) setLoadingFp(true)
     try {
-      const d = await api.get<{ segments: Segment[]; total: number }>(
-        `/api/analytics/false-positives?limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}&sort=${spec.sort}&order=${spec.order}`,
+      const d = await api.get<{ segments: Segment[]; total: number; counts?: { marked: number; verifier: number } }>(
+        `/api/analytics/false-positives?limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}&sort=${spec.sort}&order=${spec.order}&kind=${kind}`,
         { signal: controller.signal },
       )
       setFpSegments(d.segments)
       setFpTotal(d.total)
+      if (d.counts) setFpCounts(d.counts)
     } catch (err: any) {
       if (err?.name !== 'AbortError') console.warn('Could not load false positives:', err?.message)
     } finally {
@@ -281,8 +287,8 @@ export default function Analytics() {
   }, [])
   // Loads when the tab opens and on page or sort changes; nothing is fetched for other tabs.
   useEffect(() => {
-    if (tab === 'false-positives') fetchFalsePositives(fpPage, fpSort)
-  }, [tab, fpPage, fpSort, fetchFalsePositives])
+    if (tab === 'false-positives') fetchFalsePositives(fpPage, fpSort, false, fpKind)
+  }, [tab, fpPage, fpSort, fpKind, fetchFalsePositives])
   useEffect(() => () => { segmentsCtl.current?.abort(); fpCtl.current?.abort() }, [])
 
   // Single effect handles both label changes (reset to page 0) and page navigation.
@@ -306,13 +312,13 @@ export default function Analytics() {
 
   // Live (#89): scans, imports and deletes change label counts and the segment
   // list. Debounced generously: a scan writes segments in bursts.
-  const liveView = useRef({ selectedLabels, page, tab, fpPage, segSort, fpSort })
-  liveView.current = { selectedLabels, page, tab, fpPage, segSort, fpSort }
+  const liveView = useRef({ selectedLabels, page, tab, fpPage, segSort, fpSort, fpKind })
+  liveView.current = { selectedLabels, page, tab, fpPage, segSort, fpSort, fpKind }
   useLiveRefresh(['segments_changed'], () => {
     const v = liveView.current
     loadLabels()
     fetchSegments(v.selectedLabels, v.page, v.segSort, true)
-    if (v.tab === 'false-positives') fetchFalsePositives(v.fpPage, v.fpSort, true)
+    if (v.tab === 'false-positives') fetchFalsePositives(v.fpPage, v.fpSort, true, v.fpKind)
   }, { debounceMs: 2000 })
 
   const toggleLabel = (label: string) => {
@@ -436,6 +442,7 @@ export default function Analytics() {
                         <span className="text-xs text-gray-600">
                           ({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)
                         </span>
+                        {seg.false_positive && <FalsePositiveTag autoRejected={seg.auto_rejected} />}
                         {seg.content_rating && (
                           <span className="text-xs text-gray-600 bg-white/5 px-1.5 py-0.5 rounded">
                             {seg.content_rating}
@@ -655,11 +662,22 @@ export default function Analytics() {
           <section>
             <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
               <p className="text-xs text-gray-500 min-w-0 flex-1 basis-64">
-                Segments marked as not containing what they claim. They no longer skip or mute and are left out
-                of counts and sync; undo a mark to make the segment act again.
+                Segments marked as not containing what they claim, by you or by the verifier. They no longer skip or
+                mute and are left out of counts and sync; undo a mark, or restore a verifier rejection that was wrong,
+                to make the segment act again.
                 {!loadingFp && <span className="ml-2 text-gray-600">{fpTotal} total</span>}
               </p>
               <div className="flex items-center gap-3 shrink-0">
+                <select
+                  value={fpKind}
+                  onChange={e => { setFpKind(e.target.value as typeof fpKind); setFpPage(0) }}
+                  aria-label="Show"
+                  className="bg-plex-card border border-plex-border rounded-lg px-2 py-1.5 text-xs text-gray-300"
+                >
+                  <option value="all">All ({fpCounts.marked + fpCounts.verifier})</option>
+                  <option value="marked">Flagged by you ({fpCounts.marked})</option>
+                  <option value="verifier">Rejected by the verifier ({fpCounts.verifier})</option>
+                </select>
                 <SortControl value={fpSort} options={['marked', 'score', 'added']} onChange={next => { setFpSort(next); setFpPage(0) }} />
                 <Pager page={fpPage} totalPages={Math.ceil(fpTotal / PAGE_SIZE)} onPage={setFpPage} compact />
               </div>
