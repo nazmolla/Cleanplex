@@ -67,7 +67,18 @@ python -m cleanplex
 
 Open `http://localhost:7979` in your browser and configure your Plex connection in **Settings**.
 
-### 5. Install as a systemd service (Linux)
+### 5. Install as a service
+
+**macOS** (LaunchDaemon, runs as a regular user, default `server`; re-running updates the code and restarts it):
+
+```bash
+sudo bash scripts/install-macos-service.sh [run_user]
+tail -f ~/.cleanplex/cleanplex.log          # rotated log of the run user
+```
+
+If launchd answers `Bootstrap failed: 5` right after an update, the old process was still exiting: wait a few seconds and run `sudo launchctl bootstrap system /Library/LaunchDaemons/com.homeserv.cleanplex.plist`.
+
+**Linux (systemd)**
 
 ```bash
 sudo cp cleanplex.service /etc/systemd/system/
@@ -192,6 +203,9 @@ only. Those categories are populated by importing skip files, where humans have 
 
 ## Finding Your Plex Token
 
+Once saved, the token is never sent back to the browser: Settings shows "Saved. Leave blank to keep it", and saving with the field empty keeps the stored token. The web UI and API have no login, so on a network you do not fully trust bind to `127.0.0.1` (`CLEANPLEX_HOST`) behind a reverse proxy.
+
+
 1. Sign in to Plex Web
 2. Browse to any media item
 3. Click the three-dot menu → **Get Info** → **View XML**
@@ -217,9 +231,9 @@ only. Those categories are populated by importing skip files, where humans have 
 - **Live scanner banner** — shows which titles are currently being scanned with progress bars
 - **Segment details** — Timestamp range, confidence score, a thumbnail from the detected scene, and what found it (e.g. *NudeNet 640m*, *SigLIP*, *Subtitles*, *VideoSkip (.skp)*)
 - **Delete false positives** — Remove incorrectly flagged segments
-- **File cleanup** — Deleting a segment (or a title's segments, a rescan, or an import that replaces them) removes its thumbnail and hover preview. A sweep at startup and every 6 hours removes thumbnails, hover previews and feedback frames nothing references (older than an hour), and segments whose title no longer exists once they are 30 days old. Feedback frames kept for false-positive and relabel verdicts are never removed
+- **File cleanup** — Deleting a segment (or a title's segments, a rescan, or an import that replaces them) removes its thumbnail and hover preview. A sweep at startup and every 6 hours removes thumbnails, hover previews and feedback frames nothing references (older than an hour), and segments whose title no longer exists once they are 30 days old. The preview clip and poster caches are pruned by age and size (see *Data, Backups & Maintenance*). Feedback frames kept for false-positive and relabel verdicts are never removed
 - **Right-click to rescan** — On a movie, episode, season or show: *Rescan now* or *Rescan tonight* (queued for the scan window). The Segments page lists only titles that have segments, so on a show the first pair rescans those listed episodes; *Rescan whole show now / tonight* and *whole season now / tonight* queue every non-ignored episode, including ones with no segments; right-clicking a library offers *Rescan whole library tonight* (finished and failed titles, scheduled only, never jumped to the front)
-- **Failed scans** — On the Library page, the *Failed* tab has *Retry failed*: every failed title of the library is queued again (inside your rating filter) and ignored titles are taken off the Failed list. The same choice is in Settings → *Rescan Titles*
+- **Failed scans** — On the Library page, the *Failed* tab has *Retry failed*: every failed title of the library is queued again (inside your rating filter), except titles whose media file is still missing, which stay on the list and are counted; ignored titles are taken off the Failed list. The same choice is in Settings → *Rescan Titles*
 - **Rescan many titles** — Settings → Scan Scope & Schedule → *Rescan Titles*: pick titles scanned by an older scanner (the right choice after an update), titles with segments, every scanned title, or titles scanned before a date, optionally for one library. A live count shows what will be queued and how many your rating filters skip; they go through the normal scan queue (scan window, usual order) and keep their current segments until the new scan replaces them
 - **Live updates** — The open title's segments and the tree counts refresh as a rescan runs and when it finishes
 - **Hover preview** — Hovering a segment's thumbnail plays a 5 s silent loop of it (sped up for long segments), in Library, Segments and Analytics. Rendered overnight by the hover-preview job, so new segments get one the next night
@@ -246,6 +260,21 @@ Tabs (linkable with `?tab=`), and sections that can be minimised (remembered per
 - **Skip behavior** — Pre/post buffers around segments, scan window, segment merge gap, minimum hits per segment
 - **Profanity wordlist** — Words the subtitle scanner mutes
 
+## Data, Backups & Maintenance
+
+Everything lives in the data folder (`~/.cleanplex`, or `CLEANPLEX_DATA`):
+
+| Path | What | Housekeeping |
+|---|---|---|
+| `cleanplex.db` | The database (SQLite, WAL) | A consistent backup is written to `backups/` once a day (5 minutes after startup if none is under a day old); the newest 7 are kept. Manual `cleanplex.db.bak-*` copies are trimmed to the newest 3 |
+| `thumbnails/`, `hover/`, `feedback/` | Segment thumbnails, hover previews, false-positive frames | Removed with their segment; a sweep at startup and every 6 hours removes unreferenced files |
+| `posters/` | Cached Plex posters | Refreshed after 7 days; the sweep deletes ones untouched for 30 days |
+| `previews/` | On-demand segment preview clips | The sweep deletes clips older than 14 days and the oldest first once the folder passes 500 MB; they are re-rendered when played |
+| `models/` | NudeNet 640m, SigLIP and the verifier | Kept |
+| `cleanplex.log` | Log, only when `CLEANPLEX_LOG_FILE` is set | Rotated at 10 MB, 4 backups kept |
+
+New titles are discovered by a library pass every 5 minutes (one chunked lookup per library, not one per title). Restore a backup by stopping the service and copying a file from `backups/` over `cleanplex.db`.
+
 ## Client Compatibility
 
 The seek command is sent via the Plex Player Control API and works with most modern Plex clients:
@@ -270,6 +299,8 @@ The scanner maintains two independent queues:
 
 - **Normal queue** — Regular background scans of newly added titles, processed in order (FIFO)
 - **Force queue** — High-priority scans from "Scan Now" clicks, always processed before normal queue items
+
+`GET /api/scan/queue` returns the unfinished jobs (finished ones are left out unless you pass `status=`), with `limit`/`offset` paging and per-status `counts`.
 
 When you click **"Scan Now"**:
 1. Title is removed from the normal queue (if present) to avoid duplicate processing
