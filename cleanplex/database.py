@@ -271,6 +271,7 @@ DEFAULT_SETTINGS = {
     "hover_previews_enabled": "1",
     # Also render previews whenever the scan queue is empty, not only inside the window.
     "hover_when_idle": "1",
+    "verifier_loss_pct": "0",
     "hover_window_start": "00:00",
     "hover_window_end": "07:00",
     "log_level": "INFO",
@@ -841,6 +842,34 @@ async def get_feedback_frame_paths() -> set[str]:
     async with get_connection() as conn:
         rows = await conn.execute_fetchall("SELECT frame_path FROM segment_feedback WHERE COALESCE(frame_path, '') != ''")
         return {r[0] for r in rows}
+
+
+async def get_verifier_training_rows(max_kept_per_group: int) -> list[dict]:
+    """Return labelled frames for the false-positive verifier as {path, fp, group, plex_guid}.
+
+    fp=1: frames users rejected (feedback verdict false_positive). fp=0: frames of segments the
+    user kept (a random sample per group) and frames of relabeled feedback, which were real
+    nudity under the wrong label. group is "siglip" or "nudenet" by the detector that fired.
+    """
+    rows: list[dict] = []
+    async with get_connection() as conn:
+        feedback = await conn.execute_fetchall(
+            "SELECT frame_path, verdict, detector, plex_guid FROM segment_feedback "
+            "WHERE frame_path != '' AND (detector LIKE 'siglip%' OR detector LIKE 'nudenet%')"
+        )
+        for r in feedback:
+            rows.append({
+                "path": r["frame_path"], "fp": 1 if r["verdict"] == "false_positive" else 0,
+                "group": "siglip" if r["detector"].startswith("siglip") else "nudenet", "plex_guid": r["plex_guid"],
+            })
+        for group, where in (("siglip", "detector LIKE 'siglip%'"), ("nudenet", "detector LIKE 'nudenet%'")):
+            kept = await conn.execute_fetchall(
+                "SELECT thumbnail_path, plex_guid FROM segments WHERE false_positive=0 "
+                f"AND thumbnail_path != '' AND {where} ORDER BY RANDOM() LIMIT ?",
+                (max_kept_per_group,),
+            )
+            rows += [{"path": r["thumbnail_path"], "fp": 0, "group": group, "plex_guid": r["plex_guid"]} for r in kept]
+    return rows
 
 
 async def get_orphan_segment_refs(older_than_days: int) -> list[tuple[int, str]]:

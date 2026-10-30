@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import Literal
 
@@ -9,9 +10,11 @@ import cleanplex.plex_client as plex_mod
 from ... import database as db
 from ... import events
 from ... import scanner as scan_mod
+from ... import verifier
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/scan", tags=["scanner"])
+_tasks: set[asyncio.Task] = set()
 
 
 class ScanTitleRequest(BaseModel):
@@ -319,3 +322,29 @@ async def toggle_title_ignored(plex_guid: str, body: ToggleIgnoredRequest):
     await db.set_ignored(plex_guid, body.ignored)
     events.publish("titles_changed", library_id=job.get("library_id") or "")
     return {"ok": True, "plex_guid": plex_guid, "ignored": body.ignored}
+
+
+@router.get("/verifier")
+async def get_verifier_status():
+    """Return the false-positive verifier's training state and what the saved model covers."""
+    return verifier.status()
+
+
+@router.post("/verifier/train")
+async def train_verifier():
+    """Start training the verifier from the false-positive feedback; poll GET /verifier for progress."""
+    if verifier.status()["running"]:
+        raise HTTPException(status_code=409, detail="Training is already running")
+
+    async def _run() -> None:
+        try:
+            await verifier.train()
+        except Exception as exc:
+            logger.warning("Verifier training failed: %s", exc)
+        finally:
+            events.publish("settings_changed")
+
+    task = asyncio.create_task(_run())
+    _tasks.add(task)  # a bare task can be garbage-collected mid-run
+    task.add_done_callback(_tasks.discard)
+    return {"ok": True}

@@ -41,6 +41,7 @@ Every change — regardless of size — must follow these rules. No exceptions.
 | `database.py` | All SQL — no raw queries outside this file |
 | `scanner.py` | Frame extraction, NudeNet inference, segment writing |
 | `siglip_detector.py` | SigLIP zero-shot fallback for frames NudeNet did not flag — model download, prompts from `scan_labels`, scoring |
+| `verifier.py` | Feedback-trained false-positive filter (#165): trains a logistic head on SigLIP image embeddings of the frames users marked as false positives versus the thumbnails of kept segments, one model per detector family, and judges a flagged cluster's peak frame at scan time. Only filters detections; never creates segments |
 | `ort_runtime.py` | Shared onnxruntime session options: caps threads per inference session so scan workers do not oversubscribe the CPU. Every `InferenceSession` the scanner or SigLIP builds goes through it |
 | `stream_proxy.py` | Prototype (#132): reverse proxy in front of Plex that, only when a client cannot be skipped live, the viewer's filtering is on and the title has segments their levels would skip, forces an HLS transcode and removes those ranges from the playlist. Standalone (`python -m cleanplex.stream_proxy`), not wired into `main.py` yet |
 | `plex_summary.py` | The Cleanplex block in a title's Plex summary: builds the description from the database (`db.get_summary_stats`) and refreshes it (debounced) after scans, deletes, false positives, relabels, imports and subtitle scans. Plex writes go through `PlexClient.update_cleanplex_summary` |

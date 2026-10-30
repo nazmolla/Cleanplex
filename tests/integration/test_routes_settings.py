@@ -314,3 +314,11 @@ async def test_update_settings_blank_token_keeps_stored_token(http_client):
 async def test_cross_origin_request_gets_no_cors_header(http_client):
     resp = await http_client.get("/api/settings", headers={"Origin": "http://evil.example"})
     assert "access-control-allow-origin" not in resp.headers
+
+
+async def test_update_settings_accepts_only_known_verifier_levels(http_client):
+    with patch("cleanplex.web.routes.settings.scan_mod.request_scanner_restart", new=AsyncMock()):
+        ok = await http_client.put("/api/settings", json={"verifier_loss_pct": "10"})
+        bad = await http_client.put("/api/settings", json={"verifier_loss_pct": "7"})
+    assert ok.status_code == 200 and bad.status_code == 422
+    assert await db.get_setting("verifier_loss_pct") == "10"

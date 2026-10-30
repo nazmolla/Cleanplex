@@ -294,3 +294,9 @@ def score_frame(jpeg_bytes: bytes, enabled_labels: set[str]) -> tuple[float, str
     label = max(by_label, key=by_label.get)
     score = float(sum(p for p, hit in zip(probs, positive) if hit))
     return score, label
+
+
+def embed_frame(jpeg_bytes: bytes) -> np.ndarray:
+    """Return the normalized SigLIP image embedding of one frame (768 floats). Blocking; raises on a bad frame."""
+    image = _session("vision_model.onnx").run(["pooler_output"], {"pixel_values": preprocess(jpeg_bytes)})[0]
+    return _normalize(image.astype(np.float32))[0]

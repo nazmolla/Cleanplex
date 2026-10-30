@@ -4,6 +4,7 @@ import { CheckCircle2, XCircle, Loader2, Eye, EyeOff, RotateCcw } from 'lucide-r
 import { useSearchParams } from 'react-router-dom'
 import { UsersPanel } from './Users'
 import BulkRescan from '../components/BulkRescan'
+import VerifierPanel from '../components/VerifierPanel'
 
 interface Settings {
   plex_url: string
@@ -30,6 +31,7 @@ interface Settings {
   siglip_threshold: string
   siglip_min_hits: string
   ignore_credits: string
+  verifier_loss_pct: string
   label_thresholds: string
   siglip_label_thresholds: string
   hw_decode: string
@@ -81,6 +83,7 @@ const DEFAULT: Settings = {
   siglip_threshold: '0.3',
   siglip_min_hits: '2',
   ignore_credits: '1',
+  verifier_loss_pct: '0',
   label_thresholds: '{}',
   siglip_label_thresholds: '{}',
   hw_decode: '1',
@@ -728,6 +731,7 @@ export default function SettingsPage() {
                 <Field label="Consecutive Frames Required" hint="A SigLIP-only hit must repeat on this many consecutive sampled frames before a segment is created. Filters one-off false alarms.">
                   <input type="number" min="1" max="6" step="1" value={form.siglip_min_hits} onChange={set('siglip_min_hits')} disabled={form.siglip_enabled !== '1'} className={inputCls + ' disabled:opacity-40'} />
                 </Field>
+                <VerifierPanel value={form.verifier_loss_pct} onChange={v => setForm(f => ({ ...f, verifier_loss_pct: v }))} />
               </div>
             </section>
           )}
