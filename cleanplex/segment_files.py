@@ -23,6 +23,7 @@ logger = get_logger(__name__)
 FEEDBACK_DIR: Path = Path.home() / ".cleanplex" / "feedback"
 # A scan writes a thumbnail before it inserts the segment row, so a file younger than this may
 # belong to a row about to be written and is never swept.
+POSTER_MAX_AGE_S = 30 * 24 * 3600
 GRACE_S = 3600
 # A segment whose title no longer exists is kept this long, in case the title comes back.
 ORPHAN_SEGMENT_DAYS = 30
@@ -93,7 +94,9 @@ def _sweep_directory(directory: Path, referenced: set[str], grace_s: float) -> t
     return removed, freed
 
 
-async def sweep(thumbnails_dir: Path | None = None, grace_s: float = GRACE_S) -> dict:
+async def sweep(
+    thumbnails_dir: Path | None = None, grace_s: float = GRACE_S, posters_dir: Path | None = None
+) -> dict:
     """Remove orphaned segments and the files nothing references; return what was removed.
 
     1. Segments whose title is gone and that are older than ORPHAN_SEGMENT_DAYS, with their files.
@@ -104,7 +107,7 @@ async def sweep(thumbnails_dir: Path | None = None, grace_s: float = GRACE_S) ->
         from . import scanner
 
         thumbnails_dir = scanner.THUMBNAILS_DIR
-    report = {"orphan_segments": 0, "thumbnails": 0, "hover": 0, "feedback_frames": 0, "bytes": 0}
+    report = {"orphan_segments": 0, "thumbnails": 0, "hover": 0, "feedback_frames": 0, "posters": 0, "bytes": 0}
 
     orphans = await db.get_orphan_segment_refs(ORPHAN_SEGMENT_DAYS)
     if orphans:
@@ -127,6 +130,15 @@ async def sweep(thumbnails_dir: Path | None = None, grace_s: float = GRACE_S) ->
         _sweep_directory, FEEDBACK_DIR, await db.get_feedback_frame_paths(), grace_s
     )
     report["feedback_frames"], report["bytes"] = frames, report["bytes"] + freed
+
+    # Cached Plex posters are refreshed after 7 days when used, so one untouched for
+    # POSTER_MAX_AGE_S belongs to a title nobody has opened since (#158).
+    if posters_dir is None:
+        from .web.routes import segments as segment_routes
+
+        posters_dir = segment_routes._POSTERS_DIR
+    posters, freed = await asyncio.to_thread(_sweep_directory, posters_dir, set(), POSTER_MAX_AGE_S)
+    report["posters"], report["bytes"] = posters, report["bytes"] + freed
     return report
 
 
@@ -139,8 +151,9 @@ async def segment_cleanup_loop() -> None:
             if any(v for k, v in report.items() if k != "bytes"):
                 logger.info(
                     "Segment file cleanup: removed %d orphan segment(s), %d thumbnail(s), %d hover preview(s), "
-                    "%d feedback frame(s); freed %.1f MB",
+                    "%d feedback frame(s), %d poster(s); freed %.1f MB",
                     report["orphan_segments"], report["thumbnails"], report["hover"], report["feedback_frames"],
+                    report["posters"],
                     report["bytes"] / 1e6,
                 )
         except asyncio.CancelledError:

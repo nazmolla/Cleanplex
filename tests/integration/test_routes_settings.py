@@ -294,3 +294,23 @@ async def test_hover_when_idle_is_on_by_default_and_can_be_turned_off(http_clien
     assert resp.status_code == 200 and await db.get_setting("hover_when_idle") == "0"
     resp, _ = await _put(http_client, {"hover_when_idle": "maybe"})
     assert resp.status_code == 422
+
+
+async def test_get_settings_never_returns_plex_token(http_client):
+    await db.set_setting("plex_token", "secret-token")
+    data = (await http_client.get("/api/settings")).json()
+    assert data["plex_token"] == ""
+    assert data["plex_token_set"] is True
+
+
+async def test_update_settings_blank_token_keeps_stored_token(http_client):
+    await db.set_setting("plex_token", "secret-token")
+    with patch("cleanplex.web.routes.settings.scan_mod.request_scanner_restart", new=AsyncMock()):
+        resp = await http_client.put("/api/settings", json={"plex_token": "", "log_level": "DEBUG"})
+    assert resp.status_code == 200
+    assert await db.get_setting("plex_token") == "secret-token"
+
+
+async def test_cross_origin_request_gets_no_cors_header(http_client):
+    resp = await http_client.get("/api/settings", headers={"Origin": "http://evil.example"})
+    assert "access-control-allow-origin" not in resp.headers

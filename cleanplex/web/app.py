@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import traceback
 from pathlib import Path
 
@@ -63,9 +64,12 @@ def create_app() -> FastAPI:
         )
         return JSONResponse(status_code=500, content={"detail": str(exc)})
 
+    # The SPA is served from this origin and the Vite dev server proxies /api, so no
+    # cross-origin caller is needed; extra origins are opt-in (#155).
+    cors_origins = [o.strip() for o in os.environ.get("CLEANPLEX_CORS_ORIGINS", "").split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )

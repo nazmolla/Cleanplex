@@ -8,6 +8,8 @@ import BulkRescan from '../components/BulkRescan'
 interface Settings {
   plex_url: string
   plex_token: string
+  // The server never returns the token itself, only whether one is stored (#155).
+  plex_token_set?: boolean
   poll_interval: string
   confidence_threshold: string
   skip_buffer_ms: string
@@ -415,7 +417,7 @@ export default function SettingsPage() {
                       type={showToken ? 'text' : 'password'}
                       value={form.plex_token}
                       onChange={set('plex_token')}
-                      placeholder="xxxxxxxxxxxxxxxxxxxx"
+                      placeholder={form.plex_token_set ? 'Saved. Leave blank to keep it' : 'xxxxxxxxxxxxxxxxxxxx'}
                       className={inputCls + ' pr-10'}
                     />
                     <button
@@ -431,7 +433,7 @@ export default function SettingsPage() {
                 <div className="flex items-center gap-3">
                   <button
                     onClick={testConnection}
-                    disabled={testing || !form.plex_url || !form.plex_token}
+                    disabled={testing || !form.plex_url || !(form.plex_token || form.plex_token_set)}
                     className="px-4 py-2 text-sm bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
                   >
                     {testing && <Loader2 size={14} className="animate-spin" />}

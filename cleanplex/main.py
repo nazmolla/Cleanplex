@@ -17,6 +17,7 @@ from .watcher import session_watcher_loop, library_watcher_loop
 from .scanner import scanner_loop
 from .hover_previews import hover_preview_loop
 from .segment_files import segment_cleanup_loop
+from .db_backup import db_backup_loop
 from .thumbnail_backfill import thumbnail_backfill_loop
 from .web.app import create_app
 from .bg_jobs import recover_stale_jobs
@@ -94,6 +95,7 @@ async def _amain() -> None:
         scanner_loop(get_config),
         hover_preview_loop(get_config, scanner_idle=_scanner_idle),
         segment_cleanup_loop(),
+        db_backup_loop(),
         thumbnail_backfill_loop(get_config),
     )
 

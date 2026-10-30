@@ -85,7 +85,11 @@ class ValidateModelPathPayload(BaseModel):
 
 @router.get("")
 async def get_settings():
-    return await db.get_all_settings()
+    """Return all settings; the Plex token is never sent, only whether one is stored (#155)."""
+    settings = await db.get_all_settings()
+    settings["plex_token_set"] = bool(settings.get("plex_token"))
+    settings["plex_token"] = ""
+    return settings
 
 
 @router.get("/plex-server-id")
@@ -105,7 +109,10 @@ async def get_plex_server_id():
 @router.put("")
 async def update_settings(payload: SettingsPayload):
     data = {k: v for k, v in payload.model_dump().items() if v is not None}
-    
+    # GET never returns the token, so a blank value means "unchanged", not "clear it" (#155).
+    if not data.get("plex_token"):
+        data.pop("plex_token", None)
+
     # Check if scan_workers is being changed
     scan_workers_changed = False
     # A new thread cap only reaches inference sessions when the pool is rebuilt.
