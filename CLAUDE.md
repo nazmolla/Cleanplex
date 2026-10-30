@@ -47,14 +47,14 @@ Every change — regardless of size — must follow these rules. No exceptions.
 | `plex_summary.py` | The Cleanplex block in a title's Plex summary: builds the description from the database (`db.get_summary_stats`) and refreshes it (debounced) after scans, deletes, false positives, relabels, imports and subtitle scans. Plex writes go through `PlexClient.update_cleanplex_summary` |
 | `segment_refine.py` | Dense sampling of a flagged window (`dense_hits`): the frames above threshold inside it, growing while the scene runs on. Shared by the scanner and the backfill, so both choose thumbnails and bounds the same way |
 | `thumbnail_backfill.py` | Background job (scan window, one segment at a time) that re-samples segments stored before dense sampling existed: better thumbnail, bounds that only grow, `refined_at` so each is processed once, hover preview reset when the window changes |
-| `segment_files.py` | Files that belong to segments (thumbnails, hover previews, feedback frames): deletes them with their segment (`delete_segment`, `delete_segments_for_guid`: use these, never `db.delete_segment*` directly) and sweeps orphans on a schedule |
+| `segment_files.py` | Files that belong to segments (thumbnails, hover previews, feedback frames) plus the poster and preview-clip caches (pruned by age/size): deletes them with their segment (`delete_segment`, `delete_segments_for_guid`: use these, never `db.delete_segment*` directly) and sweeps orphans on a schedule |
 | `db_backup.py` | Daily `VACUUM INTO` backup to `~/.cleanplex/backups/` (newest 7 kept) and pruning of deploy-time `cleanplex.db.bak-*` copies (newest 3 kept) |
 | `hover_previews.py` | Job rendering each active segment's hover preview (small silent MP4) inside its own window (default 00:00–07:00); separate from the scanner, never part of a scan |
 | `subtitle_scanner.py` | Subtitle parsing and profanity matching — emits muted language segments |
 | `importers/` | Skip file parsers and exporters (`.skp`, `.edl`, `.mcf`, pasted lists). One module per format; all return the same normalized segment dict |
 | `plex_client.py` | All Plex API calls — no `plexapi` imports elsewhere |
 | `filter_engine.py` | Playback position checks and seek decisions |
-| `watcher.py` | Polling loops only — no business logic |
+| `watcher.py` | Polling loops only — no business logic. The library pass runs every 5 min and must look titles up in chunks, never per item |
 | `sync.py` / `sync_merge.py` | GitHub sync and segment merge logic |
 | `bg_jobs.py` | Background job lifecycle — no domain logic |
 | `events.py` | In-process event bus streamed to browsers by `GET /api/events` (SSE). Publish where a change happens; events name what changed, not the new state |
@@ -278,6 +278,11 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 - **Sync is always manually triggered.** No background task or watcher may initiate a sync operation automatically.
 - **File hash cache is keyed by `(path, size, mtime)`.** Recompute SHA256 only when any of these change.
 - **Segment merge complexity must be sub-quadratic on practical inputs.** Use time-bucketed or sorted interval matching.
+
+### 5.8 Security & Resource Hygiene
+
+- **Never return secrets from the API.** `GET /api/settings` masks `plex_token` (`plex_token_set` instead) and a blank token on save means unchanged; CORS is same-origin unless `CLEANPLEX_CORS_ORIGINS` is set.
+- **Close async generators you stop iterating early.** Wrap ffmpeg frame streams in `contextlib.aclosing` so a pause, skip or error closes them at once instead of at shutdown.
 
 ---
 
