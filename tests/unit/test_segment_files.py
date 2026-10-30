@@ -95,7 +95,7 @@ async def test_sweep_removes_unreferenced_old_thumbnails_and_keeps_the_rest(dirs
     orphan = _file(dirs / "thumbs" / "old_orphan.jpg")
     young = _file(dirs / "thumbs" / "young_orphan.jpg", age=time.time())
 
-    report = await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters")
+    report = await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters", previews_dir=dirs / "previews")
 
     assert not orphan.exists()
     assert young.exists()  # may belong to a segment a scan is about to insert
@@ -107,7 +107,7 @@ async def test_a_referenced_thumbnail_is_kept_however_old(dirs):
     await _job()
     sid = await db.insert_segment("g", "T", 0, 1000, thumbnail_path=str(dirs / "thumbs" / "g_0.jpg"))
     _file(dirs / "thumbs" / "g_0.jpg")
-    await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters")
+    await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters", previews_dir=dirs / "previews")
     assert (dirs / "thumbs" / "g_0.jpg").exists() and sid
 
 
@@ -119,7 +119,7 @@ async def test_sweep_removes_hover_previews_of_segments_that_are_gone_but_keeps_
     ghost = _file(hover_previews.hover_path(777))
     leftover = _file(hover_previews.HOVER_DIR / "5.mp4.part")
 
-    report = await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters")
+    report = await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters", previews_dir=dirs / "previews")
 
     assert not ghost.exists() and not leftover.exists()
     assert hover_previews.hover_path(live).exists() and hover_previews.hover_path(wrong).exists()
@@ -134,7 +134,7 @@ async def test_sweep_keeps_feedback_frames_a_row_owns_and_removes_the_rest(dirs)
     orphan = _file(dirs / "feedback" / "orphan.jpg")
     young = _file(dirs / "feedback" / "young.jpg", age=time.time())
 
-    report = await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters")
+    report = await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters", previews_dir=dirs / "previews")
 
     assert owned.exists() and young.exists() and not orphan.exists()
     assert report["feedback_frames"] == 1
@@ -146,7 +146,7 @@ async def test_a_frame_outlives_the_segment_it_came_from(dirs):
     frame = _file(dirs / "feedback" / "kept.jpg")
     await db.mark_segment_false_positive(sid, str(frame))
     await segment_files.delete_segment(sid)
-    await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters")
+    await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters", previews_dir=dirs / "previews")
     assert frame.exists()
 
 
@@ -157,7 +157,7 @@ async def test_segments_of_a_removed_title_are_deleted_after_the_cutoff_with_the
         await conn.execute("UPDATE segments SET created_at = datetime('now', '-40 days') WHERE id = ?", (old,))
         await conn.commit()
 
-    report = await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters")
+    report = await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters", previews_dir=dirs / "previews")
 
     assert report["orphan_segments"] == 1
     assert await db.get_segment_by_id(old) is None
@@ -171,19 +171,19 @@ async def test_segments_of_a_title_that_still_exists_are_never_swept_as_orphans(
     async with db.get_connection() as conn:
         await conn.execute("UPDATE segments SET created_at = datetime('now', '-400 days') WHERE id = ?", (sid,))
         await conn.commit()
-    assert (await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters"))["orphan_segments"] == 0
+    assert (await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters", previews_dir=dirs / "previews"))["orphan_segments"] == 0
     assert await db.get_segment_by_id(sid) is not None
 
 
 async def test_a_second_sweep_finds_nothing_more(dirs):
     _file(dirs / "thumbs" / "x.jpg")
-    await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters")
-    report = await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters")
+    await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters", previews_dir=dirs / "previews")
+    report = await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters", previews_dir=dirs / "previews")
     assert not any(report.values())
 
 
 async def test_a_missing_directory_is_not_an_error(tmp_path):
-    report = await segment_files.sweep(tmp_path / "does-not-exist", posters_dir=tmp_path / "no-posters")
+    report = await segment_files.sweep(tmp_path / "does-not-exist", posters_dir=tmp_path / "no-posters", previews_dir=tmp_path / "no-previews")
     assert report["thumbnails"] == 0
 
 
@@ -215,3 +215,18 @@ async def test_sweep_prunes_only_stale_posters(dirs):
 
     assert not stale.exists() and fresh.exists()
     assert report["posters"] == 1
+
+
+async def test_sweep_caps_the_preview_cache_by_age_and_total_size(dirs, monkeypatch):
+    previews = dirs / "previews"
+    previews.mkdir()
+    now = time.time()
+    stale = _file(previews / "stale.mp4", age=now - 20 * 24 * 3600, data=b"x" * 100)
+    oldest = _file(previews / "oldest.mp4", age=now - 3000, data=b"x" * 100)
+    newest = _file(previews / "newest.mp4", age=now - 10, data=b"x" * 100)
+    monkeypatch.setattr(segment_files, "PREVIEW_MAX_BYTES", 150)
+
+    report = await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters", previews_dir=previews)
+
+    assert not stale.exists() and not oldest.exists() and newest.exists()
+    assert report["previews"] == 2

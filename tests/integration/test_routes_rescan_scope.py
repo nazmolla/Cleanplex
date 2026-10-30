@@ -95,7 +95,7 @@ async def test_dry_run_counts_without_changing_anything(http_client):
     with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()) as enqueue:
         resp = await http_client.post("/api/scan/rescan", json={"scope": "all_scanned", "dry_run": True})
 
-    assert resp.json() == {"ok": True, "matched": 2, "queued": 2, "skipped_ineligible": 0, "ignored_cleared": 0,
+    assert resp.json() == {"ok": True, "matched": 2, "queued": 2, "skipped_ineligible": 0, "skipped_missing_file": 0, "ignored_cleared": 0,
                            "dry_run": True}
     enqueue.assert_not_called()
     assert await _status("a") == "done"
@@ -352,3 +352,23 @@ async def test_clearing_ignored_failures_can_be_limited_to_one_library(http_clie
         resp = await http_client.post("/api/scan/rescan", json={"scope": "failed", "library_id": "1"})
     assert resp.json()["ignored_cleared"] == 1
     assert await _status("one") == "pending" and await _status("two") == "failed"
+
+
+async def test_retry_failed_skips_titles_whose_file_is_still_missing(http_client, tmp_path):
+    present = tmp_path / "back.mkv"
+    present.write_bytes(b"x")
+    await _job("gone", status="failed")
+    await _job("back", status="failed")
+    await _job("probe", status="failed")
+    async with db.get_connection() as conn:
+        await conn.execute("UPDATE scan_jobs SET error_msg='File not found: /m/gone.mkv' WHERE plex_guid='gone'")
+        await conn.execute("UPDATE scan_jobs SET error_msg='File not found: x', file_path=? WHERE plex_guid='back'",
+                           (str(present),))
+        await conn.execute("UPDATE scan_jobs SET error_msg='Could not determine video duration' WHERE plex_guid='probe'")
+        await conn.commit()
+    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()):
+        resp = (await http_client.post("/api/scan/rescan", json={"scope": "failed"})).json()
+
+    assert (resp["queued"], resp["skipped_missing_file"]) == (2, 1)
+    assert await _status("gone") == "failed"
+    assert await _status("back") == "pending" and await _status("probe") == "pending"

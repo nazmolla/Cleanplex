@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing
 import shutil
 import sys
 from pathlib import Path
@@ -252,16 +253,18 @@ async def extract_frames_batch(
     """
     produced = False
     try:
-        async for item in _frame_stream(file_path, step_ms, duration_ms, size, hardware):
-            produced = True
-            yield item
+        async with aclosing(_frame_stream(file_path, step_ms, duration_ms, size, hardware)) as stream:
+            async for item in stream:
+                produced = True
+                yield item
     except FrameStreamStalled:
         if produced or not hardware:
             raise
     if hardware and not produced:
         logger.info("Hardware decoding gave no frames for %s; retrying in software", file_path)
-        async for item in _frame_stream(file_path, step_ms, duration_ms, size, False):
-            yield item
+        async with aclosing(_frame_stream(file_path, step_ms, duration_ms, size, False)) as stream:
+            async for item in stream:
+                yield item
 
 
 async def extract_frames_window(
@@ -282,15 +285,17 @@ async def extract_frames_window(
     end_ms = start_ms + length_ms
     produced = False
     try:
-        async for item in _frame_stream(file_path, step_ms, end_ms, size, hardware, start_ms, length_ms):
-            produced = True
-            yield item
+        async with aclosing(_frame_stream(file_path, step_ms, end_ms, size, hardware, start_ms, length_ms)) as stream:
+            async for item in stream:
+                produced = True
+                yield item
     except FrameStreamStalled:
         if produced or not hardware:
             raise
     if hardware and not produced:
-        async for item in _frame_stream(file_path, step_ms, end_ms, size, False, start_ms, length_ms):
-            yield item
+        async with aclosing(_frame_stream(file_path, step_ms, end_ms, size, False, start_ms, length_ms)) as stream:
+            async for item in stream:
+                yield item
 
 
 async def _frame_stream(

@@ -758,6 +758,33 @@ async def get_segments_for_guid_with_setting(
         return [dict(r) for r in rows], setting_val
 
 
+async def get_segments_for_guids_with_setting(
+    plex_guids: list[str], setting_key: str, setting_default: str
+) -> tuple[list[dict], str]:
+    """Return every segment (false positives included) for the guids plus one setting, in a single connection."""
+    async with get_connection() as conn:
+        rows: list = []
+        for i in range(0, len(plex_guids), 500):  # chunked: SQLite's variable limit
+            chunk = plex_guids[i:i + 500]
+            rows += await conn.execute_fetchall(
+                f"SELECT * FROM segments WHERE plex_guid IN ({','.join('?' * len(chunk))}) ORDER BY plex_guid, start_ms",
+                chunk,
+            )
+        row = await (await conn.execute("SELECT value FROM settings WHERE key=?", (setting_key,))).fetchone()
+        return [dict(r) for r in rows], row["value"] if row else setting_default
+
+
+async def fail_unfinished_bg_jobs(error_message: str) -> int:
+    """Mark every running or queued background job failed with *error_message*; return how many."""
+    async with get_connection() as conn:
+        cursor = await conn.execute(
+            "UPDATE bg_jobs SET status='failed', error_message=? WHERE status IN ('running', 'queued')",
+            (error_message,),
+        )
+        await conn.commit()
+        return cursor.rowcount
+
+
 async def get_segments_by_rating_key(rating_key: str) -> list[dict]:
     """Look up segments by scan_jobs.rating_key — fallback when session GUID differs from stored GUID."""
     async with get_connection() as conn:
@@ -1680,7 +1707,7 @@ async def get_rescan_candidates(
         params.append(library_id)
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            f"SELECT j.plex_guid, j.library_id, j.content_rating, j.ignored FROM scan_jobs j WHERE {' AND '.join(where)}",
+            f"SELECT j.plex_guid, j.library_id, j.content_rating, j.ignored, j.error_msg, j.file_path, j.part_files FROM scan_jobs j WHERE {' AND '.join(where)}",
             params,
         )
         return [dict(r) for r in rows]
