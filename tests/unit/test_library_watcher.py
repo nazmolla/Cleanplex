@@ -30,6 +30,7 @@ async def test_library_watcher_pass_queues_new_items_with_one_lookup_per_section
         raise asyncio.CancelledError
 
     with patch.object(watcher, "enqueue", enqueue), \
+         patch.object(watcher, "enqueue_pending", new=AsyncMock()), \
          patch.object(watcher, "_import_sidecar", new=AsyncMock(return_value=False)), \
          patch.object(db, "get_scan_job_by_guid", new=AsyncMock()) as per_item, \
          patch.object(watcher.asyncio, "sleep", stop), \
@@ -39,3 +40,22 @@ async def test_library_watcher_pass_queues_new_items_with_one_lookup_per_section
     per_item.assert_not_called()
     assert sorted(c.args[0] for c in enqueue.call_args_list) == ["new1", "new2"]
     assert set(await db.get_scan_jobs_by_guids(["known", "new1", "new2"])) == {"known", "new1", "new2"}
+
+
+@pytest.mark.parametrize("queue_size,expected_calls", [(0, 1), (5, 0)])
+async def test_library_watcher_rebuilds_empty_queue_from_database(setup_db, queue_size, expected_calls):
+    client = MagicMock()
+    client.get_library_sections = AsyncMock(return_value=[])
+    config = SimpleNamespace(is_configured=lambda: True)
+    reconcile = AsyncMock()
+
+    async def stop(_):
+        raise asyncio.CancelledError
+
+    with patch.object(watcher, "enqueue_pending", reconcile), \
+         patch.object(watcher, "get_queue_size", return_value=queue_size), \
+         patch.object(watcher.asyncio, "sleep", stop), \
+         pytest.raises(asyncio.CancelledError):
+        await watcher.library_watcher_loop(AsyncMock(return_value=config), lambda: client)
+
+    assert reconcile.await_count == expected_calls

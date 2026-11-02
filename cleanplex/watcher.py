@@ -12,7 +12,7 @@ from . import database as db
 from . import events
 from . import filter_engine
 from . import importers
-from .scanner import enqueue, enqueue_pending, rating_allowed, scanner_loop
+from .scanner import enqueue, enqueue_pending, get_queue_size, rating_allowed, scanner_loop
 
 logger = get_logger(__name__)
 
@@ -166,6 +166,15 @@ async def library_watcher_loop(get_config_fn, get_client_fn) -> None:
         config = await get_config_fn()
         if not config.is_configured():
             continue
+
+        # Safety net (#172): the queue is in memory, so a pending row that was inserted
+        # without being queued would wait for a restart. An empty queue is the safe
+        # moment to rebuild it from the database.
+        if get_queue_size() == 0:
+            try:
+                await enqueue_pending()
+            except Exception as exc:
+                logger.warning("Queue reconcile error: %s", exc)
 
         try:
             client = get_client_fn()

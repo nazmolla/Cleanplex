@@ -10,6 +10,13 @@ from cleanplex import database as db
 from tests.conftest import make_mock_plex_client
 
 
+@pytest.fixture(autouse=True)
+def _no_real_enqueue():
+    """Library sync rebuilds the process-wide scan queue; keep that state out of other tests."""
+    with patch("cleanplex.web.routes.segments.scan_mod.enqueue_pending"):
+        yield
+
+
 pytestmark = pytest.mark.usefixtures("setup_db")
 
 
@@ -407,3 +414,29 @@ async def test_deleting_all_of_a_titles_segments_removes_their_thumbnails(http_c
 
     assert resp.json()["deleted"] == 2
     assert not any(t.exists() for t in thumbs)
+
+
+# ── POST /api/libraries/{id}/sync ─────────────────────────────────────────────
+
+async def test_sync_library_enqueues_new_titles(http_client):
+    from types import SimpleNamespace
+    item = SimpleNamespace(
+        plex_guid="imdb://new1", title="New", file_path="/m/new.mkv", rating_key="9", library_id="1",
+        library_title="Movies", content_rating="R", media_type="movie", year=2020, show_guid="",
+        show_rating_key="", part_files=["/m/new.mkv"],
+    )
+    mock_client = make_mock_plex_client(library_items=[item])
+    with patch("cleanplex.web.routes.segments.plex_mod.get_client", return_value=mock_client), \
+         patch("cleanplex.web.routes.segments.scan_mod.enqueue_pending") as enqueue_pending:
+        resp = await http_client.post("/api/libraries/1/sync")
+    assert resp.json()["new"] == 1
+    enqueue_pending.assert_awaited_once()
+
+
+async def test_sync_library_does_not_enqueue_when_nothing_new(http_client):
+    mock_client = make_mock_plex_client(library_items=[])
+    with patch("cleanplex.web.routes.segments.plex_mod.get_client", return_value=mock_client), \
+         patch("cleanplex.web.routes.segments.scan_mod.enqueue_pending") as enqueue_pending:
+        resp = await http_client.post("/api/libraries/1/sync")
+    assert resp.json()["new"] == 0
+    enqueue_pending.assert_not_awaited()
