@@ -26,11 +26,11 @@ DATA_DIR = Path(os.environ.get("CLEANPLEX_DATA", Path.home() / ".cleanplex"))
 logger = get_logger(__name__)
 
 
-def _scanner_idle() -> bool:
+async def _scanner_idle() -> bool:
     """True when no scan is queued or running, which is when hover previews may render."""
     from .scanner import get_current_scans, get_queue_size
 
-    return get_queue_size() == 0 and not get_current_scans()
+    return await get_queue_size() == 0 and not await get_current_scans()
 
 
 async def _amain() -> None:

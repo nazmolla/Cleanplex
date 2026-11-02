@@ -192,8 +192,8 @@ async def _call_tool(name: str, args: dict) -> object:
         by_status = await db.count_scan_jobs_by_status()
         return {
             "paused": scan_mod.is_paused(),
-            "current_scan_guid": scan_mod.get_current_scan(),
-            "queue_size": scan_mod.get_queue_size(),
+            "current_scan_guid": await scan_mod.get_current_scan(),
+            "queue_size": await scan_mod.get_queue_size(),
             "total_titles": sum(by_status.values()),
             "by_status": by_status,
         }

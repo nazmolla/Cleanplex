@@ -26,7 +26,7 @@ async def _one_pass(config, idle):
     render = AsyncMock(return_value=0)
     with patch.object(hover_previews, "render_pending", render), patch.object(hover_previews.asyncio, "sleep", fake_sleep):
         with pytest.raises(asyncio.CancelledError):
-            await hover_previews.hover_preview_loop(get_config, scanner_idle=lambda: idle)
+            await hover_previews.hover_preview_loop(get_config, scanner_idle=AsyncMock(return_value=idle))
     return render.await_count
 
 
@@ -61,12 +61,12 @@ async def test_a_disabled_job_never_renders():
         assert await _one_pass(_cfg(hover_previews_enabled=False), idle=True) == 0
 
 
-def test_the_service_treats_an_empty_queue_with_nothing_scanning_as_idle():
+async def test_the_service_treats_an_empty_queue_with_nothing_scanning_as_idle():
     from cleanplex import main
 
-    with patch("cleanplex.scanner.get_queue_size", return_value=0), patch("cleanplex.scanner.get_current_scans", return_value=[]):
-        assert main._scanner_idle() is True
-    with patch("cleanplex.scanner.get_queue_size", return_value=3), patch("cleanplex.scanner.get_current_scans", return_value=[]):
-        assert main._scanner_idle() is False
-    with patch("cleanplex.scanner.get_queue_size", return_value=0), patch("cleanplex.scanner.get_current_scans", return_value=["g"]):
-        assert main._scanner_idle() is False
+    with patch("cleanplex.scanner.get_queue_size", new=AsyncMock(return_value=0)), patch("cleanplex.scanner.get_current_scans", new=AsyncMock(return_value=[])):
+        assert await main._scanner_idle() is True
+    with patch("cleanplex.scanner.get_queue_size", new=AsyncMock(return_value=3)), patch("cleanplex.scanner.get_current_scans", new=AsyncMock(return_value=[])):
+        assert await main._scanner_idle() is False
+    with patch("cleanplex.scanner.get_queue_size", new=AsyncMock(return_value=0)), patch("cleanplex.scanner.get_current_scans", new=AsyncMock(return_value=["g"])):
+        assert await main._scanner_idle() is False

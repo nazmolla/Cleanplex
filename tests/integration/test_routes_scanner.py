@@ -28,7 +28,7 @@ async def _make_job(guid: str = "job-guid", title: str = "Movie", library_id: st
 
 async def test_get_scan_queue_returns_jobs(http_client):
     await _make_job()
-    with patch("cleanplex.web.routes.scanner_routes.scan_mod.get_queue_size", return_value=0), \
+    with patch("cleanplex.web.routes.scanner_routes.scan_mod.get_queue_size", new=AsyncMock(return_value=0)), \
          patch("cleanplex.web.routes.scanner_routes.scan_mod.get_current_scan", return_value=None), \
          patch("cleanplex.web.routes.scanner_routes.scan_mod.get_current_scans", return_value=[]), \
          patch("cleanplex.web.routes.scanner_routes.scan_mod.is_paused", return_value=False):
@@ -40,7 +40,7 @@ async def test_get_scan_queue_returns_jobs(http_client):
 
 
 async def test_get_scan_queue_paused_field(http_client):
-    with patch("cleanplex.web.routes.scanner_routes.scan_mod.get_queue_size", return_value=0), \
+    with patch("cleanplex.web.routes.scanner_routes.scan_mod.get_queue_size", new=AsyncMock(return_value=0)), \
          patch("cleanplex.web.routes.scanner_routes.scan_mod.get_current_scan", return_value=None), \
          patch("cleanplex.web.routes.scanner_routes.scan_mod.get_current_scans", return_value=[]), \
          patch("cleanplex.web.routes.scanner_routes.scan_mod.is_paused", return_value=True):
@@ -59,7 +59,7 @@ async def test_scan_title_returns_404_when_job_not_found(http_client):
 async def test_scan_title_queues_existing_job(http_client):
     await _make_job("scan-me")
     with patch("cleanplex.web.routes.scanner_routes.scan_mod.enqueue", new=AsyncMock()) as mock_enqueue, \
-         patch("cleanplex.web.routes.scanner_routes.scan_mod.get_queue_size", return_value=1):
+         patch("cleanplex.web.routes.scanner_routes.scan_mod.get_queue_size", new=AsyncMock(return_value=1)):
         resp = await http_client.post("/api/scan/title", json={"plex_guid": "scan-me"})
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
@@ -70,7 +70,7 @@ async def test_scan_title_queues_existing_job(http_client):
 async def test_scan_title_force_calls_force_scan_job(http_client):
     await _make_job("force-me")
     with patch("cleanplex.web.routes.scanner_routes.scan_mod.force_scan_job", new=AsyncMock()) as mock_force, \
-         patch("cleanplex.web.routes.scanner_routes.scan_mod.get_queue_size", return_value=0):
+         patch("cleanplex.web.routes.scanner_routes.scan_mod.get_queue_size", new=AsyncMock(return_value=0)):
         resp = await http_client.post("/api/scan/title", json={"plex_guid": "force-me", "now": True})
     assert resp.status_code == 200
     mock_force.assert_awaited_once_with("force-me")
@@ -190,12 +190,12 @@ async def test_scan_titles_queues_known_jobs_for_tonight(http_client):
     for guid in ("ep1", "ep2"):
         await _make_job(guid)
         await db.update_scan_job_status(guid, "done")
-    with patch("cleanplex.web.routes.scanner_routes.scan_mod.enqueue", new=AsyncMock()) as mock_enqueue:
+    with patch("cleanplex.web.routes.scanner_routes.scan_mod.enqueue_many", new=AsyncMock()) as mock_enqueue:
         resp = await http_client.post("/api/scan/titles", json={"plex_guids": ["ep1", "ep2", "ep1", "nope"]})
 
     assert resp.status_code == 200
     assert resp.json() == {"ok": True, "queued": 2, "missing": ["nope"]}
-    assert [c.args[0] for c in mock_enqueue.await_args_list] == ["ep1", "ep2"]
+    assert mock_enqueue.await_args_list[0].args[0] == ["ep1", "ep2"]
     jobs = await db.get_scan_jobs_by_guids(["ep1", "ep2"])
     assert {j["status"] for j in jobs.values()} == {"pending"}
 
@@ -225,7 +225,7 @@ async def test_get_scan_queue_excludes_done_jobs_and_reports_counts(http_client)
     await _make_job("a")
     await _make_job("b")
     await db.update_scan_job_status("b", "done")
-    with patch("cleanplex.web.routes.scanner_routes.scan_mod.get_queue_size", return_value=0), \
+    with patch("cleanplex.web.routes.scanner_routes.scan_mod.get_queue_size", new=AsyncMock(return_value=0)), \
          patch("cleanplex.web.routes.scanner_routes.scan_mod.get_current_scan", return_value=None), \
          patch("cleanplex.web.routes.scanner_routes.scan_mod.get_current_scans", return_value=[]), \
          patch("cleanplex.web.routes.scanner_routes.scan_mod.is_paused", return_value=False):
@@ -265,3 +265,35 @@ async def test_train_verifier_rejects_a_second_run_while_one_is_going(http_clien
     with patch("cleanplex.web.routes.scanner_routes.verifier.status", return_value={"running": True}):
         resp = await http_client.post("/api/scan/verifier/train")
     assert resp.status_code == 409
+
+
+# ── queue endpoints read and write the database (#174) ────────────────────────
+
+async def test_scan_title_queues_in_the_database(http_client):
+    await _make_job("q1")
+    resp = await http_client.post("/api/scan/title", json={"plex_guid": "q1"})
+    assert resp.status_code == 200
+    assert [j["plex_guid"] for j in await db.get_queued_scan_jobs()] == ["q1"]
+    assert (await http_client.get("/api/scan/queue")).json()["queue_size"] == 1
+
+
+async def test_scan_title_now_forces_it_to_the_front(http_client):
+    await _make_job("a"); await _make_job("b")
+    await http_client.post("/api/scan/title", json={"plex_guid": "a"})
+    await http_client.post("/api/scan/title", json={"plex_guid": "b", "now": True})
+    assert [j["plex_guid"] for j in await db.get_queued_scan_jobs()] == ["b", "a"]
+
+
+async def test_ignoring_a_queued_title_dequeues_it_and_unignoring_requeues_it(http_client):
+    await _make_job("a")
+    await http_client.post("/api/scan/title", json={"plex_guid": "a"})
+    await http_client.post("/api/scan/title/a/ignore", json={"ignored": True})
+    assert await db.count_queued_scan_jobs() == 0
+    await http_client.post("/api/scan/title/a/ignore", json={"ignored": False})
+    assert [j["plex_guid"] for j in await db.get_queued_scan_jobs()] == ["a"]
+
+
+async def test_reorder_queue_rebuilds_from_the_database(http_client):
+    await _make_job("old")
+    resp = await http_client.post("/api/scan/reorder-queue")
+    assert resp.json() == {"ok": True, "queue_size": 1}

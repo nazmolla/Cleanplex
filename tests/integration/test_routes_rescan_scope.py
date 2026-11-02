@@ -92,7 +92,7 @@ async def test_scanned_before_needs_a_date_and_unknown_scopes_are_rejected():
 async def test_dry_run_counts_without_changing_anything(http_client):
     await _job("a")
     await _job("b")
-    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()) as enqueue:
+    with patch(f"{SCAN}.rebuild_queue", new=AsyncMock()) as enqueue:
         resp = await http_client.post("/api/scan/rescan", json={"scope": "all_scanned", "dry_run": True})
 
     assert resp.json() == {"ok": True, "matched": 2, "queued": 2, "skipped_ineligible": 0, "skipped_missing_file": 0, "ignored_cleared": 0,
@@ -105,7 +105,7 @@ async def test_the_real_request_queues_exactly_what_the_dry_run_counted(http_cli
     for guid in ("a", "b", "c"):
         await _job(guid)
     body = {"scope": "outdated"}
-    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()) as enqueue:
+    with patch(f"{SCAN}.rebuild_queue", new=AsyncMock()) as enqueue:
         dry = (await http_client.post("/api/scan/rescan", json={**body, "dry_run": True})).json()
         real = (await http_client.post("/api/scan/rescan", json=body)).json()
 
@@ -116,7 +116,7 @@ async def test_the_real_request_queues_exactly_what_the_dry_run_counted(http_cli
 
 async def test_it_uses_the_scheduled_queue_never_the_force_queue(http_client):
     await _job("a")
-    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()), patch(f"{SCAN}.force_scan_job", new=AsyncMock()) as force:
+    with patch(f"{SCAN}.rebuild_queue", new=AsyncMock()), patch(f"{SCAN}.force_scan_job", new=AsyncMock()) as force:
         await http_client.post("/api/scan/rescan", json={"scope": "all_scanned"})
     force.assert_not_called()
 
@@ -125,7 +125,7 @@ async def test_titles_outside_the_rating_filter_are_reported_not_queued(http_cli
     await db.set_setting("scan_ratings", '["R"]')
     await _job("r", rating="R")
     await _job("g", rating="G")
-    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()):
+    with patch(f"{SCAN}.rebuild_queue", new=AsyncMock()):
         resp = await http_client.post("/api/scan/rescan", json={"scope": "all_scanned"})
 
     assert (resp.json()["queued"], resp.json()["skipped_ineligible"]) == (1, 1)
@@ -135,7 +135,7 @@ async def test_titles_outside_the_rating_filter_are_reported_not_queued(http_cli
 async def test_scanning_and_pending_titles_are_never_reset(http_client):
     await _job("busy", status="scanning")
     await _job("waiting", status="pending")
-    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()):
+    with patch(f"{SCAN}.rebuild_queue", new=AsyncMock()):
         resp = await http_client.post("/api/scan/rescan", json={"scope": "all_scanned"})
     assert resp.json()["matched"] == 0
     assert await _status("busy") == "scanning"
@@ -166,11 +166,11 @@ async def _show(count=3, show_guid="show-1", title="The Show"):
 async def test_the_whole_show_is_queued_including_episodes_without_segments(http_client):
     await _show(3)
     await db.insert_segment("show-1-e0", "T", 0, 1000)  # only one episode has a segment
-    with patch(f"{SCAN}.enqueue", new=AsyncMock()) as enqueue:
+    with patch(f"{SCAN}.enqueue_many", new=AsyncMock()) as enqueue:
         resp = await http_client.post("/api/scan/show", json={"show_guid": "show-1"})
 
     assert resp.json() == {"ok": True, "queued": 3, "already_scanning": 0}
-    assert sorted(c.args[0] for c in enqueue.await_args_list) == ["show-1-e0", "show-1-e1", "show-1-e2"]
+    assert sorted(sum((c.args[0] for c in enqueue.await_args_list), [])) == ["show-1-e0", "show-1-e1", "show-1-e2"]
 
 
 async def test_ignored_and_running_episodes_are_left_alone(http_client):
@@ -179,11 +179,11 @@ async def test_ignored_and_running_episodes_are_left_alone(http_client):
     async with db.get_connection() as conn:
         await conn.execute("UPDATE scan_jobs SET status='scanning' WHERE plex_guid='show-1-e1'")
         await conn.commit()
-    with patch(f"{SCAN}.enqueue", new=AsyncMock()) as enqueue:
+    with patch(f"{SCAN}.enqueue_many", new=AsyncMock()) as enqueue:
         resp = await http_client.post("/api/scan/show", json={"show_guid": "show-1"})
 
     assert resp.json()["queued"] == 2 and resp.json()["already_scanning"] == 1
-    assert "show-1-ign" not in [c.args[0] for c in enqueue.await_args_list]
+    assert "show-1-ign" not in sum((c.args[0] for c in enqueue.await_args_list), [])
     assert await _status("show-1-e1") == "scanning"
 
 
@@ -191,19 +191,19 @@ async def test_episodes_without_a_show_guid_are_found_by_title(http_client):
     for i in range(2):
         await _job(f"x{i}", title=f"No Guid Show – Season 2 – E{i}", media_type="episode", library_id="lib")
     await _job("other", title="No Guid Show Two – Season 1 – E1", media_type="episode", library_id="lib")
-    with patch(f"{SCAN}.enqueue", new=AsyncMock()) as enqueue:
+    with patch(f"{SCAN}.enqueue_many", new=AsyncMock()) as enqueue:
         resp = await http_client.post("/api/scan/show", json={"show_title": "No Guid Show", "library_id": "lib"})
 
     assert resp.json()["queued"] == 2
-    assert sorted(c.args[0] for c in enqueue.await_args_list) == ["x0", "x1"]
+    assert sorted(sum((c.args[0] for c in enqueue.await_args_list), [])) == ["x0", "x1"]
 
 
 async def test_a_title_with_sql_wildcards_matches_literally(http_client):
     await _job("p", title="100% Wolf – Season 1 – E1", media_type="episode")
     await _job("q", title="100 Wolf – Season 1 – E1", media_type="episode")
-    with patch(f"{SCAN}.enqueue", new=AsyncMock()) as enqueue:
+    with patch(f"{SCAN}.enqueue_many", new=AsyncMock()) as enqueue:
         await http_client.post("/api/scan/show", json={"show_title": "100% Wolf"})
-    assert [c.args[0] for c in enqueue.await_args_list] == ["p"]
+    assert sum((c.args[0] for c in enqueue.await_args_list), []) == ["p"]
 
 
 async def test_now_forces_the_show(http_client):
@@ -236,22 +236,22 @@ async def _season_show():
 
 async def test_a_whole_season_queues_only_that_seasons_episodes(http_client):
     await _season_show()
-    with patch(f"{SCAN}.enqueue", new=AsyncMock()) as enqueue:
+    with patch(f"{SCAN}.enqueue_many", new=AsyncMock()) as enqueue:
         resp = await http_client.post("/api/scan/show", json={"show_guid": "show-1", "show_title": "The Show",
                                                               "season": "Season 2"})
 
     assert resp.json()["queued"] == 2
-    assert sorted(c.args[0] for c in enqueue.await_args_list) == ["s2e0", "s2e1"]
+    assert sorted(sum((c.args[0] for c in enqueue.await_args_list), [])) == ["s2e0", "s2e1"]
 
 
 async def test_a_season_is_found_by_title_when_episodes_have_no_show_guid(http_client):
     for i in range(2):
         await _job(f"x{i}", title=f"No Guid – Season 3 – E{i}", media_type="episode")
     await _job("y", title="No Guid – Season 4 – E1", media_type="episode")
-    with patch(f"{SCAN}.enqueue", new=AsyncMock()) as enqueue:
+    with patch(f"{SCAN}.enqueue_many", new=AsyncMock()) as enqueue:
         resp = await http_client.post("/api/scan/show", json={"show_title": "No Guid", "season": "Season 3"})
     assert resp.json()["queued"] == 2
-    assert sorted(c.args[0] for c in enqueue.await_args_list) == ["x0", "x1"]
+    assert sorted(sum((c.args[0] for c in enqueue.await_args_list), [])) == ["x0", "x1"]
 
 
 async def test_a_season_needs_the_show_title_and_an_unknown_season_is_404(http_client):
@@ -265,9 +265,9 @@ async def test_a_season_needs_the_show_title_and_an_unknown_season_is_404(http_c
 async def test_season_names_with_sql_wildcards_match_literally(http_client):
     await _job("a", title="Show – Season_1 – E1", media_type="episode", show_guid="g")
     await _job("b", title="Show – SeasonX1 – E1", media_type="episode", show_guid="g")
-    with patch(f"{SCAN}.enqueue", new=AsyncMock()) as enqueue:
+    with patch(f"{SCAN}.enqueue_many", new=AsyncMock()) as enqueue:
         await http_client.post("/api/scan/show", json={"show_guid": "g", "show_title": "Show", "season": "Season_1"})
-    assert [c.args[0] for c in enqueue.await_args_list] == ["a"]
+    assert sum((c.args[0] for c in enqueue.await_args_list), []) == ["a"]
 
 
 async def test_whole_library_covers_finished_and_failed_titles_of_that_library_only():
@@ -291,7 +291,7 @@ async def test_whole_library_needs_a_library(http_client):
 async def test_whole_library_over_http_queues_through_the_normal_queue(http_client):
     await _job("a", library_id="one")
     await _job("b", library_id="one", status="failed")
-    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()) as enqueue, patch(f"{SCAN}.force_scan_job", new=AsyncMock()) as force:
+    with patch(f"{SCAN}.rebuild_queue", new=AsyncMock()) as enqueue, patch(f"{SCAN}.force_scan_job", new=AsyncMock()) as force:
         resp = await http_client.post("/api/scan/rescan", json={"scope": "whole_library", "library_id": "one"})
 
     assert (resp.json()["matched"], resp.json()["queued"]) == (2, 2)
@@ -312,7 +312,7 @@ async def test_the_failed_scope_picks_only_non_ignored_failed_titles():
 async def test_retrying_failed_titles_queues_them_and_clears_the_ignored_ones(http_client):
     await _job("bad", status="failed")
     await _job("bad-ignored", status="failed", ignored=True)
-    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()) as enqueue:
+    with patch(f"{SCAN}.rebuild_queue", new=AsyncMock()) as enqueue:
         dry = (await http_client.post("/api/scan/rescan", json={"scope": "failed", "dry_run": True})).json()
         assert (dry["queued"], dry["ignored_cleared"]) == (1, 1)
         assert await _status("bad") == "failed" and await _status("bad-ignored") == "failed"  # dry run changes nothing
@@ -331,7 +331,7 @@ async def test_retry_failed_respects_the_rating_filter(http_client):
     await db.set_setting("scan_ratings", '["R"]')
     await _job("r", status="failed", rating="R")
     await _job("g", status="failed", rating="G")
-    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()):
+    with patch(f"{SCAN}.rebuild_queue", new=AsyncMock()):
         resp = await http_client.post("/api/scan/rescan", json={"scope": "failed"})
     assert (resp.json()["queued"], resp.json()["skipped_ineligible"]) == (1, 1)
     assert await _status("g") == "failed"
@@ -339,7 +339,7 @@ async def test_retry_failed_respects_the_rating_filter(http_client):
 
 async def test_retry_failed_with_nothing_failed_does_nothing(http_client):
     await _job("fine")
-    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()) as enqueue:
+    with patch(f"{SCAN}.rebuild_queue", new=AsyncMock()) as enqueue:
         resp = await http_client.post("/api/scan/rescan", json={"scope": "failed"})
     assert resp.json()["queued"] == 0 and resp.json()["ignored_cleared"] == 0
     enqueue.assert_not_called()
@@ -348,7 +348,7 @@ async def test_retry_failed_with_nothing_failed_does_nothing(http_client):
 async def test_clearing_ignored_failures_can_be_limited_to_one_library(http_client):
     await _job("one", status="failed", ignored=True, library_id="1")
     await _job("two", status="failed", ignored=True, library_id="2")
-    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()):
+    with patch(f"{SCAN}.rebuild_queue", new=AsyncMock()):
         resp = await http_client.post("/api/scan/rescan", json={"scope": "failed", "library_id": "1"})
     assert resp.json()["ignored_cleared"] == 1
     assert await _status("one") == "pending" and await _status("two") == "failed"
@@ -366,7 +366,7 @@ async def test_retry_failed_skips_titles_whose_file_is_still_missing(http_client
                            (str(present),))
         await conn.execute("UPDATE scan_jobs SET error_msg='Could not determine video duration' WHERE plex_guid='probe'")
         await conn.commit()
-    with patch(f"{SCAN}.enqueue_pending", new=AsyncMock()):
+    with patch(f"{SCAN}.rebuild_queue", new=AsyncMock()):
         resp = (await http_client.post("/api/scan/rescan", json={"scope": "failed"})).json()
 
     assert (resp["queued"], resp["skipped_missing_file"]) == (2, 1)

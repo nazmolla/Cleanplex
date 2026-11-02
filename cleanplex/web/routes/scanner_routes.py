@@ -74,9 +74,9 @@ async def get_scan_queue(
     return {
         "jobs": jobs,
         "counts": counts,
-        "queue_size": scan_mod.get_queue_size(),
-        "current": scan_mod.get_current_scan(),
-        "currents": scan_mod.get_current_scans(),
+        "queue_size": await scan_mod.get_queue_size(),
+        "current": await scan_mod.get_current_scan(),
+        "currents": await scan_mod.get_current_scans(),
         "paused": scan_mod.is_paused(),
     }
 
@@ -128,7 +128,7 @@ async def scan_title(body: ScanTitleRequest):
         await scan_mod.force_scan_job(plex_guid)
     else:
         await scan_mod.enqueue(plex_guid)
-    logger.info(f"Title {plex_guid} queued. Queue size: {scan_mod.get_queue_size()}")
+    logger.info(f"Title {plex_guid} queued. Queue size: {await scan_mod.get_queue_size()}")
     events.publish("scanner_changed")
     return {"ok": True, "queued": plex_guid}
 
@@ -136,11 +136,11 @@ async def scan_title(body: ScanTitleRequest):
 async def _queue_rescan(guids: list[str], now: bool) -> None:
     """Reset the jobs and queue them: now jumps the queue, otherwise they wait for the scan window."""
     await db.reset_scan_jobs(guids)
-    for guid in guids:
-        if now:
+    if now:
+        for guid in guids:
             await scan_mod.force_scan_job(guid)
-        else:
-            await scan_mod.enqueue(guid)
+    else:
+        await scan_mod.enqueue_many(guids)
     events.publish("scanner_changed")
 
 
@@ -220,8 +220,8 @@ async def bulk_rescan(body: BulkRescanRequest):
         await db.clear_failed_ignored(body.library_id)
     if not body.dry_run and eligible:
         await db.reset_scan_jobs(eligible)
-        # Rebuilds the normal queue in priority order and keeps the force queue as it is.
-        await scan_mod.enqueue_pending()
+        # Rebuilds the queue in priority order.
+        await scan_mod.rebuild_queue()
         events.publish("scanner_changed")
         logger.info("Queued %d titles for a scheduled rescan (scope=%s)", len(eligible), body.scope)
     return {
@@ -273,11 +273,11 @@ async def scan_library(library_id: str, body: ScanLibraryRequest):
         skipped = len(todo) - len(chosen)
     # One transaction for all resets instead of one connection per title (#163).
     await db.reset_scan_jobs([j["plex_guid"] for j in chosen])
-    for job in chosen:
-        if body.now:
+    if body.now:
+        for job in chosen:
             await scan_mod.force_scan_job(job["plex_guid"])
-        else:
-            await scan_mod.enqueue(job["plex_guid"])
+    else:
+        await scan_mod.enqueue_many([j["plex_guid"] for j in chosen])
     queued = len(chosen)
 
     events.publish("scanner_changed")
@@ -298,15 +298,15 @@ async def resume_scanner():
 
 @router.post("/skip-current")
 async def skip_current_scan(body: SkipCurrentScanRequest | None = None):
-    """Skip (abort) the title currently being scanned; it stays pending for the next window."""
-    target_guid = body.plex_guid if body and body.plex_guid else scan_mod.get_current_scan()
+    """Skip (abort) the title currently being scanned; it goes to the back of the queue."""
+    target_guid = body.plex_guid if body and body.plex_guid else await scan_mod.get_current_scan()
     if not target_guid:
         raise HTTPException(status_code=404, detail="No scan in progress")
     if body and body.plex_guid:
         if not scan_mod.request_skip_scan(body.plex_guid):
             raise HTTPException(status_code=404, detail="Requested scan is not currently active")
     else:
-        scan_mod.skip_current_scan()
+        await scan_mod.skip_current_scan()
     events.publish("scanner_changed")
     return {"ok": True, "skipped": target_guid}
 
@@ -325,12 +325,12 @@ async def restart_scanner():
 
 @router.post("/reorder-queue")
 async def reorder_queue():
-    """Drain and re-enqueue all pending jobs in priority order (movies newest-first,
+    """Rebuild the queue from the database with all pending jobs in priority order (movies newest-first,
     then TV episodes grouped by show). Use this to fix queue ordering at any time
     without restarting the server."""
-    await scan_mod.enqueue_pending()
+    await scan_mod.rebuild_queue()
     events.publish("scanner_changed")
-    return {"ok": True, "queue_size": scan_mod.get_queue_size()}
+    return {"ok": True, "queue_size": await scan_mod.get_queue_size()}
 
 
 @router.post("/title/{plex_guid:path}/ignore")
@@ -341,6 +341,8 @@ async def toggle_title_ignored(plex_guid: str, body: ToggleIgnoredRequest):
         raise HTTPException(status_code=404, detail="Title not found")
     
     await db.set_ignored(plex_guid, body.ignored)
+    if not body.ignored:
+        await scan_mod.sync_queue()
     events.publish("titles_changed", library_id=job.get("library_id") or "")
     return {"ok": True, "plex_guid": plex_guid, "ignored": body.ignored}
 

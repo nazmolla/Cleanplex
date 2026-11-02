@@ -8,6 +8,7 @@ from dataclasses import replace
 from datetime import time as dtime
 
 import pytest
+from unittest.mock import AsyncMock
 
 import cleanplex.scanner as scanner
 from cleanplex import database as db
@@ -17,18 +18,16 @@ pytestmark = pytest.mark.usefixtures("setup_db")
 
 
 @pytest.fixture(autouse=True)
-def fresh_queues(monkeypatch):
+def fresh_state(monkeypatch):
     # asyncio primitives bind to the loop that first waits on them; each test runs
     # on its own loop, so give every test fresh module state.
-    monkeypatch.setattr(scanner, "_scan_queue", asyncio.Queue())
-    monkeypatch.setattr(scanner, "_force_scan_queue", asyncio.Queue())
     monkeypatch.setattr(scanner, "_queue_cond", asyncio.Condition())
     monkeypatch.setattr(scanner, "_state_lock", asyncio.Lock())
-    for name in ("_queued_normal", "_queued_force", "_current_guids"):
-        monkeypatch.setattr(scanner, name, set())
-    for name in ("_queued_force_ordered", "_queued_normal_ordered"):
-        monkeypatch.setattr(scanner, name, [])
+    monkeypatch.setattr(scanner, "_current_guids", set())
     monkeypatch.setattr(scanner, "_paused", False)
+    # These tests are about the wake-up path; the idle self-heal would queue the pending
+    # jobs by itself before the producer acts.
+    monkeypatch.setattr(scanner, "sync_queue", AsyncMock(return_value=0))
 
 
 async def _run_workers(monkeypatch, n, in_window, action):
@@ -90,3 +89,41 @@ async def test_outside_window_only_force_scans_start(monkeypatch):
     started = await _run_workers(monkeypatch, 2, False, mixed)
 
     assert list(started) == ["g1"] and started["g1"] < 0.5
+
+
+async def test_a_worker_claims_a_queued_job_from_the_database(monkeypatch):
+    claimed = []
+
+    async def fake_scan(guid, config):
+        claimed.append(guid)
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(scanner, "scan_video", fake_scan)
+    config = replace(Config(), scan_window_start=dtime(0, 0), scan_window_end=dtime(23, 59))
+
+    async def get_config():
+        return config
+
+    await db.upsert_scan_job(plex_guid="q1", title="Q", file_path="/q", rating_key="1", library_id="l", library_title="L")
+    await db.queue_scan_jobs(["q1"])
+    worker = asyncio.create_task(scanner._scanner_worker_loop(1, get_config))
+    await asyncio.sleep(0.3)
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+
+    assert claimed == ["q1"]
+    assert (await db.get_scan_job_by_guid("q1"))["status"] == "scanning"
+
+
+async def test_an_idle_worker_asks_the_database_for_unqueued_pending_titles(monkeypatch):
+    monkeypatch.setattr(scanner, "sync_queue", AsyncMock(return_value=0))
+    config = replace(Config(), scan_window_start=dtime(0, 0), scan_window_end=dtime(23, 59))
+
+    async def get_config():
+        return config
+
+    worker = asyncio.create_task(scanner._scanner_worker_loop(1, get_config))
+    await asyncio.sleep(0.3)
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+    scanner.sync_queue.assert_awaited()

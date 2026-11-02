@@ -77,7 +77,7 @@ async def render_pending(should_continue: Callable[[], Awaitable[bool]]) -> int:
 
 async def hover_preview_loop(
     get_config_fn: Callable[[], Awaitable[Config]],
-    scanner_idle: Callable[[], bool] = lambda: False,
+    scanner_idle: Callable[[], Awaitable[bool]] | None = None,
 ) -> None:
     """Run render_pending whenever the job is enabled and the hover window is open or the scanner is idle.
 
@@ -90,7 +90,7 @@ async def hover_preview_loop(
         config = await get_config_fn()
         if not config.hover_previews_enabled:
             return False
-        return config.is_hover_window() or (config.hover_when_idle and scanner_idle())
+        return config.is_hover_window() or (config.hover_when_idle and scanner_idle is not None and await scanner_idle())
 
     while True:
         try:

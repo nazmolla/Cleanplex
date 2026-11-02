@@ -19,6 +19,7 @@ from ... import events
 from ... import frame_extractor
 from ... import hover_previews
 from ... import plex_summary
+from ... import scanner as scan_mod
 from ... import segment_files
 from ...importers._common import DETECTOR_LABELS
 
@@ -122,6 +123,8 @@ async def sync_library(library_id: str):
         ])
 
         logger.info(f"Library {library_id} synced: {added} new titles added")
+        if added:
+            await scan_mod.sync_queue()
         events.publish("titles_changed", library_id=library_id)
         return {"ok": True, "synced": len(items), "new": added, "removed": removed}
     except RuntimeError as e:

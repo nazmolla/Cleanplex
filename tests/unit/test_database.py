@@ -602,3 +602,148 @@ async def test_get_segments_for_guids_with_setting_falls_back_to_default_when_em
 
 async def test_fail_unfinished_bg_jobs_marks_running_and_queued_only():
     assert await db.fail_unfinished_bg_jobs("restart") == 0
+
+
+# ── DB-backed scan queue (#174) ───────────────────────────────────────────────
+
+async def _qjob(guid, **kw):
+    await db.upsert_scan_job(guid, guid, f"/{guid}.mkv", kw.pop("rating_key", "1"), "lib", "L", **kw)
+
+
+async def _queue_guids():
+    return [j["plex_guid"] for j in await db.get_queued_scan_jobs()]
+
+
+async def test_queue_scan_jobs_appends_in_order_and_keeps_existing_positions():
+    for g in ("a", "b", "c"):
+        await _qjob(g)
+    assert await db.queue_scan_jobs(["b", "a"]) == 2
+    assert await db.queue_scan_jobs(["c", "b"]) == 1  # b is already queued
+    assert await _queue_guids() == ["b", "a", "c"]
+
+
+async def test_queue_scan_jobs_to_end_moves_an_already_queued_job_last():
+    for g in ("a", "b"):
+        await _qjob(g)
+    await db.queue_scan_jobs(["a", "b"])
+    await db.queue_scan_jobs(["a"], to_end=True)
+    assert await _queue_guids() == ["b", "a"]
+
+
+async def test_queue_scan_jobs_with_nothing_or_only_unknown_guids_queues_nothing():
+    assert await db.queue_scan_jobs([]) == 0
+    assert await db.queue_scan_jobs(["ghost"]) == 0
+    assert await db.count_queued_scan_jobs() == 0
+
+
+async def test_claim_returns_none_when_the_queue_is_empty():
+    await _qjob("a")  # pending but not queued
+    assert await db.claim_next_scan_job() is None
+
+
+async def test_claim_takes_the_first_in_order_and_marks_it_scanning():
+    for g in ("a", "b"):
+        await _qjob(g)
+    await db.queue_scan_jobs(["b", "a"])
+    job = await db.claim_next_scan_job()
+    assert job["plex_guid"] == "b" and job["status"] == "scanning"
+    assert (await db.get_scan_job_by_guid("b"))["status"] == "scanning"
+    assert await db.get_scanning_guids() == ["b"]
+    assert await _queue_guids() == ["a"]  # a scanning job is not in the waiting queue
+
+
+async def test_concurrent_claims_never_return_the_same_job():
+    import asyncio
+    for i in range(12):
+        await _qjob(f"g{i}")
+    await db.queue_scan_jobs([f"g{i}" for i in range(12)])
+    results = await asyncio.gather(*[db.claim_next_scan_job() for _ in range(12)])
+    guids = [r["plex_guid"] for r in results if r]
+    assert len(guids) == 12 and len(set(guids)) == 12
+
+
+async def test_a_scanning_job_cannot_be_claimed_again():
+    await _qjob("a")
+    await db.queue_scan_jobs(["a"])
+    assert await db.claim_next_scan_job() is not None
+    assert await db.claim_next_scan_job() is None
+
+
+async def test_claim_prefers_force_jobs_and_force_only_skips_the_rest():
+    for g in ("plain", "forced"):
+        await _qjob(g)
+    await db.queue_scan_jobs(["plain", "forced"])
+    assert (await db.claim_next_scan_job(force_only=True)) is None
+    await db.set_force_scan("forced", True)
+    assert (await db.claim_next_scan_job(force_only=True))["plex_guid"] == "forced"
+    assert (await db.claim_next_scan_job(force_only=True)) is None
+    assert (await db.claim_next_scan_job())["plex_guid"] == "plain"
+
+
+async def test_claim_skips_ignored_jobs_unless_forced():
+    for g in ("ign", "forced"):
+        await _qjob(g)
+    await db.queue_scan_jobs(["ign", "forced"])
+    await db.set_force_scan("forced", True)
+    await db.set_ignored("forced", True)  # forced on purpose: stays queued
+    await db.set_ignored("ign", True)     # leaves the queue
+    assert await _queue_guids() == ["forced"]
+    assert (await db.claim_next_scan_job())["plex_guid"] == "forced"
+    assert await db.claim_next_scan_job() is None
+
+
+async def test_release_requeue_puts_the_job_behind_the_queue_with_its_progress():
+    for g in ("a", "b"):
+        await _qjob(g)
+    await db.queue_scan_jobs(["a", "b"])
+    await db.claim_next_scan_job()  # a
+    await db.release_scan_job("a", requeue=True, progress=0.4)
+    job = await db.get_scan_job_by_guid("a")
+    assert job["status"] == "pending" and job["progress"] == 0.4
+    assert await _queue_guids() == ["b", "a"]
+
+
+async def test_release_without_requeue_leaves_the_queue():
+    await _qjob("a")
+    await db.queue_scan_jobs(["a"])
+    await db.claim_next_scan_job()
+    await db.release_scan_job("a", requeue=False)
+    assert (await db.get_scan_job_by_guid("a"))["status"] == "pending"
+    assert await _queue_guids() == []
+    assert [j["plex_guid"] for j in await db.get_unqueued_pending_scan_jobs()] == ["a"]
+
+
+async def test_finished_jobs_leave_the_queue_and_reset_clears_the_position():
+    for g in ("done1", "failed1", "again"):
+        await _qjob(g)
+    await db.queue_scan_jobs(["done1", "failed1", "again"])
+    await db.update_scan_job_status("done1", "done")
+    await db.update_scan_job_status("failed1", "failed", error_msg="x")
+    assert await _queue_guids() == ["again"]
+    await db.reset_scan_job("again")
+    assert await _queue_guids() == []
+
+
+async def test_set_scan_queue_order_replaces_the_queue():
+    for g in ("a", "b", "c"):
+        await _qjob(g)
+    await db.queue_scan_jobs(["a", "b"])
+    await db.set_scan_queue_order(["c", "a"])
+    assert await _queue_guids() == ["c", "a"]
+
+
+async def test_dequeue_scan_jobs_removes_only_the_given_jobs():
+    for g in ("a", "b"):
+        await _qjob(g)
+    await db.queue_scan_jobs(["a", "b"])
+    await db.dequeue_scan_jobs(["a"])
+    await db.dequeue_scan_jobs([])
+    assert await _queue_guids() == ["b"]
+
+
+async def test_queued_jobs_page_and_count():
+    for g in ("a", "b", "c"):
+        await _qjob(g)
+    await db.queue_scan_jobs(["a", "b", "c"])
+    assert await db.count_queued_scan_jobs() == 3
+    assert [j["plex_guid"] for j in await db.get_queued_scan_jobs(limit=2, offset=1)] == ["b", "c"]

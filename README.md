@@ -336,23 +336,23 @@ The Dashboard shows a **Controllable** badge per stream so you can see which cli
 
 ## Scanner Queue & Priority
 
-The scanner maintains two independent queues:
+The queue is stored in the database, so the Dashboard, the Library page and the scan workers all see the same list, and it survives restarts. Each worker claims the next title from the database in one step, so a title is never scanned twice and a title being scanned is never picked up again.
 
-- **Normal queue** — Regular background scans of newly added titles, processed in order (FIFO)
-- **Force queue** — High-priority scans from "Scan Now" clicks, always processed before normal queue items
+- **Order** — Movies newest first, then TV shows grouped so a show's episodes run together
+- **Force priority** — Titles you "Scan Now" always run before everything else, and may run outside the scan window
+- **Self-healing** — Any pending title the scanner is allowed to scan (not ignored, library not excluded, rating in your filter) is queued automatically, whichever way it reached the database
 
 `GET /api/scan/queue` returns the unfinished jobs (finished ones are left out unless you pass `status=`), with `limit`/`offset` paging and per-status `counts`.
 
 When you click **"Scan Now"**:
-1. Title is removed from the normal queue (if present) to avoid duplicate processing
-2. Added to the force queue with the force-scan flag set in the database
-3. A scanner worker picks it up immediately (workers check force queue first)
-4. Scans regardless of the configured scan window time restrictions
+1. The title gets the force-scan flag and moves to the front of the queue
+2. A scanner worker claims it immediately (force titles are claimed first)
+3. It scans regardless of the configured scan window time restrictions
 
 ## Ignored Titles
 
 Titles can be marked as **ignored** to skip them during background scans:
-- Ignored titles are still queued but the scanner immediately skips them
+- Ignored titles are never queued; ignoring a queued title removes it from the queue, and un-ignoring it queues it again
 - You can still run a "Scan Now" on an ignored title — it will be scanned regardless
 - The Library view defaults to hiding ignored titles (toggle with the "Show Ignored" checkbox)
 
@@ -373,7 +373,7 @@ Titles can be marked as **ignored** to skip them during background scans:
 - The app automatically proxies all Plex images to work around localhost URL issues. Try hard-refreshing the browser (Ctrl+F5).
 
 **"Scan Now" not prioritizing titles?**
-- Run the latest version. Recent fixes ensure force-scanned titles are actually moved to the priority queue.
+- Run the latest version.
 
 **Detector labels not filtering correctly?**
 - Ensure the labels are selected in Settings → Detector Labels. Previously stored segments are filtered at API response time to respect your current settings.
