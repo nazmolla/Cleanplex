@@ -12,7 +12,7 @@ from . import database as db
 from . import events
 from . import filter_engine
 from . import importers
-from .scanner import enqueue, enqueue_pending, rating_allowed, scanner_loop
+from .scanner import enqueue_many, rating_allowed, scanner_loop
 
 logger = get_logger(__name__)
 
@@ -194,14 +194,16 @@ async def library_watcher_loop(get_config_fn, get_client_fn) -> None:
                     }
                     for i in fresh
                 ])
+                to_queue = []
                 for item in fresh:
                     # A skip file sitting beside the media is authoritative and
                     # free: importing it skips frame extraction and inference
                     # entirely, so only enqueue a scan when there isn't one.
                     if await _import_sidecar(item):
                         continue
-                    await enqueue(item.plex_guid)
+                    to_queue.append(item.plex_guid)
                     logger.info("New item queued for scan: %s", item.title)
+                await enqueue_many(to_queue)
                 for item in candidates:
                     existing = known.get(item.plex_guid)
                     if existing is not None and not existing.get("part_files") and len(item.part_files) > 1:

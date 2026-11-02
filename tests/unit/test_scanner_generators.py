@@ -34,3 +34,59 @@ async def test_a_skipped_scan_closes_the_frame_generator_before_returning(tmp_pa
 
     assert closed == [True]
     assert (await db.get_scan_job_by_guid("g"))["status"] == "pending"
+
+
+# ── a released scan goes back to the database queue (#174) ────────────────────
+
+async def test_a_skipped_scan_goes_to_the_back_of_the_queue(tmp_path):
+    await _job(tmp_path)
+    await db.set_force_scan("g", False)  # the helper forces it; this test is about the normal queue
+    await db.upsert_scan_job("other", "Other", "/o.mkv", "2", "lib", "L")
+    await db.queue_scan_jobs(["g", "other"])
+
+    async def batch(path, step_ms, duration_ms, size, hardware=False):
+        scanner._skip_requested_guids.add("g")
+        yield 0, b"frame"
+
+    with patch.object(scanner, "extract_frames_batch", batch), \
+         patch.object(scanner, "get_duration_ms", AsyncMock(return_value=60_000)), \
+         patch.object(scanner, "_classify_frame", lambda *a, **k: (False, 0.0, [])):
+        await scanner.scan_video("g", Config(scan_step_ms=2000, siglip_enabled=False))
+
+    assert [j["plex_guid"] for j in await db.get_queued_scan_jobs()] == ["other", "g"]
+
+
+async def test_a_cancelled_scan_is_handed_back_instead_of_staying_scanning(tmp_path):
+    import asyncio
+    await _job(tmp_path)
+
+    async def batch(path, step_ms, duration_ms, size, hardware=False):
+        yield 0, b"frame"
+        await asyncio.sleep(3600)
+
+    with patch.object(scanner, "extract_frames_batch", batch), \
+         patch.object(scanner, "get_duration_ms", AsyncMock(return_value=60_000)), \
+         patch.object(scanner, "_classify_frame", lambda *a, **k: (False, 0.0, [])):
+        task = asyncio.create_task(scanner.scan_video("g", Config(scan_step_ms=2000, siglip_enabled=False)))
+        await asyncio.sleep(0.3)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    job = await db.get_scan_job_by_guid("g")
+    assert job["status"] == "pending"
+    assert [j["plex_guid"] for j in await db.get_queued_scan_jobs()] == ["g"]
+
+
+async def test_an_ignored_title_claimed_by_mistake_leaves_the_queue(tmp_path):
+    await _job(tmp_path)
+    await db.set_force_scan("g", False)  # a forced title bypasses the ignore gate
+    await db.queue_scan_jobs(["g"])
+    await db.claim_next_scan_job()
+    await db.set_ignored("g", True)  # ignored after the claim, before the scan starts
+
+    await scanner.scan_video("g", Config())
+
+    job = await db.get_scan_job_by_guid("g")
+    assert job["status"] == "pending"
+    assert await db.count_queued_scan_jobs() == 0

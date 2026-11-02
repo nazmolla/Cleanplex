@@ -39,7 +39,7 @@ Every change — regardless of size — must follow these rules. No exceptions.
 | Module | Responsibility |
 |---|---|
 | `database.py` | All SQL — no raw queries outside this file |
-| `scanner.py` | Frame extraction, NudeNet inference, segment writing |
+| `scanner.py` | Frame extraction, NudeNet inference, segment writing, and the queue API (`enqueue`, `force_scan_job`, `rebuild_queue`, `sync_queue`) over the DB-backed scan queue |
 | `siglip_detector.py` | SigLIP zero-shot fallback for frames NudeNet did not flag — model download, prompts from `scan_labels`, scoring |
 | `verifier.py` | Feedback-trained false-positive filter (#165): trains a logistic head on SigLIP image embeddings of the frames users marked as false positives versus the thumbnails of kept segments, one model per detector family, and judges a flagged cluster's peak frame at scan time. Only filters detections; never creates segments. A rejected cluster is stored with `segments.false_positive = 2` (`db.FP_VERIFIER`): inactive like a user mark (1), shown in the false-positive list, restorable, and excluded from accuracy rates and from training as a kept example |
 | `ort_runtime.py` | Shared onnxruntime session options: caps threads per inference session so scan workers do not oversubscribe the CPU. Every `InferenceSession` the scanner or SigLIP builds goes through it |
@@ -265,6 +265,13 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 - **Bump `scanner.SCAN_VERSION` when a change means existing scan results are worth redoing** (thresholds, prompts, severity, thumbnails, bounds). It is stored per finished job so "rescan outdated titles" can find what an older scanner produced.
 - **Flagged windows are re-sampled densely before insert** (`_refine_cluster`): the thumbnail is the peak frame, bounds only grow, and a failure leaves the coarse result. A segment's kept-or-dropped decision stays with the coarse pass.
 - **Segments are clustered before DB insert.** Never insert a raw frame-level row; always cluster via `_cluster_frames` / `_flush_cluster`.
+
+### 5.5a Scan Queue
+
+- **The scan queue lives in the database** (`scan_jobs.queue_pos`: NULL = not queued, lower runs first, `force_scan` first). Never keep queue membership or order in process memory.
+- **Workers take work only through `db.claim_next_scan_job`**, one atomic `UPDATE ... RETURNING` that sets `status='scanning'`. Never select-then-update, so two workers cannot claim the same title and a scanning title cannot be claimed.
+- **Every queue change writes the DB** (`enqueue`, `enqueue_many`, `force_scan_job`, `db.release_scan_job`, `db.dequeue_scan_jobs`, `db.set_ignored`); `done`/`failed`/reset clear the position. `scanner._queue_cond` is only a wake-up hint.
+- **Views read the DB**: queue size, order and "currently scanning" come from `db.count_queued_scan_jobs`, `db.get_queued_scan_jobs`, `db.get_scanning_guids`. A new insert path needs no enqueue call to be correct: idle workers run `sync_queue()`, which queues every pending, eligible, unqueued title.
 
 ### 5.6 Frontend
 

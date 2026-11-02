@@ -93,27 +93,22 @@ def _valid_model_file(path: Path) -> bool:
         return False
     return not head.startswith(b"<")
 
-_scan_queue: asyncio.Queue[str] = asyncio.Queue()
-_force_scan_queue: asyncio.Queue[str] = asyncio.Queue()
 _paused: bool = False
+# Guids this process's workers are scanning right now. Only used for in-process skip
+# requests; what the UI shows as "scanning" is read from the database (#174).
 _current_guids: set[str] = set()
-_queued_normal: set[str] = set()
-_queued_force: set[str] = set()
-# Ordered lists mirror the sets so callers can expose the queue in execution order.
-# Force items always execute before normal items; within each group order is FIFO.
-_queued_force_ordered: list[str] = []
-_queued_normal_ordered: list[str] = []
-# Idle workers sleep on this until a queue has work; every producer notifies all.
-# A Condition with a predicate, not an Event: the first worker to wake used to
-# clear a shared Event and leave the other idle workers asleep for a minute (#87).
+# The queue itself lives in scan_jobs.queue_pos. Idle workers sleep on this until a producer
+# says the queue changed (a wake-up hint only: they also poll, so a missed notify costs
+# at most the poll interval).
 _queue_cond = asyncio.Condition()
 _skip_requested_guids: set[str] = set()
 _worker_pool_size: int = 1
 _restart_requested: bool = False
 
-# Guards all read-check-modify operations on _current_guids, _queued_normal,
-# and _queued_force to prevent duplicate or lost entries under concurrent workers.
+# Guards read-check-modify operations on _current_guids.
 _state_lock = asyncio.Lock()
+# How long an idle worker sleeps before re-checking the scan window and the database.
+IDLE_POLL_S = 30
 
 
 # Plex says "Not Rated" (or "Unrated") where the scan list says "NR"; they are the same rating (#149).
@@ -145,7 +140,7 @@ def is_scan_eligible(job: dict, excluded_library_ids: set[str], scan_ratings: se
       - its content_rating is in scan_ratings, OR scan_ratings is empty (= scan all)
 
     This is the single source of truth for normal-queue eligibility.
-    Apply it everywhere titles are bulk-enqueued (enqueue_pending, scan_library).
+    Apply it everywhere titles are bulk-enqueued (sync_queue, rebuild_queue, scan_library).
     force_scan bypasses this check entirely — callers must not call this for force jobs.
     """
     if job.get("ignored"):
@@ -157,17 +152,9 @@ def is_scan_eligible(job: dict, excluded_library_ids: set[str], scan_ratings: se
     return True
 
 
-def get_queue_size() -> int:
-    return _scan_queue.qsize() + _force_scan_queue.qsize()
-
-
-def get_ordered_queue_guids() -> tuple[list[str], list[str]]:
-    """Return (force_guids, normal_guids) in FIFO execution order.
-
-    Force items will always execute before normal items.
-    Snapshot is taken without the lock — callers should treat it as advisory only.
-    """
-    return list(_queued_force_ordered), list(_queued_normal_ordered)
+async def get_queue_size() -> int:
+    """Number of titles waiting in the queue (read from the database)."""
+    return await db.count_queued_scan_jobs()
 
 
 def get_worker_pool_size() -> int:
@@ -181,14 +168,15 @@ async def request_scanner_restart() -> None:
     logger.info("Scanner restart requested")
 
 
-def get_current_scan() -> str | None:
-    if not _current_guids:
-        return None
-    return sorted(_current_guids)[0]
+async def get_current_scans() -> list[str]:
+    """Guids being scanned right now, from the database."""
+    return await db.get_scanning_guids()
 
 
-def get_current_scans() -> list[str]:
-    return sorted(_current_guids)
+async def get_current_scan() -> str | None:
+    """The first guid being scanned, or None."""
+    guids = await get_current_scans()
+    return guids[0] if guids else None
 
 
 def pause_scanner() -> None:
@@ -206,71 +194,34 @@ def resume_scanner() -> None:
 
 
 async def force_scan_job(plex_guid: str) -> None:
-    """Prioritize a title for immediate scanning by moving it to the force-scan queue.
+    """Prioritize a title: set its force flag and move it to the end of the force group.
 
-    DB flag is set outside the lock; queue state mutations are guarded by _state_lock
-    to prevent duplicate entries under concurrent API calls.
+    Force jobs are claimed before normal ones and may run outside the scan window.
     """
     await db.set_force_scan(plex_guid, True)
-    async with _state_lock:
-        if plex_guid in _current_guids:
-            logger.info("Force scan requested for %s, already scanning", plex_guid)
-            return
-        if plex_guid in _queued_force:
-            logger.info("Force scan requested for %s, already at top priority", plex_guid)
-            return
-        # Remove from normal queue if already there, so it goes to force queue instead.
-        if plex_guid in _queued_normal:
-            _queued_normal.discard(plex_guid)
-            if plex_guid in _queued_normal_ordered:
-                _queued_normal_ordered.remove(plex_guid)
-            logger.info("Moved %s from normal queue to force queue", plex_guid)
-        await _force_scan_queue.put(plex_guid)
-        _queued_force.add(plex_guid)
-        _queued_force_ordered.append(plex_guid)
+    job = await db.get_scan_job_by_guid(plex_guid)
+    if job and job["status"] == "scanning":
+        logger.info("Force scan requested for %s, already scanning", plex_guid)
+        return
+    await db.queue_scan_jobs([plex_guid], to_end=True)
     await _notify_workers()
     events.publish("scanner_changed")
     logger.warning("Force scan activated for %s — will scan immediately", plex_guid)
 
 
 async def _notify_workers() -> None:
-    """Wake every idle worker so each re-checks the queues."""
+    """Wake every idle worker so each tries to claim a job."""
     async with _queue_cond:
         _queue_cond.notify_all()
 
 
-async def _wait_for_work(force_only: bool, timeout: float) -> None:
-    """Sleep until there is work this worker may take, or *timeout* passes.
-
-    force_only: outside the scan window only force-scan jobs may run, so normal
-    jobs must not wake the worker (they would just be re-queued in a loop).
-    """
-    def has_work() -> bool:
-        return not _force_scan_queue.empty() or (not force_only and not _scan_queue.empty())
-
+async def _wait_for_work(timeout: float) -> None:
+    """Sleep until a producer notifies or *timeout* passes."""
     async with _queue_cond:
         try:
-            await asyncio.wait_for(_queue_cond.wait_for(has_work), timeout=timeout)
+            await asyncio.wait_for(_queue_cond.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             pass
-
-
-async def _take_next_job() -> str | None:
-    """Pop the next job without waiting, force-scan queue first; None if both are empty."""
-    async with _state_lock:
-        for queue, members, ordered in (
-            (_force_scan_queue, _queued_force, _queued_force_ordered),
-            (_scan_queue, _queued_normal, _queued_normal_ordered),
-        ):
-            try:
-                plex_guid = queue.get_nowait()
-            except asyncio.QueueEmpty:
-                continue
-            members.discard(plex_guid)
-            if plex_guid in ordered:
-                ordered.remove(plex_guid)
-            return plex_guid
-    return None
 
 
 def is_paused() -> bool:
@@ -278,128 +229,94 @@ def is_paused() -> bool:
 
 
 async def enqueue(plex_guid: str) -> None:
-    # Hold _state_lock across the whole check-then-put to prevent two concurrent
-    # callers from both passing the guard and inserting duplicates.
-    async with _state_lock:
-        if plex_guid in _current_guids:
-            logger.debug("Skipping enqueue for %s: already scanning", plex_guid)
-            return
-        if plex_guid in _queued_force or plex_guid in _queued_normal:
-            logger.debug("Skipping enqueue for %s: already queued", plex_guid)
-            return
-        await _scan_queue.put(plex_guid)
-        _queued_normal.add(plex_guid)
-        _queued_normal_ordered.append(plex_guid)
+    """Queue one pending title behind everything already waiting (no-op if it is queued or scanning)."""
+    await db.queue_scan_jobs([plex_guid])
     await _notify_workers()
 
 
-async def _enqueue_force(plex_guid: str) -> None:
-    """Put a title on the force queue unless it is already scanning or queued there.
+async def enqueue_many(plex_guids: list[str]) -> None:
+    """Queue several pending titles, in the order given, in one transaction."""
+    if await db.queue_scan_jobs(plex_guids):
+        await _notify_workers()
 
-    Unlike force_scan_job() this leaves the DB flag alone (it is already set) and
-    does not announce a new force request; it only restores in-memory queue state.
+
+def _priority_order(jobs: list[dict]) -> list[dict]:
+    """Order jobs for the queue: movies newest first, then TV grouped by show.
+
+    Movies: highest Plex rating key (most recently added) first. TV episodes are grouped by
+    show_guid (falling back to the show name in the title) so a show's episodes are contiguous,
+    shows ordered by their newest episode, episodes in rating-key order within a show.
     """
-    async with _state_lock:
-        if plex_guid in _current_guids or plex_guid in _queued_force:
-            return
-        if plex_guid in _queued_normal:
-            _queued_normal.discard(plex_guid)
-            if plex_guid in _queued_normal_ordered:
-                _queued_normal_ordered.remove(plex_guid)
-        await _force_scan_queue.put(plex_guid)
-        _queued_force.add(plex_guid)
-        _queued_force_ordered.append(plex_guid)
-    await _notify_workers()
-
-
-async def enqueue_pending() -> None:
-    """Drain the normal queue and re-enqueue all pending jobs in priority order.
-
-    Safe to call at any time (e.g. on startup or via the reorder-queue API).
-    Already-scanning titles (in _current_guids) are not affected.
-
-    Order:
-      1. Movies — most recently added first (descending integer rating_key).
-      2. TV episodes — grouped by show_guid so all episodes of a show are
-         contiguous; shows ordered by their highest rating_key descending
-         (most recently added show first); episodes within each show
-         ordered by rating_key ascending (episode order).
-
-    Ignored titles are excluded; they remain pending in the DB so they can
-    be un-ignored later without a fresh Plex sync.
-    """
-    # Drain the normal queue and clear tracking set so we can re-enqueue in order.
-    # Force-queue and _current_guids are intentionally left untouched.
-    async with _state_lock:
-        while not _scan_queue.empty():
-            try:
-                _scan_queue.get_nowait()
-            except Exception:
-                break
-        _queued_normal.clear()
-        _queued_normal_ordered.clear()
-
-    import json as _json
-    excluded_library_ids = set(_json.loads(await db.get_setting("excluded_library_ids", "[]")))
-    scan_ratings_set = set(_json.loads(await db.get_setting("scan_ratings", "[]")))
-
-    jobs = await db.get_scan_jobs(status="pending")
-    active = [j for j in jobs if is_scan_eligible(j, excluded_library_ids, scan_ratings_set)]
-
-    # The force queue lives in memory, so a restart empties it. force_scan stays set in
-    # the DB, and force jobs bypass eligibility, so restore every pending, non-ignored
-    # one here; filtering them through is_scan_eligible dropped them silently (#106).
-    forced = sorted(
-        (j for j in jobs if j.get("force_scan") and not j.get("ignored")),
-        key=lambda j: int(j.get("rating_key") or 0),
-        reverse=True,
-    )
-    for job in forced:
-        await _enqueue_force(job["plex_guid"])
-    if forced:
-        logger.info("Restored %d force-scan job(s) to the force queue", len(forced))
-
-    movies = [j for j in active if j.get("media_type") != "episode"]
-    episodes = [j for j in active if j.get("media_type") == "episode"]
-
-    # Movies: newest Plex item first.
-    movies.sort(key=lambda j: int(j.get("rating_key") or 0), reverse=True)
-
-    # TV: group episodes by show_guid; fall back to the show name portion of
-    # the title ("ShowName – Season – Episode") when show_guid is absent.
     from collections import defaultdict
+
+    movies = [j for j in jobs if j.get("media_type") != "episode"]
+    episodes = [j for j in jobs if j.get("media_type") == "episode"]
+    movies.sort(key=lambda j: int(j.get("rating_key") or 0), reverse=True)
 
     show_buckets: dict[str, list[dict]] = defaultdict(list)
     for ep in episodes:
         key = ep.get("show_guid") or ep.get("title", "").split(" – ")[0]
         show_buckets[key].append(ep)
-
-    # Within each show sort by rating_key asc (episode order).
     for bucket in show_buckets.values():
         bucket.sort(key=lambda j: int(j.get("rating_key") or 0))
-
-    # Order shows by the highest rating_key in each bucket desc
-    # (most recently added show comes first).
     ordered_shows = sorted(
         show_buckets.values(),
         key=lambda eps: max(int(j.get("rating_key") or 0) for j in eps),
         reverse=True,
     )
+    return movies + [ep for eps in ordered_shows for ep in eps]
 
-    ordered = movies + [ep for eps in ordered_shows for ep in eps]
 
-    enqueued = 0
-    for job in ordered:
-        await enqueue(job["plex_guid"])
-        enqueued += 1
-    if enqueued:
+async def _queueable_jobs(jobs: list[dict]) -> list[dict]:
+    """The jobs that belong in the queue: eligible ones, plus force-scan jobs (which bypass the gates)."""
+    import json as _json
+    excluded_library_ids = set(_json.loads(await db.get_setting("excluded_library_ids", "[]")))
+    scan_ratings_set = set(_json.loads(await db.get_setting("scan_ratings", "[]")))
+    return [
+        j for j in jobs
+        if (j.get("force_scan") and not j.get("ignored"))
+        or is_scan_eligible(j, excluded_library_ids, scan_ratings_set)
+    ]
+
+
+async def sync_queue() -> int:
+    """Queue every pending, eligible title that is not queued yet; returns how many were added.
+
+    The database is the queue, so this is what keeps it complete: it runs when workers are idle,
+    after library syncs and when a title is un-ignored. Existing positions are untouched.
+    """
+    jobs = await _queueable_jobs(await db.get_unqueued_pending_scan_jobs())
+    if not jobs:
+        return 0
+    added = await db.queue_scan_jobs([j["plex_guid"] for j in _priority_order(jobs)])
+    if added:
+        logger.info("Queued %d pending scan job(s)", added)
+        await _notify_workers()
+        events.publish("scanner_changed")
+    return added
+
+
+async def rebuild_queue() -> None:
+    """Recompute the whole queue from the database in priority order (see _priority_order).
+
+    Safe to call at any time (startup, reorder-queue API, rescans). Titles being scanned are not
+    affected. Ignored titles stay pending in the database so they can be un-ignored later.
+    """
+    jobs = await db.get_scan_jobs(status="pending")
+    active = await _queueable_jobs(jobs)
+    ordered = _priority_order(active)
+    # Force jobs run first whatever their position; ordering them first keeps the list readable.
+    ordered.sort(key=lambda j: not j.get("force_scan"))
+    await db.set_scan_queue_order([j["plex_guid"] for j in ordered])
+    if ordered:
         logger.info(
-            "Queued %d pending scan jobs (%d movies, %d episodes, %d ignored skipped)",
-            enqueued,
-            len(movies),
-            len(episodes),
-            len(jobs) - len(active),
+            "Queued %d pending scan jobs (%d movies, %d episodes, %d not queued)",
+            len(ordered),
+            sum(1 for j in ordered if j.get("media_type") != "episode"),
+            sum(1 for j in ordered if j.get("media_type") == "episode"),
+            len(jobs) - len(ordered),
         )
+        await _notify_workers()
 
 
 def _inference_resolution(model_name: str) -> int:
@@ -650,16 +567,16 @@ def _cluster_frames(
     return segments
 
 
-def skip_current_scan() -> None:
-    """Request that the currently-running scan title be aborted and left as pending."""
-    current = get_current_scan()
+async def skip_current_scan() -> None:
+    """Request that the currently-running scan title be aborted and sent to the back of the queue."""
+    current = next((g for g in await get_current_scans() if g in _current_guids), None)
     if current is None:
         return
     request_skip_scan(current)
 
 
 def request_skip_scan(plex_guid: str) -> bool:
-    """Request that a specific active scan title be aborted and left as pending."""
+    """Request that a specific active scan title (one of this process's workers) be aborted and requeued."""
     if plex_guid not in _current_guids:
         return False
     _skip_requested_guids.add(plex_guid)
@@ -749,14 +666,16 @@ async def scan_video(plex_guid: str, config) -> None:
                 job["title"],
                 job.get("library_id"),
             )
+            await db.release_scan_job(plex_guid, requeue=False)
             return
 
         # Check if title is marked as ignored
         if bool(job.get("ignored", 0)):
             logger.info("Skipping ignored title: %s", job["title"])
+            await db.release_scan_job(plex_guid, requeue=False)
             return
 
-        # Safety-net gate: enqueue_pending() and scan_library() now pre-filter using
+        # Safety-net gate: rebuild_queue(), sync_queue() and scan_library() pre-filter using
         # is_scan_eligible(), but this check catches anything that slips through
         # (e.g. a single-title enqueue from the API or MCP before the config was set).
         scan_ratings: set[str] = set(config.scan_ratings) if config.scan_ratings else set()
@@ -769,13 +688,13 @@ async def scan_video(plex_guid: str, config) -> None:
                     job_rating,
                     scan_ratings,
                 )
+                await db.release_scan_job(plex_guid, requeue=False)
                 return
 
         # Don't scan outside the configured time window unless force-scanned.
         if not config.is_scan_window():
             logger.warning("Attempted to scan outside scan window (not force-scanned): %s. Re-queueing.", job["title"])
-            await db.update_scan_job_status(plex_guid, "pending")
-            await enqueue(plex_guid)
+            await db.release_scan_job(plex_guid, requeue=True)
             return
 
     file_path = job["file_path"]
@@ -1032,20 +951,21 @@ async def scan_video(plex_guid: str, config) -> None:
                     if plex_guid in _skip_requested_guids:
                         _skip_requested_guids.discard(plex_guid)
                         logger.info("Scan of '%s' skipped by user request", title)
-                        await db.update_scan_job_status(plex_guid, "pending", progress=0.0)
+                        await db.release_scan_job(plex_guid, requeue=True)
+                        await _notify_workers()
                         return
 
                     if _paused:
                         # Re-queue for later
-                        await db.update_scan_job_status(plex_guid, "pending", progress=idx / total_steps)
-                        await enqueue(plex_guid)
+                        await db.release_scan_job(plex_guid, requeue=True, progress=idx / total_steps)
+                        await _notify_workers()
                         logger.info("Scan paused mid-way through %s, re-queued", title)
                         return
 
                     # Periodically check the scan window; abort if it has ended.
                     if idx % 5 == 0 and not is_force_scan and not config.is_scan_window():
-                        await db.update_scan_job_status(plex_guid, "pending", progress=idx / total_steps)
-                        await enqueue(plex_guid)
+                        await db.release_scan_job(plex_guid, requeue=True, progress=idx / total_steps)
+                        await _notify_workers()
                         logger.info("Scan window ended during scan of '%s', re-queued", title)
                         if not _paused:
                             pause_scanner()
@@ -1101,6 +1021,11 @@ async def scan_video(plex_guid: str, config) -> None:
 
         logger.info("Scan complete: %s — found %d segment(s)", title, segments_inserted)
 
+    except asyncio.CancelledError:
+        # A pool restart or shutdown cut the scan short: hand the claim back so the title is
+        # not left 'scanning' (and so unclaimable) until the next process start.
+        await asyncio.shield(db.release_scan_job(plex_guid, requeue=True))
+        raise
     except Exception as exc:
         logger.error("Scan failed for %s: %s", title, exc)
         await db.update_scan_job_status(plex_guid, "failed", error_msg=str(exc))
@@ -1113,43 +1038,30 @@ async def scan_video(plex_guid: str, config) -> None:
 
 
 async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
-    """Single scanner worker — scans queued jobs and respects pause/scan window."""
+    """Single scanner worker: claims queued jobs from the database and respects pause and the scan window."""
     while True:
         config = await get_config_fn()
+        in_window = config.is_scan_window()
 
-        plex_guid = await _take_next_job()
-        if plex_guid is None:
-            # Queue is empty, respect scan window
-            in_window = config.is_scan_window()
+        # Outside the scan window only force-scan jobs may run.
+        job = await db.claim_next_scan_job(force_only=not in_window)
+        if job is None:
             if not in_window:
                 if not _paused:
                     pause_scanner()
             else:
                 if _paused:
                     resume_scanner()
-            # The timeout only bounds how long the window check above goes stale;
+            # Nothing claimable: pick up titles that reached the database without being queued.
+            if await sync_queue():
+                continue
+            # The timeout bounds how long the window check above goes stale;
             # new work wakes the worker immediately.
-            await _wait_for_work(force_only=not in_window, timeout=30)
+            await _wait_for_work(timeout=IDLE_POLL_S)
             continue
 
-        job = await db.get_scan_job_by_guid(plex_guid)
-        if not job or job["status"] not in ("pending", "scanning"):
-            logger.debug(f"Skipping {plex_guid}: not found or wrong status")
-            continue
-
-        # Check if this job should run: is_force_scan OR within scan window
+        plex_guid = job["plex_guid"]
         is_force_scan = bool(job.get("force_scan", 0))
-        in_window = config.is_scan_window()
-
-        if not is_force_scan and not in_window:
-            # Outside window and not force-scan, re-queue and wait
-            logger.debug(f"Job {plex_guid} outside scan window and not force-scan, re-queuing")
-            await enqueue(plex_guid)
-            if not _paused:
-                pause_scanner()
-            # Only a force-scan job can run now; sleep until one arrives.
-            await _wait_for_work(force_only=True, timeout=60)
-            continue
 
         if _paused:
             resume_scanner()
@@ -1162,7 +1074,7 @@ async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
             in_window,
         )
         await scan_video(plex_guid, config)
-        
+
         # Clear force_scan flag after job completes
         if is_force_scan:
             await db.set_force_scan(plex_guid, False)
@@ -1178,7 +1090,7 @@ async def scanner_loop(get_config_fn) -> None:
     while True:
         # Re-apply queue ordering on every start/restart so settings changes
         # (or an explicit reorder-queue API call) take effect immediately.
-        await enqueue_pending()
+        await rebuild_queue()
 
         config = await get_config_fn()
         worker_count = max(1, int(getattr(config, "scan_workers", 2)))

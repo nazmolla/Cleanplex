@@ -358,6 +358,10 @@ async def init_db() -> None:
             "ALTER TABLE segments ADD COLUMN hover_status TEXT DEFAULT ''",
             "CREATE INDEX IF NOT EXISTS idx_segments_hover_status ON segments(hover_status)",
             "CREATE INDEX IF NOT EXISTS idx_scan_jobs_status ON scan_jobs(status)",
+            # Scan queue position (#174): NULL = not queued; lower runs first. The queue lives
+            # in the database so workers claim from it and every view reads the same order.
+            "ALTER TABLE scan_jobs ADD COLUMN queue_pos INTEGER",
+            "CREATE INDEX IF NOT EXISTS idx_scan_jobs_queue ON scan_jobs(status, queue_pos)",
         ]
         for stmt in migrations:
             try:
@@ -1665,7 +1669,7 @@ async def update_scan_job_status(
         elif status in ("done", "failed"):
             await conn.execute(
                 "UPDATE scan_jobs SET status=?, progress=?, finished_at=CURRENT_TIMESTAMP, error_msg=?, "
-                "scan_version=COALESCE(?, scan_version) WHERE plex_guid=?",
+                "queue_pos=NULL, scan_version=COALESCE(?, scan_version) WHERE plex_guid=?",
                 (status, progress, error_msg, scan_version if status == "done" else None, plex_guid),
             )
         else:
@@ -1802,7 +1806,8 @@ async def update_part_files(plex_guid: str, part_files: str) -> None:
 async def reset_scan_job(plex_guid: str) -> None:
     async with get_connection() as conn:
         await conn.execute(
-            "UPDATE scan_jobs SET status='pending', progress=0, started_at=NULL, finished_at=NULL, error_msg=NULL WHERE plex_guid=?",
+            "UPDATE scan_jobs SET status='pending', progress=0, started_at=NULL, finished_at=NULL, error_msg=NULL, "
+            "queue_pos=NULL WHERE plex_guid=?",
             (plex_guid,),
         )
         await conn.commit()
@@ -1817,7 +1822,7 @@ async def reset_scan_jobs(plex_guids: list[str]) -> int:
             placeholders = ",".join("?" * len(chunk))
             cursor = await conn.execute(
                 "UPDATE scan_jobs SET status='pending', progress=0, started_at=NULL, finished_at=NULL, "
-                f"error_msg=NULL WHERE plex_guid IN ({placeholders})",
+                f"error_msg=NULL, queue_pos=NULL WHERE plex_guid IN ({placeholders})",
                 chunk,
             )
             total += cursor.rowcount
@@ -1856,7 +1861,146 @@ async def set_ignored(plex_guid: str, ignored: bool) -> None:
             "UPDATE scan_jobs SET ignored=? WHERE plex_guid=?",
             (1 if ignored else 0, plex_guid),
         )
+        if ignored:
+            # An ignored title leaves the queue unless it was force-scanned on purpose.
+            await conn.execute(
+                "UPDATE scan_jobs SET queue_pos=NULL WHERE plex_guid=? AND status='pending' "
+                "AND COALESCE(force_scan,0)=0",
+                (plex_guid,),
+            )
         await conn.commit()
+
+
+# ── Scan queue (#174) ─────────────────────────────────────────────────────────
+# Queue membership and order live in scan_jobs.queue_pos: a pending job with a position is
+# queued, lower runs first, force_scan jobs run before the rest. Workers claim with
+# claim_next_scan_job, so a job being scanned (status 'scanning') can never be taken again.
+
+_QUEUE_ORDER = "COALESCE(force_scan,0) DESC, queue_pos, id"
+# A forced title may be ignored; the user asked for that scan explicitly.
+_CLAIMABLE = "status='pending' AND queue_pos IS NOT NULL AND (COALESCE(ignored,0)=0 OR COALESCE(force_scan,0)=1)"
+
+
+async def claim_next_scan_job(force_only: bool = False) -> dict | None:
+    """Atomically take the next queued job: mark it 'scanning' and return its row, or None if nothing is queued.
+
+    One UPDATE ... RETURNING picks and flips the row in a single statement, so concurrent workers
+    never receive the same job. force_only restricts the claim to force_scan jobs (used outside the
+    scan window). queue_pos is kept so a released job returns to its place.
+    """
+    extra = " AND COALESCE(force_scan,0)=1" if force_only else ""
+    async with get_connection() as conn:
+        cursor = await conn.execute(
+            "UPDATE scan_jobs SET status='scanning', started_at=COALESCE(started_at, CURRENT_TIMESTAMP) "
+            f"WHERE status='pending' AND id=(SELECT id FROM scan_jobs WHERE {_CLAIMABLE}{extra} "
+            f"ORDER BY {_QUEUE_ORDER} LIMIT 1) RETURNING *"
+        )
+        row = await cursor.fetchone()
+        await conn.commit()
+        return dict(row) if row else None
+
+
+async def queue_scan_jobs(plex_guids: list[str], *, to_end: bool = False) -> int:
+    """Append pending jobs to the queue in the order given; returns how many were queued.
+
+    Jobs already queued keep their place unless to_end is set, which moves them behind everything
+    else (a forced or released job). Jobs that are not pending (scanning, done, failed) are ignored.
+    """
+    if not plex_guids:
+        return 0
+    queued = 0
+    async with get_connection() as conn:
+        # BEGIN IMMEDIATE: the MAX read and the writes must not interleave with another producer.
+        await conn.execute("BEGIN IMMEDIATE")
+        row = await (await conn.execute("SELECT COALESCE(MAX(queue_pos), 0) AS m FROM scan_jobs")).fetchone()
+        pos = row["m"]
+        for guid in plex_guids:
+            cond = "" if to_end else " AND queue_pos IS NULL"
+            cursor = await conn.execute(
+                f"UPDATE scan_jobs SET queue_pos=? WHERE plex_guid=? AND status='pending'{cond}",
+                (pos + 1, guid),
+            )
+            if cursor.rowcount:
+                pos += 1
+                queued += cursor.rowcount
+        await conn.commit()
+    return queued
+
+
+async def set_scan_queue_order(plex_guids: list[str]) -> None:
+    """Rebuild the queue: every pending job leaves it, then the given guids take positions 1..N in order."""
+    async with get_connection() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        await conn.execute("UPDATE scan_jobs SET queue_pos=NULL WHERE status='pending'")
+        await conn.executemany(
+            "UPDATE scan_jobs SET queue_pos=? WHERE plex_guid=? AND status='pending'",
+            [(i + 1, g) for i, g in enumerate(plex_guids)],
+        )
+        await conn.commit()
+
+
+async def dequeue_scan_jobs(plex_guids: list[str]) -> None:
+    """Take jobs out of the queue without changing their status."""
+    if not plex_guids:
+        return
+    async with get_connection() as conn:
+        for i in range(0, len(plex_guids), 500):
+            chunk = plex_guids[i:i + 500]
+            marks = ",".join("?" * len(chunk))
+            await conn.execute(f"UPDATE scan_jobs SET queue_pos=NULL WHERE plex_guid IN ({marks})", chunk)
+        await conn.commit()
+
+
+async def release_scan_job(plex_guid: str, *, requeue: bool, progress: float = 0.0) -> None:
+    """Give a claimed job back as pending: behind the rest of the queue (requeue) or out of it."""
+    async with get_connection() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        if requeue:
+            row = await (await conn.execute("SELECT COALESCE(MAX(queue_pos), 0) AS m FROM scan_jobs")).fetchone()
+            await conn.execute(
+                "UPDATE scan_jobs SET status='pending', progress=?, queue_pos=? WHERE plex_guid=?",
+                (progress, row["m"] + 1, plex_guid),
+            )
+        else:
+            await conn.execute(
+                "UPDATE scan_jobs SET status='pending', progress=?, queue_pos=NULL WHERE plex_guid=?",
+                (progress, plex_guid),
+            )
+        await conn.commit()
+
+
+async def get_queued_scan_jobs(limit: int | None = None, offset: int = 0) -> list[dict]:
+    """Return the queued (pending, positioned) jobs in execution order: force first, then by position."""
+    sql = f"SELECT * FROM scan_jobs WHERE status='pending' AND queue_pos IS NOT NULL ORDER BY {_QUEUE_ORDER}"
+    params: tuple = ()
+    if limit is not None:
+        sql += " LIMIT ? OFFSET ?"
+        params = (limit, offset)
+    async with get_connection() as conn:
+        return [dict(r) for r in await conn.execute_fetchall(sql, params)]
+
+
+async def count_queued_scan_jobs() -> int:
+    """Return how many jobs are waiting in the queue."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(
+            "SELECT COUNT(*) FROM scan_jobs WHERE status='pending' AND queue_pos IS NOT NULL"
+        )).fetchone()
+        return row[0]
+
+
+async def get_unqueued_pending_scan_jobs() -> list[dict]:
+    """Return pending jobs that are not in the queue (new titles, or ones dequeued by a settings change)."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall("SELECT * FROM scan_jobs WHERE status='pending' AND queue_pos IS NULL")
+        return [dict(r) for r in rows]
+
+
+async def get_scanning_guids() -> list[str]:
+    """Return the guids of jobs currently being scanned, sorted."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall("SELECT plex_guid FROM scan_jobs WHERE status='scanning' ORDER BY plex_guid")
+        return [r["plex_guid"] for r in rows]
 
 
 async def get_scan_jobs_by_guids(guids: list[str]) -> dict[str, dict]:

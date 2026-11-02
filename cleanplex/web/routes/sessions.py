@@ -4,7 +4,7 @@ from ...logger import get_logger
 import cleanplex.plex_client as plex_mod
 from ...watcher import skip_events
 from ... import database as db
-from ...scanner import get_queue_size, get_current_scan, get_current_scans, get_worker_pool_size, is_paused, get_ordered_queue_guids
+from ...scanner import get_current_scans, get_worker_pool_size, is_paused
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -46,12 +46,12 @@ async def get_skip_events():
 
 @router.get("/scanner-status")
 async def scanner_status():
-    current_guid = get_current_scan()
+    current_guids = await get_current_scans()
+    current_guid = current_guids[0] if current_guids else None
     current_title = None
     current_progress = 0.0
     active_scans: list[dict] = []
 
-    current_guids = get_current_scans()
     # Fetch all active scan jobs in a single IN query rather than one query per guid.
     jobs_by_guid = await db.get_scan_jobs_by_guids(current_guids)
     for guid in current_guids:
@@ -75,24 +75,21 @@ async def scanner_status():
     effective_workers = max(1, int(get_worker_pool_size()))
     active_workers = len(active_scans)
 
-    # Build the full ordered queue: force items first, then normal.
-    force_guids, normal_guids = get_ordered_queue_guids()
-    all_queued_guids = force_guids + normal_guids
-    queued_jobs_by_guid = await db.get_scan_jobs_by_guids(all_queued_guids) if all_queued_guids else {}
-    queue_items = []
-    for pos, guid in enumerate(all_queued_guids):
-        job = queued_jobs_by_guid.get(guid)
-        queue_items.append({
+    # The queue in execution order (force first), straight from the database.
+    queue_items = [
+        {
             "position": pos + 1,
-            "guid": guid,
-            "title": job["title"] if job else guid,
-            "media_type": job.get("media_type", "movie") if job else "movie",
-            "content_rating": job.get("content_rating", "") if job else "",
-            "force": guid in force_guids,
-        })
+            "guid": job["plex_guid"],
+            "title": job["title"] or job["plex_guid"],
+            "media_type": job.get("media_type") or "movie",
+            "content_rating": job.get("content_rating") or "",
+            "force": bool(job.get("force_scan")),
+        }
+        for pos, job in enumerate(await db.get_queued_scan_jobs())
+    ]
 
     return {
-        "queue_size": get_queue_size(),
+        "queue_size": len(queue_items),
         "current_scan": current_guid,
         "current_title": current_title,
         "current_progress": current_progress,

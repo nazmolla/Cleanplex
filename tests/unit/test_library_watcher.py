@@ -29,7 +29,7 @@ async def test_library_watcher_pass_queues_new_items_with_one_lookup_per_section
     async def stop(_):
         raise asyncio.CancelledError
 
-    with patch.object(watcher, "enqueue", enqueue), \
+    with patch.object(watcher, "enqueue_many", enqueue), \
          patch.object(watcher, "_import_sidecar", new=AsyncMock(return_value=False)), \
          patch.object(db, "get_scan_job_by_guid", new=AsyncMock()) as per_item, \
          patch.object(watcher.asyncio, "sleep", stop), \
@@ -37,5 +37,5 @@ async def test_library_watcher_pass_queues_new_items_with_one_lookup_per_section
         await watcher.library_watcher_loop(AsyncMock(return_value=config), lambda: client)
 
     per_item.assert_not_called()
-    assert sorted(c.args[0] for c in enqueue.call_args_list) == ["new1", "new2"]
+    assert sorted(enqueue.call_args_list[0].args[0]) == ["new1", "new2"]
     assert set(await db.get_scan_jobs_by_guids(["known", "new1", "new2"])) == {"known", "new1", "new2"}

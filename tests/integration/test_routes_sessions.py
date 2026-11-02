@@ -121,10 +121,7 @@ async def test_get_skip_events_returns_events(http_client):
 # ── GET /api/sessions/scanner-status ─────────────────────────────────────────
 
 async def test_scanner_status_returns_expected_shape(http_client):
-    with patch("cleanplex.web.routes.sessions.get_current_scan", return_value=None), \
-         patch("cleanplex.web.routes.sessions.get_current_scans", return_value=[]), \
-         patch("cleanplex.web.routes.sessions.get_queue_size", return_value=0), \
-         patch("cleanplex.web.routes.sessions.get_worker_pool_size", return_value=2), \
+    with patch("cleanplex.web.routes.sessions.get_worker_pool_size", return_value=2), \
          patch("cleanplex.web.routes.sessions.is_paused", return_value=False):
         resp = await http_client.get("/api/sessions/scanner-status")
     assert resp.status_code == 200
@@ -144,10 +141,7 @@ async def test_scanner_status_batches_db_lookup(http_client):
     )
     await db.update_scan_job_status(guid, "scanning", progress=0.5)
 
-    with patch("cleanplex.web.routes.sessions.get_current_scan", return_value=guid), \
-         patch("cleanplex.web.routes.sessions.get_current_scans", return_value=[guid]), \
-         patch("cleanplex.web.routes.sessions.get_queue_size", return_value=0), \
-         patch("cleanplex.web.routes.sessions.get_worker_pool_size", return_value=2), \
+    with patch("cleanplex.web.routes.sessions.get_worker_pool_size", return_value=2), \
          patch("cleanplex.web.routes.sessions.is_paused", return_value=False), \
          patch("cleanplex.web.routes.sessions.db.get_scan_jobs_by_guids",
                wraps=db.get_scan_jobs_by_guids) as spy:
@@ -202,3 +196,18 @@ async def test_skip_session_seeks_to_next_segment(http_client):
     data = resp.json()
     assert data["ok"] is True
     assert data["seek_to_ms"] == 25000  # 30000 - 5000 (expansion)
+
+
+async def test_scanner_status_lists_the_queue_from_the_database_force_first(http_client):
+    for guid in ("a", "b", "c"):
+        await db.upsert_scan_job(plex_guid=guid, title=guid.upper(), file_path="/f", rating_key="1",
+                                 library_id="1", library_title="L")
+    await db.queue_scan_jobs(["a", "b", "c"])
+    await db.set_force_scan("c", True)
+    with patch("cleanplex.web.routes.sessions.get_worker_pool_size", return_value=2), \
+         patch("cleanplex.web.routes.sessions.is_paused", return_value=False):
+        data = (await http_client.get("/api/sessions/scanner-status")).json()
+    assert data["queue_size"] == 3
+    assert [(i["guid"], i["force"], i["position"]) for i in data["queue_items"]] == [
+        ("c", True, 1), ("a", False, 2), ("b", False, 3),
+    ]
