@@ -7,7 +7,7 @@ import RelabelButton from '../components/RelabelButton'
 import { ratingAllowed } from '../utils/ratings'
 import ThumbnailTime from '../components/ThumbnailTime'
 import SkipFileImport from '../components/SkipFileImport'
-import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2, Eye, EyeOff, X, ThumbsDown } from 'lucide-react'
+import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2, Eye, EyeOff, X, ThumbsDown, Search, Users, ArrowDown, ArrowUp } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
 
 interface Library {
@@ -602,6 +602,21 @@ export default function Library() {
     }
   }
 
+  // Queues a whole show or one season through POST /api/scan/show (#187). show_title is the name as it
+  // appears in episode titles ("<show> – <season> – <episode>"), which the server needs for a season.
+  const scanGroup = async (showGuid: string, showTitle: string, season: string, label: string, now: boolean) => {
+    try {
+      const r = await api.post<{ queued: number; already_scanning: number }>('/api/scan/show', {
+        show_guid: showGuid, show_title: showTitle, season, library_id: selected?.id ?? null, now,
+      })
+      const busy = r.already_scanning ? ` (${r.already_scanning} already scanning)` : ''
+      setRetryNotice(`${label}: ${r.queued} episode${r.queued === 1 ? '' : 's'} queued ${now ? 'to scan now' : 'for tonight'}${busy}`)
+      if (selected) setTitles(await loadTitles(selected.id))
+    } catch (err: any) {
+      setRetryNotice(`Could not queue ${label}: ${err.message || 'unknown error'}`)
+    }
+  }
+
   // Retries every failed title of the library through the scheduled queue and takes ignored ones
   // off the Failed list (#150); the server counts what it did.
   const retryFailed = async () => {
@@ -958,134 +973,159 @@ export default function Library() {
               </div>
             )}
 
-            {/* Every filter on one line from 1280px; wraps to two lines on narrower screens. */}
-            <div className="flex flex-wrap xl:flex-nowrap items-center gap-2 mb-3">
-              <input
-                type="checkbox"
-                checked={allFilteredSelected}
-                onChange={() => setSelectedGuids(allFilteredSelected ? [] : filteredGuids)}
-                title="Select all filtered titles"
-                aria-label="Select all filtered titles"
-                className="w-4 h-4 accent-plex-orange flex-shrink-0"
-              />
-              <div className="flex gap-1 flex-shrink-0">
-                {STATUS_TABS.map(s => (
-                  <button
-                    key={s}
-                    onClick={() => setStatusFilter(s)}
-                    className={`px-2.5 py-1 text-xs rounded-full transition-colors capitalize whitespace-nowrap ${
-                      statusFilter === s
-                        ? 'bg-plex-orange text-black font-semibold'
-                        : 'bg-plex-card border border-plex-border text-gray-400 hover:text-gray-200'
-                    }`}
-                  >
-                    {s === 'all' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}
-                    {counts[s] != null && (
-                      <span className="ml-1 opacity-70">({counts[s] ?? 0})</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-              {statusFilter === 'failed' && (
-                <button
-                  onClick={retryFailed}
-                  disabled={retrying}
-                  title="Queue every failed title in this library again and clear ignored ones from the list"
-                  className="px-2.5 py-1 text-xs rounded-lg border border-plex-orange/40 text-plex-orange hover:bg-plex-orange/10 disabled:opacity-40 whitespace-nowrap"
-                >
-                  Retry failed
-                </button>
-              )}
-              <input
-                type="text"
-                placeholder="Filter titles..."
-                value={filter}
-                onChange={e => setFilter(e.target.value)}
-                className="flex-1 min-w-[8rem] px-3 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
-              />
-              <input
-                type="text"
-                list="cast-suggestions"
-                placeholder="Actor..."
-                aria-label="Filter by actor"
-                value={castFilter}
-                onChange={e => setCastFilter(e.target.value)}
-                className="w-36 px-3 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
-              />
-              <datalist id="cast-suggestions">
-                {castSuggestions.map(a => <option key={a} value={a} />)}
-              </datalist>
-              {availableRatings.length > 0 && (
-                <select
-                  value={ratingFilter}
-                  onChange={e => setRatingFilter(e.target.value)}
-                  className="px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 focus:outline-none focus:border-plex-orange/50"
-                >
-                  <option value="all">All ratings</option>
-                  {availableRatings.map(r => (
-                    <option key={r} value={r}>{r}</option>
-                  ))}
-                </select>
-              )}
-              <select
-                value={sortBy}
-                onChange={e => { setSortBy(e.target.value as SortOption); setDateFrom(''); setDateTo('') }}
-                className="px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 focus:outline-none focus:border-plex-orange/50"
-              >
-                <option value="date-added">Date Added</option>
-                <option value="scanned">Scanned Date</option>
-                <option value="title">Alphabetical</option>
-                <option value="year">Release Year</option>
-                <option value="segments">Segments</option>
-              </select>
-              {dateFilterActive && (
-                <>
-                  <input
-                    type={sortBy === 'scanned' ? 'date' : 'number'}
-                    placeholder="From year"
-                    aria-label={sortBy === 'scanned' ? 'Scanned from' : 'Released from year'}
-                    value={dateFrom}
-                    onChange={e => setDateFrom(e.target.value)}
-                    className="w-32 px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
-                  />
-                  <input
-                    type={sortBy === 'scanned' ? 'date' : 'number'}
-                    placeholder="To year"
-                    aria-label={sortBy === 'scanned' ? 'Scanned to' : 'Released to year'}
-                    value={dateTo}
-                    onChange={e => setDateTo(e.target.value)}
-                    className="w-32 px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
-                  />
-                  {(dateFrom || dateTo) && (
+            {/* Filter toolbar (#187): one card, two rows. Row 1 = what to show (select-all, status tabs,
+                result count). Row 2 = narrow it down (search, actor) and order it (rating, sort, dates, ignored). */}
+            <div className="mb-3 rounded-xl border border-plex-border bg-plex-card/40 p-2.5 space-y-2">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                <input
+                  type="checkbox"
+                  checked={allFilteredSelected}
+                  onChange={() => setSelectedGuids(allFilteredSelected ? [] : filteredGuids)}
+                  title="Select all filtered titles"
+                  aria-label="Select all filtered titles"
+                  className="w-4 h-4 accent-plex-orange flex-shrink-0"
+                />
+                {/* Segmented status control: scrolls sideways on a narrow screen rather than wrapping. */}
+                <div className="flex p-0.5 gap-0.5 rounded-lg bg-black/25 border border-plex-border overflow-x-auto max-w-full">
+                  {STATUS_TABS.map(s => (
                     <button
-                      onClick={() => { setDateFrom(''); setDateTo('') }}
-                      className="px-2 py-1.5 text-xs text-gray-400 hover:text-white"
+                      key={s}
+                      onClick={() => setStatusFilter(s)}
+                      aria-pressed={statusFilter === s}
+                      className={`px-3 py-1 text-xs rounded-md transition-colors whitespace-nowrap ${
+                        statusFilter === s
+                          ? 'bg-plex-orange text-black font-semibold shadow-sm'
+                          : 'text-gray-400 hover:text-gray-100 hover:bg-white/5'
+                      }`}
                     >
-                      Clear
+                      {s === 'all' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}
+                      {counts[s] != null && (
+                        <span className={`ml-1.5 tabular-nums ${statusFilter === s ? 'opacity-70' : 'text-gray-500'}`}>{counts[s] ?? 0}</span>
+                      )}
                     </button>
-                  )}
-                </>
-              )}
-              <button
-                onClick={() => setSortDesc(!sortDesc)}
-                className="px-2.5 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 hover:text-white hover:border-gray-500 transition-colors"
-                title={sortDesc ? 'Descending' : 'Ascending'}
-              >
-                {sortDesc ? '↓' : '↑'}
-              </button>
-              <button
-                onClick={() => setShowIgnored(!showIgnored)}
-                aria-pressed={showIgnored}
-                title={showIgnored ? 'Hide ignored titles' : 'Show ignored titles'}
-                aria-label="Show ignored titles"
-                className={`p-2 border rounded-lg transition-colors ${
-                  showIgnored
-                    ? 'bg-yellow-500/15 border-yellow-500/30 text-yellow-400'
-                    : 'bg-plex-card border-plex-border text-gray-500 hover:text-gray-200'
-                }`}
-              >
-                {showIgnored ? <Eye size={15} /> : <EyeOff size={15} />}
-              </button>
+                  ))}
+                </div>
+                {statusFilter === 'failed' && (
+                  <button
+                    onClick={retryFailed}
+                    disabled={retrying}
+                    title="Queue every failed title in this library again and clear ignored ones from the list"
+                    className="px-2.5 py-1 text-xs rounded-lg border border-plex-orange/40 text-plex-orange hover:bg-plex-orange/10 disabled:opacity-40 whitespace-nowrap"
+                  >
+                    Retry failed
+                  </button>
+                )}
+                <span className="ml-auto text-xs text-gray-500 tabular-nums whitespace-nowrap">
+                  {filtered.length} title{filtered.length === 1 ? '' : 's'}
+                </span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative flex-1 min-w-[10rem]">
+                  <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+                  <input
+                    type="text"
+                    placeholder="Filter titles…"
+                    aria-label="Filter titles"
+                    value={filter}
+                    onChange={e => setFilter(e.target.value)}
+                    className="w-full pl-8 pr-3 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
+                  />
+                </div>
+                <div className="relative w-40">
+                  <Users size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+                  <input
+                    type="text"
+                    list="cast-suggestions"
+                    placeholder="Actor…"
+                    aria-label="Filter by actor"
+                    value={castFilter}
+                    onChange={e => setCastFilter(e.target.value)}
+                    className="w-full pl-8 pr-3 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
+                  />
+                </div>
+                <datalist id="cast-suggestions">
+                  {castSuggestions.map(a => <option key={a} value={a} />)}
+                </datalist>
+                {availableRatings.length > 0 && (
+                  <select
+                    value={ratingFilter}
+                    aria-label="Filter by rating"
+                    onChange={e => setRatingFilter(e.target.value)}
+                    className="px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 focus:outline-none focus:border-plex-orange/50"
+                  >
+                    <option value="all">All ratings</option>
+                    {availableRatings.map(r => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                )}
+                {/* Sort and its direction are one joined control. */}
+                <div className="flex items-stretch">
+                  <select
+                    value={sortBy}
+                    aria-label="Sort by"
+                    onChange={e => { setSortBy(e.target.value as SortOption); setDateFrom(''); setDateTo('') }}
+                    className="px-2 py-1.5 bg-plex-card border border-plex-border rounded-l-lg text-sm text-gray-300 focus:outline-none focus:border-plex-orange/50"
+                  >
+                    <option value="date-added">Date Added</option>
+                    <option value="scanned">Scanned Date</option>
+                    <option value="title">Alphabetical</option>
+                    <option value="year">Release Year</option>
+                    <option value="segments">Segments</option>
+                  </select>
+                  <button
+                    onClick={() => setSortDesc(!sortDesc)}
+                    className="px-2 -ml-px bg-plex-card border border-plex-border rounded-r-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors"
+                    title={sortDesc ? 'Descending' : 'Ascending'}
+                    aria-label={sortDesc ? 'Descending' : 'Ascending'}
+                  >
+                    {sortDesc ? <ArrowDown size={15} /> : <ArrowUp size={15} />}
+                  </button>
+                </div>
+                {dateFilterActive && (
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type={sortBy === 'scanned' ? 'date' : 'number'}
+                      placeholder="From year"
+                      aria-label={sortBy === 'scanned' ? 'Scanned from' : 'Released from year'}
+                      value={dateFrom}
+                      onChange={e => setDateFrom(e.target.value)}
+                      className="w-32 px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
+                    />
+                    <span className="text-gray-600 text-xs">–</span>
+                    <input
+                      type={sortBy === 'scanned' ? 'date' : 'number'}
+                      placeholder="To year"
+                      aria-label={sortBy === 'scanned' ? 'Scanned to' : 'Released to year'}
+                      value={dateTo}
+                      onChange={e => setDateTo(e.target.value)}
+                      className="w-32 px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
+                    />
+                    {(dateFrom || dateTo) && (
+                      <button
+                        onClick={() => { setDateFrom(''); setDateTo('') }}
+                        className="px-2 py-1.5 text-xs text-gray-400 hover:text-white"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                )}
+                <button
+                  onClick={() => setShowIgnored(!showIgnored)}
+                  aria-pressed={showIgnored}
+                  title={showIgnored ? 'Hide ignored titles' : 'Show ignored titles'}
+                  aria-label="Show ignored titles"
+                  className={`p-2 border rounded-lg transition-colors ${
+                    showIgnored
+                      ? 'bg-yellow-500/15 border-yellow-500/30 text-yellow-400'
+                      : 'bg-plex-card border-plex-border text-gray-500 hover:text-gray-200'
+                  }`}
+                >
+                  {showIgnored ? <Eye size={15} /> : <EyeOff size={15} />}
+                </button>
+              </div>
             </div>
             {retryNotice && <p className="px-3 pt-2 text-xs text-gray-400" role="status">{retryNotice}</p>}
 
@@ -1154,6 +1194,12 @@ export default function Library() {
                             <Trash2 size={14} />
                           </ActionIcon>
                         )}
+                        <ActionIcon label="Scan whole show tonight" onClick={() => scanGroup(group.episodes[0]?.show_guid ?? '', parseEpisodeTitle(group.episodes[0]?.title ?? '').show, '', group.show, false)}>
+                          <Moon size={14} />
+                        </ActionIcon>
+                        <ActionIcon label="Scan whole show now" onClick={() => scanGroup(group.episodes[0]?.show_guid ?? '', parseEpisodeTitle(group.episodes[0]?.title ?? '').show, '', group.show, true)} tone="orange">
+                          <Zap size={14} />
+                        </ActionIcon>
                         <ActionIcon label="Ignore all episodes in this show" onClick={() => setIgnoredForGuids(group.episodes.map(ep => ep.plex_guid), true, group.show)} tone="yellow">
                           <EyeOff size={14} />
                         </ActionIcon>
@@ -1170,9 +1216,10 @@ export default function Library() {
                             const seasonSegCount = season.episodes.reduce((sum, ep) => sum + ep.segment_count, 0)
                             return (
                               <div key={seasonKey} className="border border-plex-border rounded-lg p-2">
+                                <div className="flex items-center gap-1">
                                 <button
                                   onClick={() => toggleSeasonExpanded(group.show_key, season.season)}
-                                  className="w-full flex items-center gap-2 text-left"
+                                  className="flex-1 min-w-0 flex items-center gap-2 text-left"
                                 >
                                   <ChevronRight size={13} className={seasonOpen ? 'rotate-90 transition-transform text-gray-400' : 'transition-transform text-gray-400'} />
                                   <span className="text-xs text-gray-300 font-medium">{season.season}</span>
@@ -1184,12 +1231,19 @@ export default function Library() {
                                       </span>
                                     )}
                                   </span>
+                                </button>
+                                <ActionIcon label={`Scan ${season.season} tonight`} onClick={() => scanGroup(group.episodes[0]?.show_guid ?? '', parseEpisodeTitle(season.episodes[0]?.title ?? '').show, season.season, `${group.show} · ${season.season}`, false)}>
+                                  <Moon size={13} />
+                                </ActionIcon>
+                                <ActionIcon label={`Scan ${season.season} now`} onClick={() => scanGroup(group.episodes[0]?.show_guid ?? '', parseEpisodeTitle(season.episodes[0]?.title ?? '').show, season.season, `${group.show} · ${season.season}`, true)} tone="orange">
+                                  <Zap size={13} />
+                                </ActionIcon>
                                   {machineId && plexWebUrl(season.episodes[0]?.season_rating_key || '') && (
-                                    <a href={plexWebUrl(season.episodes[0]?.season_rating_key || '')} target="_blank" rel="noopener noreferrer" title="Open season in Plex" onClick={e => e.stopPropagation()} className="p-1 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors flex-shrink-0">
+                                    <a href={plexWebUrl(season.episodes[0]?.season_rating_key || '')} target="_blank" rel="noopener noreferrer" title="Open season in Plex" className="p-1 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors flex-shrink-0">
                                       <ExternalLink size={12} />
                                     </a>
                                   )}
-                                </button>
+                                </div>
 
                                 {seasonOpen && (
                                   <div className="mt-2 space-y-2">
