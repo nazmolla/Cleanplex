@@ -5,6 +5,7 @@ import { useSearchParams } from 'react-router-dom'
 import { UsersPanel } from './Users'
 import BulkRescan from '../components/BulkRescan'
 import VerifierPanel from '../components/VerifierPanel'
+import EnforcementPanel from '../components/EnforcementPanel'
 
 interface Settings {
   plex_url: string
@@ -41,8 +42,8 @@ interface Settings {
   hover_window_end: string
 }
 
-type SectionId = 'connection' | 'playback' | 'schedule' | 'nudenet' | 'siglip' | 'segments' | 'sync' | 'users'
-const SECTION_IDS: SectionId[] = ['connection', 'users', 'playback', 'schedule', 'nudenet', 'siglip', 'segments', 'sync']
+type SectionId = 'connection' | 'playback' | 'filtering' | 'schedule' | 'nudenet' | 'siglip' | 'segments' | 'sync' | 'users'
+const SECTION_IDS: SectionId[] = ['connection', 'users', 'playback', 'filtering', 'schedule', 'nudenet', 'siglip', 'segments', 'sync']
 
 interface Library {
   id: string
@@ -364,6 +365,7 @@ export default function SettingsPage() {
     { id: 'connection', label: 'Plex Connection' },
     { id: 'users', label: 'Users' },
     { id: 'playback', label: 'Playback' },
+    { id: 'filtering', label: 'Stream Filtering' },
     { id: 'schedule', label: 'Scan Scope & Schedule' },
     { id: 'nudenet', label: 'NudeNet Detection' },
     { id: 'siglip', label: 'SigLIP Fallback' },
@@ -465,6 +467,17 @@ export default function SettingsPage() {
                             <input type="number" min="0" step="500" value={form.skip_buffer_ms} onChange={set('skip_buffer_ms')} className={inputCls} />
                           </Field>
               </div>
+            </section>
+          )}
+
+          {section === 'filtering' && (
+            <section>
+              <h2 className={h2Cls}>Stream Filtering</h2>
+              <p className="text-xs text-gray-500 mb-4">
+                Filters every Plex app, in or out of the house, by removing filtered scenes from the stream itself.
+                These settings apply immediately.
+              </p>
+              <EnforcementPanel />
             </section>
           )}
 

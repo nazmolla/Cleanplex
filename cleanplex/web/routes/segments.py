@@ -111,6 +111,8 @@ async def sync_library(library_id: str):
         if removed:
             logger.info(f"Library {library_id} sync: removed {removed} stale titles")
 
+        await db.replace_title_parts([(pid, i.rating_key) for i in file_items for pid in i.part_ids])
+
         added = await db.upsert_scan_jobs_batch([
             {
                 "plex_guid": i.plex_guid, "title": i.title, "file_path": i.file_path,
@@ -143,6 +145,7 @@ async def get_titles_in_library(library_id: str):
     jobs = await db.get_scan_jobs_by_library(library_id)
     seg_counts = await db.get_segment_counts_for_library(library_id)
     fp_counts = await db.get_false_positive_counts_for_library(library_id)
+    cast = await db.get_cast_for_library(library_id)
 
     try:
         client = plex_mod.get_client()
@@ -208,6 +211,7 @@ async def get_titles_in_library(library_id: str):
             "content_rating": job.get("content_rating", ""),
             "media_type": job.get("media_type", "movie"),
             "year": job.get("year"),
+            "cast": cast.get(job["plex_guid"], []),
             "ignored": bool(job.get("ignored", 0)),
         })
     return {"titles": result}

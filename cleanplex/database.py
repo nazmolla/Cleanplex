@@ -210,6 +210,51 @@ CREATE TABLE IF NOT EXISTS plex_markers (
     synced_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(rating_key, plex_marker_id)
 );
+-- Cast per Plex item (#180). rating_key is the movie's or, for episodes, the show's, so a
+-- show's cast is stored once. cast_synced records items already fetched, including those
+-- Plex lists no cast for, so they are not asked again until the refresh age passes.
+CREATE TABLE IF NOT EXISTS title_cast (
+    rating_key TEXT NOT NULL,
+    actor      TEXT NOT NULL,
+    PRIMARY KEY (rating_key, actor)
+);
+CREATE INDEX IF NOT EXISTS idx_title_cast_actor ON title_cast(actor);
+-- Stream proxy sessions (#184), so an edit survives a restart and live skipping can stand down
+-- for streams the proxy already edits.
+CREATE TABLE IF NOT EXISTS proxy_sessions (
+    session_id  TEXT PRIMARY KEY,
+    rating_key  TEXT NOT NULL,
+    username    TEXT DEFAULT '',
+    client_id   TEXT DEFAULT '',
+    client_title TEXT DEFAULT '',
+    offset_ms   INTEGER DEFAULT 0,
+    ranges      TEXT DEFAULT '[]',
+    spans       TEXT DEFAULT '[]',
+    removed     TEXT DEFAULT '[]',
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_proxy_sessions_client ON proxy_sessions(client_id, rating_key);
+
+-- Video keyframe times (ms, file time) per media file, so the stream proxy can cut a copied
+-- (not re-encoded) stream at real segment boundaries (#184). size/mtime invalidate it.
+CREATE TABLE IF NOT EXISTS keyframe_index (
+    file_path  TEXT PRIMARY KEY,
+    size       INTEGER NOT NULL,
+    mtime      INTEGER NOT NULL,
+    keyframes  TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Plex part id -> rating key, so a direct file request can be tied to its title (#184).
+CREATE TABLE IF NOT EXISTS title_parts (
+    part_id    INTEGER PRIMARY KEY,
+    rating_key TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cast_synced (
+    rating_key TEXT PRIMARY KEY,
+    synced_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_plex_markers_guid ON plex_markers(plex_guid);
 CREATE INDEX IF NOT EXISTS idx_plex_markers_rating_key ON plex_markers(rating_key);
 
@@ -272,6 +317,14 @@ DEFAULT_SETTINGS = {
     # Also render previews whenever the scan queue is empty, not only inside the window.
     "hover_when_idle": "1",
     "verifier_loss_pct": "0",
+    # Stream proxy enforcement (#184). Mute segments cannot be muted by editing a playlist:
+    # "cut" removes them like skips, "leave" plays them unfiltered on edited streams.
+    "enforcement_mute_mode": "leave",
+    # Stop a filtered viewer's stream of a flagged title that never passed the proxy.
+    "enforcement_backstop": "1",
+    # Set when the front door is installed (every client reaches Plex through the proxy).
+    # The backstop only acts then: before the cutover every stream bypasses the proxy.
+    "enforcement_enabled": "0",
     "hover_window_start": "00:00",
     "hover_window_end": "07:00",
     "log_level": "INFO",
@@ -884,26 +937,40 @@ async def get_verifier_training_rows(max_kept_per_group: int) -> list[dict]:
 
     fp=1: frames users rejected (feedback verdict false_positive). fp=0: frames of segments the
     user kept (a random sample per group) and frames of relabeled feedback, which were real
-    nudity under the wrong label. group is "siglip" or "nudenet" by the detector that fired.
+    nudity under the wrong label (taken under the corrected label). group is
+    "<family>:<label>": family "siglip" or "nudenet" by the detector that fired, label the
+    first (peak-frame) label. A label has its own group so what was rejected under one label,
+    for instance while it was disabled, cannot teach the model to reject another (#178).
     """
+    def group_of(detector: str, labels: str) -> str | None:
+        label = (labels or "").split(",")[0].strip()
+        if not label:
+            return None
+        return f"{'siglip' if detector.startswith('siglip') else 'nudenet'}:{label}"
+
     rows: list[dict] = []
     async with get_connection() as conn:
         feedback = await conn.execute_fetchall(
-            "SELECT frame_path, verdict, detector, plex_guid FROM segment_feedback "
+            "SELECT frame_path, verdict, detector, plex_guid, labels, corrected_labels FROM segment_feedback "
             "WHERE frame_path != '' AND (detector LIKE 'siglip%' OR detector LIKE 'nudenet%')"
         )
         for r in feedback:
-            rows.append({
-                "path": r["frame_path"], "fp": 1 if r["verdict"] == "false_positive" else 0,
-                "group": "siglip" if r["detector"].startswith("siglip") else "nudenet", "plex_guid": r["plex_guid"],
-            })
-        for group, where in (("siglip", "detector LIKE 'siglip%'"), ("nudenet", "detector LIKE 'nudenet%'")):
+            relabeled = r["verdict"] != "false_positive"
+            group = group_of(r["detector"], (r["corrected_labels"] if relabeled else r["labels"]) or "")
+            if group:
+                rows.append({"path": r["frame_path"], "fp": 0 if relabeled else 1, "group": group, "plex_guid": r["plex_guid"]})
+        counts: dict[str, int] = {}
+        for like in ("siglip%", "nudenet%"):
             kept = await conn.execute_fetchall(
-                "SELECT thumbnail_path, plex_guid FROM segments WHERE false_positive=0 "
-                f"AND thumbnail_path != '' AND {where} ORDER BY RANDOM() LIMIT ?",
-                (max_kept_per_group,),
+                "SELECT thumbnail_path, plex_guid, detector, labels FROM segments WHERE false_positive=0 "
+                "AND thumbnail_path != '' AND detector LIKE ? ORDER BY RANDOM()",
+                (like,),
             )
-            rows += [{"path": r["thumbnail_path"], "fp": 0, "group": group, "plex_guid": r["plex_guid"]} for r in kept]
+            for r in kept:
+                group = group_of(r["detector"], r["labels"])
+                if group and counts.get(group, 0) < max_kept_per_group:
+                    counts[group] = counts.get(group, 0) + 1
+                    rows.append({"path": r["thumbnail_path"], "fp": 0, "group": group, "plex_guid": r["plex_guid"]})
     return rows
 
 
@@ -1181,14 +1248,14 @@ async def get_detection_accuracy() -> list[dict]:
 
 
 async def get_active_segments_for_rating_key(rating_key: str) -> list[dict]:
-    """Return the title's active segments (start_ms, end_ms, category, severity, action), by start.
+    """Return the title's active segments (id, plex_guid, title, start_ms, end_ms, category, severity, action), by start.
 
     Active means not marked a false positive. Every action is returned because a user's
     own action override can turn a mute into a skip. Empty for an unknown rating key.
     """
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            "SELECT s.start_ms, s.end_ms, s.category, s.severity, s.action "
+            "SELECT s.id, s.plex_guid, j.title, s.start_ms, s.end_ms, s.category, s.severity, s.action "
             "FROM segments s JOIN scan_jobs j ON j.plex_guid = s.plex_guid "
             f"WHERE j.rating_key = ? AND {_ACTIVE_S} ORDER BY s.start_ms",
             (rating_key,),
@@ -2016,6 +2083,198 @@ async def get_scan_jobs_by_guids(guids: list[str]) -> dict[str, dict]:
                 f"SELECT * FROM scan_jobs WHERE plex_guid IN ({placeholders})", chunk
             )
             out.update({row["plex_guid"]: dict(row) for row in rows})
+    return out
+
+
+async def save_proxy_session(session_id: str, data: dict) -> None:
+    """Insert or update a proxy session: rating_key, username, client_id, client_title, offset_ms, ranges, spans, removed."""
+    async with get_connection() as conn:
+        await conn.execute(
+            "INSERT INTO proxy_sessions(session_id, rating_key, username, client_id, client_title, offset_ms, "
+            "ranges, spans, removed, updated_at) VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) "
+            "ON CONFLICT(session_id) DO UPDATE SET spans=excluded.spans, removed=excluded.removed, "
+            "updated_at=CURRENT_TIMESTAMP",
+            (session_id, data["rating_key"], data.get("username") or "", data.get("client_id", ""),
+             data.get("client_title", ""), data.get("offset_ms", 0), json.dumps(data.get("ranges", [])),
+             json.dumps(data.get("spans", [])), json.dumps(data.get("removed", []))),
+        )
+        await conn.commit()
+
+
+async def get_proxy_session(session_id: str) -> dict | None:
+    """Return a stored proxy session with ranges/spans/removed decoded, or None."""
+    async with get_connection() as conn:
+        row = await (await conn.execute("SELECT * FROM proxy_sessions WHERE session_id=?", (session_id,))).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    for key in ("ranges", "spans", "removed"):
+        d[key] = [tuple(x) if isinstance(x, list) else x for x in json.loads(d[key] or "[]")]
+    return d
+
+
+async def is_proxied(client_id: str, rating_key: str, within_hours: int = 12) -> bool:
+    """True when the proxy edited a stream of this title for this client recently."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(
+            "SELECT 1 FROM proxy_sessions WHERE client_id=? AND rating_key=? AND updated_at > datetime('now', ?) LIMIT 1",
+            (client_id, rating_key, f"-{int(within_hours)} hours"),
+        )).fetchone()
+    return row is not None
+
+
+async def count_recent_proxy_sessions(within_hours: int = 24) -> int:
+    """How many streams the proxy edited in the last *within_hours* hours."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(
+            "SELECT COUNT(*) FROM proxy_sessions WHERE updated_at > datetime('now', ?)", (f"-{int(within_hours)} hours",)
+        )).fetchone()
+    return row[0]
+
+
+async def prune_proxy_sessions(older_than_days: int = 2) -> int:
+    """Delete proxy sessions not touched for the given number of days; return how many."""
+    async with get_connection() as conn:
+        cur = await conn.execute(
+            "DELETE FROM proxy_sessions WHERE updated_at < datetime('now', ?)", (f"-{int(older_than_days)} days",)
+        )
+        await conn.commit()
+        return cur.rowcount
+
+
+async def get_keyframes(file_path: str, size: int, mtime: int) -> list[int] | None:
+    """Return cached keyframe times (ms) for a file, or None when missing or the file changed."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(
+            "SELECT keyframes FROM keyframe_index WHERE file_path=? AND size=? AND mtime=?", (file_path, size, mtime)
+        )).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+async def put_keyframes(file_path: str, size: int, mtime: int, keyframes: list[int]) -> None:
+    """Store a file's keyframe times (ms), replacing an older index of the same path."""
+    async with get_connection() as conn:
+        await conn.execute(
+            "INSERT OR REPLACE INTO keyframe_index(file_path, size, mtime, keyframes) VALUES(?,?,?,?)",
+            (file_path, size, mtime, json.dumps(keyframes)),
+        )
+        await conn.commit()
+
+
+async def get_flagged_files_without_keyframes(limit: int) -> list[str]:
+    """Return single-file media paths of titles with active skip segments and no keyframe index yet.
+
+    Multi-part titles are left out: the proxy re-encodes those (a copied stream's segment
+    times cannot be predicted across part boundaries).
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            f"""
+            SELECT DISTINCT j.file_path FROM scan_jobs j
+            JOIN segments s ON s.plex_guid = j.plex_guid
+            LEFT JOIN keyframe_index k ON k.file_path = j.file_path
+            WHERE {_ACTIVE_S} AND COALESCE(j.file_path,'') != ''
+              -- part_files is a JSON list; single-file titles hold one path (or nothing, older rows)
+              AND COALESCE(json_array_length(NULLIF(j.part_files, '')), 0) <= 1
+              AND k.file_path IS NULL
+            LIMIT ?
+            """,
+            (limit,),
+        )
+    return [r[0] for r in rows]
+
+
+async def get_file_for_rating_key(rating_key: str) -> str | None:
+    """Return the single media file of a title, or None for unknown or multi-part titles."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(
+            "SELECT file_path, part_files FROM scan_jobs WHERE rating_key=? LIMIT 1", (rating_key,)
+        )).fetchone()
+    if not row or not row[0]:
+        return None
+    parts = json.loads(row[1]) if row[1] else []
+    return row[0] if len(parts) <= 1 else None
+
+
+async def replace_title_parts(pairs: list[tuple[int, str]]) -> None:
+    """Store (part_id, rating_key) pairs, replacing any earlier owner of a part id."""
+    if not pairs:
+        return
+    async with get_connection() as conn:
+        await conn.executemany("INSERT OR REPLACE INTO title_parts(part_id, rating_key) VALUES(?,?)", pairs)
+        await conn.commit()
+
+
+async def count_parts_for_rating_key(rating_key: str) -> int:
+    """How many Plex parts (files, over all versions) a title has, from the library pass."""
+    async with get_connection() as conn:
+        row = await (await conn.execute("SELECT COUNT(*) FROM title_parts WHERE rating_key=?", (rating_key,))).fetchone()
+    return row[0]
+
+
+async def get_rating_key_for_part(part_id: int) -> str | None:
+    """Return the rating key a Plex part id belongs to, or None when unknown."""
+    async with get_connection() as conn:
+        row = await (await conn.execute("SELECT rating_key FROM title_parts WHERE part_id=?", (part_id,))).fetchone()
+        return row[0] if row else None
+
+
+async def get_cast_keys_to_sync(limit: int, refresh_days: int = 30) -> list[str]:
+    """Return up to *limit* Plex rating keys (movies, and shows for episodes) never synced or synced over refresh_days ago."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            """
+            SELECT k.rating_key FROM (
+                SELECT DISTINCT CASE WHEN media_type='episode' AND COALESCE(show_rating_key,'') != ''
+                                     THEN show_rating_key ELSE rating_key END AS rating_key
+                FROM scan_jobs WHERE COALESCE(rating_key,'') != ''
+            ) k
+            LEFT JOIN cast_synced c ON c.rating_key = k.rating_key
+            WHERE c.rating_key IS NULL OR c.synced_at < datetime('now', ?)
+            ORDER BY c.synced_at IS NOT NULL, c.synced_at LIMIT ?
+            """,
+            (f"-{int(refresh_days)} days", limit),
+        )
+        return [r[0] for r in rows]
+
+
+async def replace_cast(cast_by_key: dict[str, list[str]]) -> None:
+    """Replace the stored cast of each rating key and mark it synced (an empty list is a valid result)."""
+    if not cast_by_key:
+        return
+    async with get_connection() as conn:
+        keys = list(cast_by_key)
+        for i in range(0, len(keys), 500):
+            chunk = keys[i:i + 500]
+            await conn.execute(f"DELETE FROM title_cast WHERE rating_key IN ({','.join('?' * len(chunk))})", chunk)
+        await conn.executemany(
+            "INSERT OR IGNORE INTO title_cast(rating_key, actor) VALUES(?,?)",
+            [(k, a) for k, actors in cast_by_key.items() for a in actors],
+        )
+        await conn.executemany(
+            "INSERT INTO cast_synced(rating_key, synced_at) VALUES(?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(rating_key) DO UPDATE SET synced_at=CURRENT_TIMESTAMP",
+            [(k,) for k in keys],
+        )
+        await conn.commit()
+
+
+async def get_cast_for_library(library_id: str) -> dict[str, list[str]]:
+    """Return {plex_guid: [actor, ...]} for a library's titles in one query; episodes get their show's cast."""
+    out: dict[str, list[str]] = {}
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            """
+            SELECT j.plex_guid, c.actor FROM scan_jobs j
+            JOIN title_cast c ON c.rating_key =
+                CASE WHEN j.media_type='episode' AND COALESCE(j.show_rating_key,'') != ''
+                     THEN j.show_rating_key ELSE j.rating_key END
+            WHERE j.library_id = ? ORDER BY c.actor
+            """,
+            (library_id,),
+        )
+    for r in rows:
+        out.setdefault(r[0], []).append(r[1])
     return out
 
 

@@ -852,7 +852,7 @@ async def scan_video(plex_guid: str, config) -> None:
             """True when the feedback-trained verifier says the cluster's peak frame looks like a false positive (#165)."""
             if not verifier_pct or not cluster_best_jpeg:
                 return False
-            group = "siglip" if source == "siglip" else "nudenet"
+            group = verifier.group_key("siglip" if source == "siglip" else "nudenet", cluster_detected_labels)
             drop, score = await _infer(verifier.judge_jpeg, cluster_best_jpeg, group, verifier_pct)
             if drop:
                 logger.info(

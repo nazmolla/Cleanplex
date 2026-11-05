@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections import deque
 from datetime import datetime
 
@@ -59,6 +60,7 @@ async def session_watcher_loop(get_config_fn, get_client_fn) -> None:
                 user_filter = await db.get_user_filter(session.user)
                 # Default: filter enabled if no explicit record
                 if user_filter is None or user_filter["enabled"]:
+                    await _backstop(session, client)
                     await filter_engine.process(
                         session,
                         client,
@@ -85,18 +87,56 @@ async def session_watcher_loop(get_config_fn, get_client_fn) -> None:
         await asyncio.sleep(await _next_poll_delay(sessions, config))
 
 
+# Plex playback session ids already stopped by the backstop, so each is stopped once.
+_backstopped: set[str] = set()
+# A stream gets this long to show up in the proxy's sessions before it counts as a bypass:
+# the proxy records a session at transcode start, Plex reports it a poll later.
+BACKSTOP_GRACE_S = 20
+_first_seen: dict[str, float] = {}
+
+
+async def _backstop(session, client) -> None:
+    """Stop a filtered viewer's stream of a flagged title that never passed the stream proxy (#184).
+
+    Only once the front door is installed (enforcement_enabled): from then on every
+    client reaches Plex through the proxy, so a stream it never saw came another way
+    (relay, DLNA, a misconfigured firewall) and would play unfiltered.
+    """
+    if await db.get_setting("enforcement_enabled", "0") != "1" or await db.get_setting("enforcement_backstop", "1") != "1":
+        return
+    sid = session.playback_session_id
+    if not sid or sid in _backstopped or not session.client_identifier:
+        return
+    if await db.is_proxied(session.client_identifier, session.rating_key):
+        return
+    from .stream_proxy import eligible_ranges
+
+    if not await eligible_ranges()(session.rating_key, session.user):
+        return
+    first = _first_seen.setdefault(sid, time.monotonic())
+    if time.monotonic() - first < BACKSTOP_GRACE_S:
+        return
+    _backstopped.add(sid)
+    stopped = await client.terminate_session(sid, "This title is filtered. Play it again to watch the filtered version.")
+    logger.warning("Backstop %s %s's stream of '%s' on %s: it did not pass the stream proxy",
+                   "stopped" if stopped else "could not stop", session.user, session.full_title, session.client_title)
+
+
 # client_identifier -> last recorded value, so the DB is written only when it changes.
 _recorded_control: dict[str, bool] = {}
 
 
 async def _remember_client_control(session) -> None:
-    """Record whether live skipping can reach this session's client (used by the stream proxy)."""
+    """Record a client live skipping cannot reach (not a local player), for the stream proxy.
+
+    Only the negative is recorded here. Whether commands really get through is learned from
+    their outcome (PlexClient._record_reachability, #184): a reported player state proves nothing.
+    """
     if not session.client_identifier:
         return
-    reachable = bool(session.is_controllable and session.client_local)
-    if _recorded_control.get(session.client_identifier) != reachable:
-        await db.record_client_control(session.client_identifier, reachable)
-        _recorded_control[session.client_identifier] = reachable
+    if not (session.is_controllable and session.client_local) and _recorded_control.get(session.client_identifier) is not False:
+        await db.record_client_control(session.client_identifier, False)
+        _recorded_control[session.client_identifier] = False
 
 
 async def _next_poll_delay(sessions, config) -> float:
@@ -194,6 +234,8 @@ async def library_watcher_loop(get_config_fn, get_client_fn) -> None:
                     }
                     for i in fresh
                 ])
+                # Direct file requests are matched to titles by part id (#184); cheap enough to refresh each pass.
+                await db.replace_title_parts([(pid, i.rating_key) for i in items if i.file_path for pid in i.part_ids])
                 to_queue = []
                 for item in fresh:
                     # A skip file sitting beside the media is authoritative and

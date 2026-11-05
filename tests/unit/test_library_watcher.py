@@ -14,7 +14,7 @@ def _item(guid):
     return SimpleNamespace(
         plex_guid=guid, title=guid, file_path=f"/m/{guid}.mkv", rating_key="1", library_id="l",
         library_title="L", content_rating="", media_type="movie", year=2020, show_guid="",
-        part_files=[f"/m/{guid}.mkv"], duration_ms=1000,
+        part_files=[f"/m/{guid}.mkv"], duration_ms=1000, part_ids=[abs(hash(guid)) % 100000],
     )
 
 

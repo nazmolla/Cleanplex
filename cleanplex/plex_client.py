@@ -15,6 +15,7 @@ from typing import Any
 _SHOW_ART_CACHE_TTL_S = 600
 
 import httpx
+from plexapi.exceptions import NotFound
 from plexapi.server import PlexServer
 from plexapi.exceptions import PlexApiException
 
@@ -50,6 +51,12 @@ class ActiveSession:
     # ISO code of the audio track being played, empty when it cannot be determined.
     # Language-specific segments (profanity mutes) only apply to their own track.
     audio_language: str = ""
+    # Plex's playback session id (Session.id), the handle the dashboard's Stop terminates.
+    playback_session_id: str = ""
+
+
+CAST_CHUNK = 40   # rating keys per metadata request; keeps the URL and response modest
+MAX_CAST = 40     # billed roles kept per title; Plex lists extras and bit parts after the leads
 
 
 @dataclass
@@ -78,6 +85,8 @@ class MediaItem:
     # file_path holds parts[0]; part_files holds the full list.
     # Empty for single-file titles.
     part_files: list = field(default_factory=list)
+    # Plex part ids of every media version; a direct file request names one of these (#184).
+    part_ids: list = field(default_factory=list)
 
 
 @dataclass
@@ -85,6 +94,14 @@ class PlexUser:
     username: str
     thumb: str = ""
     is_home_user: bool = True
+
+
+def _playback_session_id(session: Any) -> str:
+    """The Session element's id of a plexapi session item ('' when absent)."""
+    sess = getattr(session, "session", None)
+    if isinstance(sess, list):
+        sess = sess[0] if sess else None
+    return str(getattr(sess, "id", "") or "")
 
 
 class PlexClient:
@@ -172,7 +189,9 @@ class PlexClient:
                     file_path = part.file or ""
                     # The selected stream is what the viewer actually hears; fall
                     # back to the first audio stream when Plex marks none selected.
-                    streams = [st for st in (getattr(part, "audioStreams", None) or [])]
+                    # plexapi's MediaPart.audioStreams is a method; iterating it unbound raised
+                    # TypeError and dropped every live session (#182).
+                    streams = list(part.audioStreams())
                     selected = next((st for st in streams if getattr(st, "selected", False)), None)
                     chosen = selected or (streams[0] if streams else None)
                     if chosen is not None:
@@ -210,10 +229,13 @@ class PlexClient:
                         library_section_id=section_id,
                         volume=volume,
                         audio_language=audio_language,
+                        playback_session_id=_playback_session_id(s),
                     )
                 )
             except Exception as exc:
-                logger.debug("Error parsing session: %s", exc)
+                # WARNING, not DEBUG: a parse failure drops the session, so filtering silently
+                # stops for that viewer (#182).
+                logger.warning("Error parsing session: %s", exc)
 
         return result
 
@@ -321,6 +343,28 @@ class PlexClient:
         search — up to 12 requests — before landing, which is exactly when latency
         matters most.
         """
+        sent = await self._send_command_inner(path, client_identifier, client_address, client_port)
+        await self._record_reachability(client_identifier, sent)
+        return sent
+
+    async def _record_reachability(self, client_identifier: str, reached: bool) -> None:
+        """Remember whether a command really reached this client (#184).
+
+        The player state a session reports says nothing about whether commands get through:
+        Plex Web in a browser reports one and answers every command with 404. The stream
+        proxy uses this record to decide which clients need their playlist edited instead.
+        """
+        from . import database as db
+
+        try:
+            if await db.get_client_control(client_identifier) is not reached:
+                await db.record_client_control(client_identifier, reached)
+        except Exception as exc:
+            logger.debug("Could not record client reachability: %s", exc)
+
+    async def _send_command_inner(
+        self, path: str, client_identifier: str, client_address: str = "", client_port: int = 32500
+    ) -> bool:
         profile = self._client_profiles.get(client_identifier)
 
         if profile is not None:
@@ -365,6 +409,40 @@ class PlexClient:
                     return True
 
         return False
+
+    # Plex preferences Cleanplex may set for the front door (#184), and their Plex keys.
+    ENFORCEMENT_PREFS = {"relay": "RelayEnabled", "dlna": "DlnaEnabled", "transcode_limit": "TranscodeCountLimit"}
+
+    async def get_prefs(self, keys: list[str]) -> dict[str, str]:
+        """Return the current values of the given Plex server preferences (missing keys are left out)."""
+        resp = await self._http.get(f"{self.url}/:/prefs", params={"X-Plex-Token": self.token},
+                                    headers={"Accept": "application/json"})
+        resp.raise_for_status()
+        settings = resp.json().get("MediaContainer", {}).get("Setting", [])
+        return {s["id"]: str(s.get("value")) for s in settings if s.get("id") in keys}
+
+    async def set_prefs(self, values: dict[str, str]) -> None:
+        """Set Plex server preferences (owner token required); raises on a Plex error."""
+        resp = await self._http.put(f"{self.url}/:/prefs", params={**values, "X-Plex-Token": self.token})
+        resp.raise_for_status()
+
+    async def terminate_session(self, playback_session_id: str, reason: str) -> bool:
+        """Stop a playback session server side, as the dashboard's Stop does; True if Plex accepted it.
+
+        Plex then refuses that session any further direct play or transcode data, whatever
+        the client and network (#184), so this is the backstop for streams the proxy never saw.
+        """
+        if not playback_session_id:
+            return False
+        try:
+            resp = await self._http.get(
+                f"{self.url}/status/sessions/terminate",
+                params={"sessionId": playback_session_id, "reason": reason, "X-Plex-Token": self.token},
+            )
+            return resp.status_code < 300
+        except httpx.HTTPError as exc:
+            logger.warning("Could not terminate session %s: %s", playback_session_id, exc)
+            return False
 
     async def seek(self, client_identifier: str, offset_ms: int, client_address: str = "", client_port: int = 32500) -> bool:
         """Seek the given client to offset_ms. Returns True if a command was accepted."""
@@ -440,6 +518,34 @@ class PlexClient:
         # Thousands of items: parse off the event loop so polling and the API stay responsive.
         return await asyncio.to_thread(_parse)
 
+    async def get_cast(self, rating_keys: list[str]) -> dict[str, list[str]]:
+        """Return {rating_key: [actor names]} for movies or shows, fetching them in one request per chunk.
+
+        Plex's bulk section listing omits cast, so the full metadata is read here. A rating key
+        Plex no longer has comes back with an empty cast (#180).
+        """
+        out: dict[str, list[str]] = {}
+        srv = await asyncio.to_thread(self._get_server)
+
+        def roles_of(item) -> list[str]:
+            return [r.tag for r in (getattr(item, "roles", None) or []) if r.tag][:MAX_CAST]
+
+        for i in range(0, len(rating_keys), CAST_CHUNK):
+            chunk = rating_keys[i:i + CAST_CHUNK]
+            try:
+                items = await asyncio.to_thread(srv.fetchItems, "/library/metadata/" + ",".join(chunk))
+                out.update({str(item.ratingKey): roles_of(item) for item in items})
+            except NotFound:
+                # One rating key Plex no longer has makes the whole batch 404. Ask one by one and
+                # record the missing ones as having no cast, so they stop blocking the queue.
+                for key in chunk:
+                    try:
+                        items = await asyncio.to_thread(srv.fetchItems, f"/library/metadata/{key}")
+                        out[key] = roles_of(items[0]) if items else []
+                    except NotFound:
+                        out[key] = []
+        return out
+
     def _media_item_from_plex(self, item: Any, library_id: str, library_title: str) -> MediaItem | None:
         try:
             # For multi-version items, try each media[] entry until we find one
@@ -458,6 +564,8 @@ class PlexClient:
             part_files: list[str] = []
             if chosen_media and chosen_media.parts:
                 part_files = [p.file for p in chosen_media.parts if p.file]
+
+            part_ids = [int(p.id) for media in (item.media or []) for p in (media.parts or []) if getattr(p, "id", None)]
 
             guid = ""
             if hasattr(item, "guids") and item.guids:
@@ -489,6 +597,7 @@ class PlexClient:
                 show_guid=show_guid,
                 show_rating_key=show_rating_key,
                 part_files=part_files,
+                part_ids=part_ids,
                 duration_ms=int(getattr(item, "duration", 0) or 0),
             )
         except Exception:

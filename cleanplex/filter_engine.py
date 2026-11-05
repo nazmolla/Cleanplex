@@ -110,6 +110,10 @@ async def process(
     lookahead_ms: int = 5000,
 ) -> None:
     """Check the session's position against stored segments and act if needed."""
+    # The stream proxy already removed this viewer's ranges from the stream. A seek here would
+    # use the original timeline against an edited one and land in the wrong place (#184).
+    if session.client_identifier and await db.is_proxied(session.client_identifier, session.rating_key):
+        return
     if not session.is_controllable:
         logger.info("Session %s (%s) is not controllable – skipping", session.session_key, session.full_title)
         return
@@ -229,7 +233,9 @@ async def verify_pending_seek(session: ActiveSession, client: PlexClient) -> Non
 
 async def _apply_skip(session: ActiveSession, client: PlexClient, seg: dict, pos: int) -> None:
     """Seek past the segment and record the outcome."""
-    target = seg["start_ms"]
+    # The widened end (segment end + post-buffer). Seeking to the start instead (c42c7e0)
+    # replayed the scene on every client that obeyed (#185).
+    target = seg["end_ms"]
     logger.info(
         "Skipping [%s] for user '%s': %dms → %dms (segment: %d–%d, category=%s, confidence=%.2f)",
         session.full_title,

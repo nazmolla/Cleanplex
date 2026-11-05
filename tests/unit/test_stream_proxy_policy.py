@@ -176,10 +176,13 @@ async def test_a_managed_user_without_a_username_falls_back_to_the_title():
     await users.aclose()
 
 
-async def test_a_failed_lookup_returns_none_and_is_not_cached():
+async def test_a_failed_lookup_is_cached_briefly_then_retried():
+    """A failure is remembered for FAIL_TTL_S so a slow plex.tv does not stall every request (#184)."""
     answers = iter([httpx.Response(401), httpx.Response(200, json={"username": "late"})])
     users = PlexTvUsers(transport=httpx.MockTransport(lambda r: next(answers)))
     assert await users("tok") is None
+    assert await users("tok") is None  # still inside the failure window: no second request
+    users._cache["tok"] = (0.0, None)  # window over
     assert await users("tok") == "late"
     await users.aclose()
 
@@ -193,12 +196,13 @@ def _session(client_id="tv", controllable=True, local=True):
 
 
 @pytest.mark.usefixtures("setup_db")
-async def test_watcher_records_reachable_only_for_a_controllable_local_player(monkeypatch):
+async def test_watcher_records_only_clients_that_cannot_be_reached(monkeypatch):
     watcher._recorded_control.clear()
     await watcher._remember_client_control(_session("a", controllable=True, local=True))
     await watcher._remember_client_control(_session("b", controllable=True, local=False))
     await watcher._remember_client_control(_session("c", controllable=False, local=True))
-    assert [await db.get_client_control(c) for c in "abc"] == [True, False, False]
+    # Only the negative is written; whether commands reach a client is learned from their outcome (#184).
+    assert [await db.get_client_control(c) for c in "abc"] == [None, False, False]
 
 
 @pytest.mark.usefixtures("setup_db")
@@ -214,12 +218,11 @@ async def test_watcher_writes_only_when_the_value_changes():
     db_record = db.record_client_control
     db.record_client_control = counting
     try:
-        await watcher._remember_client_control(_session("a"))
-        await watcher._remember_client_control(_session("a"))
+        await watcher._remember_client_control(_session("a", controllable=False))
         await watcher._remember_client_control(_session("a", controllable=False))
     finally:
         db.record_client_control = db_record
-    assert writes == [("a", True), ("a", False)]
+    assert writes == [("a", False)]
 
 
 @pytest.mark.usefixtures("setup_db")
@@ -232,9 +235,9 @@ async def test_watcher_ignores_a_session_with_no_client_identifier():
 def test_force_inject_drops_the_client_condition_only():
     from cleanplex.stream_proxy import db_policy
 
-    normal = db_policy()
-    forced = db_policy(ignore_client=True)
-    assert normal.client_controllable is not None
+    checked = db_policy(ignore_client=False)
+    forced = db_policy()  # the default since #184: every client is edited
+    assert checked.client_controllable is not None
     assert forced.client_controllable is None
     assert forced.filter_enabled is not None and forced.resolve_user is not None
 

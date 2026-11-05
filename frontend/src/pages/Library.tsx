@@ -35,6 +35,8 @@ interface Title {
   content_rating: string
   media_type: string
   year?: number | null
+  /** Actors Plex lists for the title (a show's for its episodes), for the cast filter (#180). */
+  cast?: string[]
   ignored: boolean
 }
 
@@ -233,6 +235,10 @@ export default function Library() {
   const [sortBy, setSortBy] = useState<SortOption>('date-added')
   const [sortDesc, setSortDesc] = useState(true)
   const [showIgnored, setShowIgnored] = useState(false)
+  // Inclusive bounds for the active sort: YYYY-MM-DD for scanned date, a year for release year.
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [castFilter, setCastFilter] = useState('')
   // Ratings the scanner accepts; empty means every rating is scanned.
   const [scanRatings, setScanRatings] = useState<string[]>([])
   const [scannerStatus, setScannerStatus] = useState<ScannerStatus | null>(null)
@@ -241,10 +247,13 @@ export default function Library() {
   const [expandedSeasons, setExpandedSeasons] = useState<Set<string>>(new Set())
   const [expandedSegments, setExpandedSegments] = useState<Set<string>>(new Set())
   const [loadedSegments, setLoadedSegments] = useState<Record<string, Segment[]>>({})
-  // The title's segment_count when its list was fetched. Compared with later counts
-  // rather than the list length, because the list hides disabled labels and the
-  // count does not; a length check would refetch forever.
-  const loadedCounts = useRef<Record<string, number>>({})
+  // The title's counts when its list was fetched ("active:falsePositive"). Compared with
+  // later counts rather than the list length, because the list hides disabled labels and
+  // the count does not; a length check would refetch forever. Both numbers are in the key:
+  // a scan that only adds verifier-rejected segments leaves segment_count at 0, and keying
+  // on it alone left an empty cached list on screen next to a "1 false positive" badge.
+  const loadedCounts = useRef<Record<string, string>>({})
+  const countKey = (t: Title) => `${t.segment_count}:${t.false_positive_count ?? 0}`
   const [loadingSegments, setLoadingSegments] = useState<Set<string>>(new Set())
   const [deletingSegs, setDeletingSegs] = useState<Record<number, boolean>>({})
   const [deletingAllSegs, setDeletingAllSegs] = useState<Record<string, boolean>>({})
@@ -344,12 +353,14 @@ export default function Library() {
     // Fetch on expand unless the cached list is still current (see the effect below).
     if (!isOpen && !(guid in loadedSegments)) {
       setLoadingSegments(prev => new Set(prev).add(guid))
-      loadedCounts.current[guid] = titles.find(t => t.plex_guid === guid)?.segment_count ?? 0
+      const t = titles.find(x => x.plex_guid === guid)
+      loadedCounts.current[guid] = t ? countKey(t) : '0:0'
       try {
         const d = await api.get<{ segments: Segment[] }>(`/api/titles/${encodeURIComponent(guid)}/segments`)
         setLoadedSegments(prev => ({ ...prev, [guid]: d.segments }))
       } catch {
-        setLoadedSegments(prev => ({ ...prev, [guid]: [] }))
+        // Not cached: a failed fetch must not look like "no segments" until the page reloads.
+        delete loadedCounts.current[guid]
       } finally {
         setLoadingSegments(prev => { const n = new Set(prev); n.delete(guid); return n })
       }
@@ -361,11 +372,11 @@ export default function Library() {
   // in one batch request and drop the rest so they refetch on their next expand.
   // Keyed on titles only: expanding a title must not trigger a refetch here.
   useEffect(() => {
-    const stale = titles.filter(t => t.plex_guid in loadedCounts.current && loadedCounts.current[t.plex_guid] !== t.segment_count)
+    const stale = titles.filter(t => t.plex_guid in loadedCounts.current && loadedCounts.current[t.plex_guid] !== countKey(t))
     if (stale.length === 0) return
     const open = stale.filter(t => expandedSegments.has(t.plex_guid)).map(t => t.plex_guid)
     const closed = stale.filter(t => !expandedSegments.has(t.plex_guid)).map(t => t.plex_guid)
-    for (const t of stale) loadedCounts.current[t.plex_guid] = t.segment_count
+    for (const t of stale) loadedCounts.current[t.plex_guid] = countKey(t)
     if (closed.length) {
       setLoadedSegments(prev => {
         const next = { ...prev }
@@ -462,6 +473,8 @@ export default function Library() {
         />
         {loadingSegments.has(guid) ? (
           <p className="text-xs text-gray-500 px-1">Loading segments…</p>
+        ) : !(guid in loadedSegments) ? (
+          <p className="text-xs text-red-400 px-1">Could not load segments. Collapse and reopen to retry.</p>
         ) : segs.length === 0 ? (
           <p className="text-xs text-gray-600 px-1">No segments found</p>
         ) : segs.map(seg => (
@@ -696,9 +709,29 @@ export default function Library() {
   const ratingExcluded = (t: Title) =>
     t.status === 'pending' && !ratingAllowed(t.content_rating, scanRatings)
 
+  const dateFilterActive = sortBy === 'scanned' || sortBy === 'year'
+
+  // Actors in two or more titles, most frequent first, as suggestions for the cast filter.
+  const castSuggestions = (() => {
+    const counts = new Map<string, number>()
+    for (const t of titles) for (const a of t.cast ?? []) counts.set(a, (counts.get(a) ?? 0) + 1)
+    return [...counts].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 2000).map(([a]) => a)
+  })()
+
   // Every filter except the status tab, so each tab's count matches what it lists.
   const visible = titles.filter(t => {
     if (ratingExcluded(t)) return false
+    if (castFilter && !(t.cast ?? []).some(a => a.toLowerCase().includes(castFilter.toLowerCase()))) return false
+    if (dateFilterActive && (dateFrom || dateTo)) {
+      if (sortBy === 'year') {
+        // Titles Plex has no year for cannot be inside a range.
+        if (!t.year || (dateFrom && t.year < Number(dateFrom)) || (dateTo && t.year > Number(dateTo))) return false
+      } else {
+        // finished_at is "YYYY-MM-DD HH:MM:SS"; a never-scanned title has no scan date.
+        const d = (t.finished_at ?? '').slice(0, 10)
+        if (!d || (dateFrom && d < dateFrom) || (dateTo && d > dateTo)) return false
+      }
+    }
     if (filter && !t.title.toLowerCase().includes(filter.toLowerCase())) return false
     if (ratingFilter !== 'all' && t.content_rating !== ratingFilter) return false
     if (!showIgnored && t.ignored) return false
@@ -970,6 +1003,18 @@ export default function Library() {
                 onChange={e => setFilter(e.target.value)}
                 className="flex-1 min-w-[8rem] px-3 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
               />
+              <input
+                type="text"
+                list="cast-suggestions"
+                placeholder="Actor..."
+                aria-label="Filter by actor"
+                value={castFilter}
+                onChange={e => setCastFilter(e.target.value)}
+                className="w-36 px-3 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
+              />
+              <datalist id="cast-suggestions">
+                {castSuggestions.map(a => <option key={a} value={a} />)}
+              </datalist>
               {availableRatings.length > 0 && (
                 <select
                   value={ratingFilter}
@@ -984,7 +1029,7 @@ export default function Library() {
               )}
               <select
                 value={sortBy}
-                onChange={e => setSortBy(e.target.value as SortOption)}
+                onChange={e => { setSortBy(e.target.value as SortOption); setDateFrom(''); setDateTo('') }}
                 className="px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 focus:outline-none focus:border-plex-orange/50"
               >
                 <option value="date-added">Date Added</option>
@@ -993,6 +1038,34 @@ export default function Library() {
                 <option value="year">Release Year</option>
                 <option value="segments">Segments</option>
               </select>
+              {dateFilterActive && (
+                <>
+                  <input
+                    type={sortBy === 'scanned' ? 'date' : 'number'}
+                    placeholder="From year"
+                    aria-label={sortBy === 'scanned' ? 'Scanned from' : 'Released from year'}
+                    value={dateFrom}
+                    onChange={e => setDateFrom(e.target.value)}
+                    className="w-32 px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
+                  />
+                  <input
+                    type={sortBy === 'scanned' ? 'date' : 'number'}
+                    placeholder="To year"
+                    aria-label={sortBy === 'scanned' ? 'Scanned to' : 'Released to year'}
+                    value={dateTo}
+                    onChange={e => setDateTo(e.target.value)}
+                    className="w-32 px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
+                  />
+                  {(dateFrom || dateTo) && (
+                    <button
+                      onClick={() => { setDateFrom(''); setDateTo('') }}
+                      className="px-2 py-1.5 text-xs text-gray-400 hover:text-white"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </>
+              )}
               <button
                 onClick={() => setSortDesc(!sortDesc)}
                 className="px-2.5 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 hover:text-white hover:border-gray-500 transition-colors"

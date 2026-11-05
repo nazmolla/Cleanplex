@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from fastapi import APIRouter, HTTPException
 
 from ...logger import get_logger
@@ -34,7 +36,8 @@ async def get_sessions():
             "client": s.client_title,
             "is_controllable": s.is_controllable,
             "filtering_enabled": filtering_enabled,
-            "thumb_url": client.thumb_url(s.thumb) if s.thumb else "",
+            # Same-origin image proxy: the direct Plex URL carries the server token (#183).
+            "thumb_url": f"/api/plex-image?path={quote(s.thumb, safe='')}" if s.thumb else "",
         })
     return {"sessions": result}
 

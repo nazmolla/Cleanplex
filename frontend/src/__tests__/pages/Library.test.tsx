@@ -430,3 +430,75 @@ describe('Library: Not Rated and failed titles (#149, #150)', () => {
     expect(await screen.findByText(/Could not retry the failed titles: 503 down/)).toBeInTheDocument()
   })
 })
+
+
+describe('Library: date and cast filters, rejected segments (#177, #179, #180)', () => {
+  const rich = [
+    { plex_guid: 'a', rating_key: '1', title: 'Alpha', status: 'done', progress: 1,
+      finished_at: '2026-11-01 10:00:00', thumb_url: '', segment_count: 0, false_positive_count: 0,
+      content_rating: 'R', media_type: 'movie', year: 2015, cast: ['Jane Roe'], ignored: false },
+    { plex_guid: 'b', rating_key: '2', title: 'Bravo', status: 'done', progress: 1,
+      finished_at: '2026-11-04 10:00:00', thumb_url: '', segment_count: 0, false_positive_count: 1,
+      content_rating: 'R', media_type: 'movie', year: 2020, cast: ['John Doe'], ignored: false },
+  ]
+  let currentTitles: any[] = rich
+
+  beforeEach(() => {
+    currentTitles = JSON.parse(JSON.stringify(rich))
+    mockApi.get.mockImplementation((path: string) => {
+      if (path.includes('scanner-status')) return Promise.resolve(scannerIdle)
+      if (path.includes('libraries') && !path.includes('titles')) return Promise.resolve({ libraries })
+      if (path.endsWith('/segments')) return Promise.resolve({ segments: [] })
+      if (path.includes('titles')) return Promise.resolve({ titles: JSON.parse(JSON.stringify(currentTitles)) })
+      return Promise.resolve({})
+    })
+  })
+
+  async function open() {
+    renderLibrary()
+    await waitFor(() => screen.getAllByText('Movies')[0])
+    await act(async () => { fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'lib1' } }) })
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument())
+  }
+  const sortSelect = () => screen.getAllByRole('combobox').find(c => (c as HTMLSelectElement).value === 'date-added')!
+
+  it('filters by scan date range only while sorted by scanned date', async () => {
+    await open()
+    expect(screen.queryByLabelText('Scanned from')).toBeNull()
+    fireEvent.change(sortSelect(), { target: { value: 'scanned' } })
+    fireEvent.change(screen.getByLabelText('Scanned from'), { target: { value: '2026-11-03' } })
+    await waitFor(() => expect(screen.queryByText('Alpha')).toBeNull())
+    expect(screen.getByText('Bravo')).toBeInTheDocument()
+  })
+
+  it('filters by release year range', async () => {
+    await open()
+    fireEvent.change(sortSelect(), { target: { value: 'year' } })
+    fireEvent.change(screen.getByLabelText('Released from year'), { target: { value: '2019' } })
+    await waitFor(() => expect(screen.queryByText('Alpha')).toBeNull())
+    fireEvent.change(screen.getByLabelText('Released to year'), { target: { value: '2019' } })
+    await waitFor(() => expect(screen.queryByText('Bravo')).toBeNull())
+  })
+
+  it('filters the list by actor', async () => {
+    await open()
+    fireEvent.change(screen.getByLabelText('Filter by actor'), { target: { value: 'jane' } })
+    await waitFor(() => expect(screen.queryByText('Bravo')).toBeNull())
+    expect(screen.getByText('Alpha')).toBeInTheDocument()
+  })
+
+  it('refetches an open list when only the false-positive count changes', async () => {
+    currentTitles[1].false_positive_count = 0
+    await open()
+    fireEvent.click(screen.getAllByTitle('Toggle segments')[0])
+    await waitFor(() => expect(screen.getByText('No segments found')).toBeInTheDocument())
+    mockApi.post.mockResolvedValue({ segments: [{ id: 9, plex_guid: 'b', title: 'Bravo', start_ms: 0, end_ms: 1000,
+      confidence: 0.9, has_thumbnail: false, thumbnail_url: '', created_at: '', labels: '', false_positive: true, auto_rejected: true }] })
+    currentTitles[1].false_positive_count = 1
+    await act(async () => {
+      emitLive('segments_changed', { guid: 'b' })
+      await vi.advanceTimersByTimeAsync(600)
+    })
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/titles/segments/batch', { guids: ['b'] }))
+  })
+})

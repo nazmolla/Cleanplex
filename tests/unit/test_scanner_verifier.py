@@ -23,7 +23,7 @@ async def test_a_cluster_the_verifier_rejects_is_not_inserted(tmp_path):
     with patch.object(verifier, "judge_jpeg", return_value=(True, 2.5)) as judge:
         segs, _ = await _scan(_film(), tmp_path, verifier_loss_pct=10)
     assert segs == []
-    assert judge.call_args.args[1:] == ("nudenet", 10)
+    assert judge.call_args.args[1:] == ("nudenet:FEMALE_BREAST_EXPOSED", 10)
 
 
 async def test_a_cluster_the_verifier_accepts_is_inserted(tmp_path):

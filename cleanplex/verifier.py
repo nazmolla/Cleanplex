@@ -1,8 +1,10 @@
 """Feedback-trained false-positive filter: a logistic head on SigLIP image embeddings (#165).
 
 Trained from the frames users marked as false positives versus the thumbnails of segments they
-kept, one model per detector family ("siglip" hits and "nudenet" hits). At scan time a flagged
-cluster's peak frame is scored and dropped when it looks like the frames users rejected.
+kept, one model per detector family and label ("siglip:BUTTOCKS_EXPOSED", "nudenet:ANUS_EXPOSED"
+...). Each label needs both accepted and rejected examples; without both it has no model and its
+detections are never dropped (#178). At scan time a flagged cluster's peak frame is scored by the
+model for its label and dropped when it looks like the frames users rejected.
 """
 
 from __future__ import annotations
@@ -20,12 +22,12 @@ from .logger import get_logger
 
 logger = get_logger(__name__)
 
-GROUPS = ("siglip", "nudenet")
+FAMILIES = ("siglip", "nudenet")
 # Share of kept segments the user accepts losing; each level has its own score cut-off.
 LEVELS = (5, 10, 20)
 FOLDS = 5
 MIN_PER_CLASS = 30
-MAX_KEPT_PER_GROUP = 1500  # bounds training time: one SigLIP run per frame
+MAX_KEPT_PER_GROUP = 1500  # per family and label; bounds training time: one SigLIP run per frame
 EMBED_SCALE = 10.0  # embeddings are unit length, so their weights need a larger scale to fit quickly
 
 _lock = asyncio.Lock()  # one training run at a time
@@ -132,8 +134,16 @@ def load_model() -> dict | None:
 def status() -> dict:
     """Training state plus what the saved model covers, for the settings page."""
     model = load_model()
-    groups = {g: {k: model[g][k] for k in ("auc", "n", "false_positives")} for g in GROUPS if model and g in model}
+    groups = {
+        g: {k: m[k] for k in ("auc", "n", "false_positives")}
+        for g, m in (model or {}).items() if g != "trained_at"
+    }
     return {**_state, "trained_at": model["trained_at"] if model else None, "groups": groups}
+
+
+def group_key(family: str, labels: list[str]) -> str:
+    """Model key for a cluster: its detector family plus the peak frame's label (the first one)."""
+    return f"{family}:{labels[0]}" if labels else family
 
 
 def should_drop(embedding: np.ndarray, group: str, loss_pct: int) -> tuple[bool, float | None]:
@@ -171,7 +181,7 @@ def _embed_all(rows: list[dict]) -> tuple[list[dict], np.ndarray]:
 async def train() -> dict:
     """Embed the labelled frames, fit both groups and save the model; returns the new status.
 
-    Raises RuntimeError if a run is already going, SigLIP's models are missing, or no group has
+    Raises RuntimeError if a run is already going, SigLIP's models are missing, or no label has
     enough examples of both kinds.
     """
     if _lock.locked():
@@ -184,7 +194,7 @@ async def train() -> dict:
             rows = await db.get_verifier_training_rows(MAX_KEPT_PER_GROUP)
             rows, vectors = await asyncio.to_thread(_embed_all, rows)
             models: dict[str, dict] = {}
-            for group in GROUPS:
+            for group in sorted({r["group"] for r in rows}):
                 idx = [i for i, r in enumerate(rows) if r["group"] == group]
                 if not idx:
                     continue
@@ -195,7 +205,7 @@ async def train() -> dict:
                 if fitted:
                     models[group] = fitted
             if not models:
-                raise RuntimeError(f"Need at least {MIN_PER_CLASS} false positives and kept frames per detector to train")
+                raise RuntimeError(f"Need at least {MIN_PER_CLASS} false positives and kept frames for at least one label to train")
             await asyncio.to_thread(save_model, models)
             _state["finished_at"] = time.time()
             logger.info("Verifier trained: %s", {g: (m["n"], round(m["auc"], 3)) for g, m in models.items()})
