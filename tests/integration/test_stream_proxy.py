@@ -370,3 +370,128 @@ def test_an_unreachable_upstream_socket_closes_the_client_cleanly(plex):
     with TestClient(app) as client, client.websocket_connect("/:/websockets/notifications") as ws:
         with pytest.raises(WebSocketDisconnect):
             ws.receive_text()
+
+
+# ── #184: copy mode, fail closed, subtitles, persistence ─────────────────────
+
+class MemoryStore:
+    def __init__(self):
+        self.rows = {}
+
+    async def save(self, sid, data):
+        self.rows[sid] = dict(data)
+
+    async def load(self, sid):
+        return self.rows.get(sid)
+
+
+async def _proxy_with(plex, **kwargs):
+    app = create_proxy_app("http://plex.test", Policy(ranges_for=static_ranges([(7_000, 12_000)])),
+                           token="TESTTOKEN", transport=httpx.MockTransport(plex), **kwargs)
+    return app
+
+
+async def test_with_keyframes_the_video_is_copied_not_reencoded(plex):
+    async def keyframes(rk):
+        return [0, 4000, 9000, 14000, 19000, 24000, 29000]
+
+    app = await _proxy_with(plex, keyframes_provider=keyframes)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://proxy") as client:
+            await _start(client)
+            assert plex.seen[-1].url.params["directStream"] == "1"
+            assert plex.seen[-1].url.params["directPlay"] == "0"
+
+
+async def test_a_direct_file_request_for_a_flagged_title_is_refused(plex):
+    async def lookup(part_id):
+        return "42" if part_id == 7 else None
+
+    app = await _proxy_with(plex, part_lookup=lookup)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://proxy") as client:
+            refused = await client.get("/library/parts/7/123/file.mkv")
+            unknown = await client.get("/library/parts/8/123/file.mkv")
+    assert refused.status_code == 403
+    assert unknown.status_code == 200  # a part of an unflagged or unknown title passes
+
+
+async def test_a_dash_stream_of_a_flagged_title_is_refused(proxy):
+    client, _ = proxy
+    resp = await client.get("/video/:/transcode/universal/start.mpd",
+                            params={"path": "/library/metadata/42", "session": "d1", "protocol": "dash"})
+    assert resp.status_code == 403
+
+
+async def test_subtitles_of_an_edited_session_are_retimed(plex):
+    srt = "1\n00:00:20,000 --> 00:00:21,000\nAfter the cut\n"
+
+    def answer(request):
+        if request.url.path == "/video/:/transcode/universal/subtitles":
+            return httpx.Response(200, text=srt, headers={"content-type": "text/srt"})
+        return plex(request)
+
+    app = await _proxy_with(answer)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://proxy") as client:
+            await _start(client)
+            # Asked for before the playlist: the proxy works out the cut (5-15 s, two 5 s segments) itself.
+            resp = await client.get("/video/:/transcode/universal/subtitles", params={"session": SESSION})
+    assert "00:00:10,000 --> 00:00:11,000" in resp.text
+
+
+async def test_an_edit_survives_a_restart_through_the_store(plex):
+    store = MemoryStore()
+    first = await _proxy_with(plex, session_store=store)
+    async with first.router.lifespan_context(first):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=first), base_url="http://proxy") as client:
+            await _start(client)
+            await client.get(f"{BASE}/index.m3u8")
+    second = await _proxy_with(plex, session_store=store)  # a restarted proxy, empty memory
+    async with second.router.lifespan_context(second):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=second), base_url="http://proxy") as client:
+            playlist = (await client.get(f"{BASE}/index.m3u8")).text
+    assert "00001.ts" not in playlist and "00002.ts" not in playlist
+
+
+async def test_authorize_endpoint_answers_nginx_for_direct_file_requests(plex):
+    async def lookup(part_id):
+        return "42" if part_id == 7 else None
+
+    app = await _proxy_with(plex, part_lookup=lookup)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://proxy") as client:
+            refused = await client.get("/_proxy/authorize", headers={"X-Original-URI": "/library/parts/7/1/file.mkv?X-Plex-Token=t"})
+            allowed = await client.get("/_proxy/authorize", headers={"X-Original-URI": "/library/parts/8/1/file.mkv"})
+            other = await client.get("/_proxy/authorize", headers={"X-Original-URI": "/library/metadata/42"})
+    assert (refused.status_code, allowed.status_code, other.status_code) == (403, 204, 204)
+
+
+async def test_segment_endpoint_records_without_serving_bytes(proxy):
+    client, app = proxy
+    await _start(client)
+    await client.get(f"{BASE}/index.m3u8")
+    resp = await client.get("/_proxy/segment", headers={"X-Original-URI": f"{BASE}/00003.ts"})
+    assert resp.status_code == 204
+    assert app.state.proxy_state["requests"][-1] == {"session": SESSION, "segment": 3}
+
+
+async def test_segment_endpoint_refuses_a_removed_segment(proxy):
+    client, _ = proxy
+    await _start(client)
+    await client.get(f"{BASE}/index.m3u8")  # cuts 5-15 s: segments 1 and 2
+    refused = await client.get("/_proxy/segment", headers={"X-Original-URI": f"{BASE}/00001.ts"})
+    allowed = await client.get("/_proxy/segment", headers={"X-Original-URI": f"{BASE}/00004.ts"})
+    assert (refused.status_code, allowed.status_code) == (403, 204)
+
+
+async def test_preview_thumbnails_are_not_refused(plex):
+    async def lookup(part_id):
+        return "42"
+
+    app = await _proxy_with(plex, part_lookup=lookup)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://proxy") as client:
+            preview = await client.get("/_proxy/authorize", headers={"X-Original-URI": "/library/parts/7/indexes/sd"})
+            original = await client.get("/_proxy/authorize", headers={"X-Original-URI": "/library/parts/7/1/file.mkv"})
+    assert (preview.status_code, original.status_code) == (204, 403)

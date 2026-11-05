@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import bisect
 import ipaddress
 import os
 import re
@@ -40,8 +41,19 @@ Range = tuple[int, int]  # (start_ms, end_ms) in the original timeline
 
 _EXTINF = re.compile(r"#EXTINF:([\d.]+)")
 _RATING_KEY = re.compile(r"/library/metadata/(\d+)")
-_START_PATHS = {"/video/:/transcode/universal/start.m3u8", "/video/:/transcode/universal/start"}
+_START_PATHS = {
+    "/video/:/transcode/universal/start.m3u8", "/video/:/transcode/universal/start", "/video/:/transcode/universal/start.mpd",
+}
+# A direct file request (direct play, download) names a Plex part id. Preview thumbnails
+# (/library/parts/<id>/indexes/...) are left alone: a scrub preview is a minor leak and the
+# owner chose to keep previews (2026-11-05).
+_PART = re.compile(r"^/library/parts/(\d+)/(?!indexes/)")
+# Cached allow/deny of direct file requests per (token, rating key): players issue many range requests.
+_PART_DECISION_TTL_S = 60
 _DECISION_PATH = "/video/:/transcode/universal/decision"
+# Soft subtitles for a transcoded session come as one file on the film's timeline (Plex Web's
+# resolveSubtitlesUrl); they must be shifted like the video or they run ahead after a cut.
+_SUBTITLES_PATH = "/video/:/transcode/universal/subtitles"
 # Requests that carry the player position (milliseconds) for Plex to store as the resume point.
 _PROGRESS_PATHS = {"/:/timeline", "/:/progress"}
 _VARIANT = re.compile(r"^/video/:/transcode/universal/session/([^/]+)/base/index\.m3u8$")
@@ -73,7 +85,19 @@ class PlaylistEdit:
         return sum(end - start for start, end in self.spans)
 
 
-def edit_playlist(text: str, ranges: list[Range], offset_ms: int = 0) -> PlaylistEdit:
+# In copy mode Plex may start a segment on a keyframe up to this long before the playlist's
+# nominal boundary (measured 1.2 s on a 10 s-segment stream, #184); bounds are widened by it.
+COPY_BOUNDARY_TOLERANCE_MS = 1500
+
+
+def _first_at_or_after(keyframes: list[int], t_ms: float) -> float:
+    i = bisect.bisect_left(keyframes, t_ms)
+    return keyframes[i] if i < len(keyframes) else float("inf")
+
+
+def edit_playlist(
+    text: str, ranges: list[Range], offset_ms: int = 0, keyframes: list[int] | None = None,
+) -> PlaylistEdit:
     """Drop every segment that overlaps one of *ranges* from a Plex variant playlist.
 
     A segment's time is the running sum of EXTINF durations, starting at *offset_ms*
@@ -81,6 +105,13 @@ def edit_playlist(text: str, ranges: list[Range], offset_ms: int = 0) -> Playlis
     always widens outward to segment boundaries and never leaves flagged frames in.
     #EXT-X-DISCONTINUITY is inserted where a gap was cut, since the next segment's
     timestamps jump.
+
+    With *keyframes* (ms, file time) the stream is a copy, whose segments start on a source
+    keyframe near the nominal time rather than exactly on it. A segment then counts as
+    overlapping when anything from its earliest possible start (first keyframe at or after
+    nominal start minus the tolerance) to its latest possible end (first keyframe at or
+    after the nominal end) touches a range. The returned spans stay nominal, because the
+    player's clock runs on the EXTINF durations it was given.
     """
     lines = text.splitlines()
     out: list[str] = []
@@ -100,7 +131,11 @@ def edit_playlist(text: str, ranges: list[Range], offset_ms: int = 0) -> Playlis
         duration_ms = float(match.group(1)) * 1000
         uri = lines[i + 1] if i + 1 < len(lines) else ""
         start, end = cursor_ms, cursor_ms + duration_ms
-        if any(start < r_end and end > r_start for r_start, r_end in ranges):
+        lo, hi = start, end
+        if keyframes:
+            lo = _first_at_or_after(keyframes, start - COPY_BOUNDARY_TOLERANCE_MS)
+            hi = _first_at_or_after(keyframes, end)
+        if any(lo < r_end and hi > r_start for r_start, r_end in ranges):
             removed.append(index)
             if spans and spans[-1][1] == round(start):
                 spans[-1] = (spans[-1][0], round(end))
@@ -144,6 +179,143 @@ def edited_to_original(t_ms: int, spans: list[Range]) -> int:
     return t_ms + shift
 
 
+_SRT_VTT_CUE = re.compile(
+    r"(?P<a>(?:\d+:)?\d{2}:\d{2}[,.]\d{3})\s*-->\s*(?P<b>(?:\d+:)?\d{2}:\d{2}[,.]\d{3})(?P<rest>.*)"
+)
+
+
+def _parse_clock(text: str) -> int:
+    """'H:MM:SS.cc', 'HH:MM:SS,mmm' or 'MM:SS.mmm' -> ms."""
+    head, frac = re.split(r"[.,]", text)
+    parts = [int(p) for p in head.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0)
+    h, m, sec = parts
+    ms = int(frac) * (10 if len(frac) == 2 else 1)
+    return ((h * 60 + m) * 60 + sec) * 1000 + ms
+
+
+def _format_clock(ms: int, style: str) -> str:
+    ms = max(0, ms)
+    h, rem = divmod(ms, 3_600_000)
+    m, rem = divmod(rem, 60_000)
+    sec, frac = divmod(rem, 1000)
+    if style == "ass":
+        return f"{h}:{m:02d}:{sec:02d}.{frac // 10:02d}"
+    sep = "," if style == "srt" else "."
+    return f"{h:02d}:{m:02d}:{sec:02d}{sep}{frac:03d}"
+
+
+class SubtitleShifter:
+    """Re-time a subtitle stream (ASS, SRT or WebVTT) for a stream with *spans* removed, as it arrives.
+
+    Plex sends a transcoded session's subtitles progressively, a chunk at a time while the
+    transcode runs, so the response must be rewritten line by line rather than read whole.
+    Cue times are taken as relative to the stream start (*offset_ms* into the film). A cue
+    wholly inside a removed span is dropped; others move back by the time removed before
+    them, exactly as original_to_edited moves the video.
+    """
+
+    def __init__(self, spans: list[Range], offset_ms: int = 0):
+        self.spans = spans
+        self.offset = offset_ms
+        self.base = original_to_edited(offset_ms, spans) if spans else 0
+        self._buf = ""
+        self._style: str | None = None   # "ass", "srt" or "vtt", decided from the first content
+        self._held: str | None = None    # an SRT cue number, kept until its timing line is seen
+        self._dropping = False           # inside a dropped SRT/VTT cue: skip until a blank line
+
+    def _remap(self, t_ms: int) -> int:
+        return original_to_edited(t_ms + self.offset, self.spans) - self.base
+
+    def _inside(self, a: int, b: int) -> bool:
+        return any(a + self.offset >= s and b + self.offset <= e for s, e in self.spans)
+
+    def _line(self, line: str) -> list[str]:
+        if self._style is None and line.strip():
+            stripped = line.strip()
+            self._style = ("vtt" if stripped.startswith("WEBVTT")
+                           else "ass" if stripped.startswith("[") or stripped.startswith("Dialogue:") else "srt")
+        if self._style == "ass":
+            if line.startswith("Dialogue:"):
+                head, rest = line.split(":", 1)
+                fields = rest.split(",", 3)
+                if len(fields) == 4:
+                    a, b = _parse_clock(fields[1].strip()), _parse_clock(fields[2].strip())
+                    if self._inside(a, b):
+                        return []
+                    fields[1], fields[2] = _format_clock(self._remap(a), "ass"), _format_clock(self._remap(b), "ass")
+                    return [head + ":" + ",".join(fields)]
+            return [line]
+        # SRT / WebVTT: block based. Timing lines decide whether the block survives.
+        if self._dropping:
+            if not line.strip():
+                self._dropping = False
+            return []
+        m = _SRT_VTT_CUE.match(line.strip())
+        if m:
+            a, b = _parse_clock(m.group("a")), _parse_clock(m.group("b"))
+            held, self._held = self._held, None
+            if self._inside(a, b):
+                self._dropping = True
+                return []
+            timing = f"{_format_clock(self._remap(a), self._style)} --> {_format_clock(self._remap(b), self._style)}{m.group('rest')}"
+            return ([held] if held is not None else []) + [timing]
+        out = [self._held] if self._held is not None else []
+        self._held = None
+        if self._style == "srt" and line.strip().isdigit():
+            self._held = line  # a cue number: wait for its timing line
+            return out
+        return out + [line]
+
+    def feed(self, text: str) -> str:
+        if not self.spans:
+            return text
+        self._buf += text.replace("\r\n", "\n")
+        *lines, self._buf = self._buf.split("\n")
+        return "".join(line + "\n" for out in lines for line in self._line(out))
+
+    def close(self) -> str:
+        if not self.spans:
+            return ""
+        tail = "".join(line + "\n" for line in self._line(self._buf)) if self._buf else ""
+        self._buf = ""
+        if self._held is not None:
+            tail += self._held + "\n"
+            self._held = None
+        return tail
+
+
+def shift_subtitles(text: str, spans: list[Range], offset_ms: int = 0) -> str:
+    """Re-time a whole subtitle file (see SubtitleShifter)."""
+    if not spans:
+        return text
+    shifter = SubtitleShifter(spans, offset_ms)
+    out = shifter.feed(text) + shifter.close()
+    # Blocks whose cue was dropped leave consecutive blank lines behind; collapse them.
+    return re.sub(r"\n{3,}", "\n\n", out).lstrip("\n")
+
+
+class SessionStore:
+    """Durable store of proxy sessions; production uses the Cleanplex database."""
+
+    async def save(self, session_id: str, data: dict) -> None:
+        from . import database as db
+
+        await db.save_proxy_session(session_id, data)
+
+    async def load(self, session_id: str) -> dict | None:
+        from . import database as db
+
+        return await db.get_proxy_session(session_id)
+
+
+async def db_part_lookup(part_id: int) -> str | None:
+    from . import database as db
+
+    return await db.get_rating_key_for_part(part_id)
+
+
 @dataclass
 class _Session:
     rating_key: str
@@ -152,6 +324,13 @@ class _Session:
     removed: list[int] = field(default_factory=list)  # segment indexes the client must never be served
     ranges: list[Range] = field(default_factory=list)  # what to cut, decided when the stream started
     username: str | None = None
+    client_id: str = ""
+    client_title: str = ""
+    # First kept segment index after each cut -> index of that cut in `spans`; the client
+    # asking for it is the moment the viewer has played across the cut (see record_cut_played).
+    after_cut: dict[int, int] = field(default_factory=dict)
+    recorded: set[int] = field(default_factory=set)  # cut indexes already recorded
+    keyframes: list[int] | None = None  # set when the stream is a copy (see edit_playlist)
 
 
 RangesProvider = Callable[[str, str | None], Awaitable[list[Range]]]  # (rating_key, username) -> ranges
@@ -189,9 +368,62 @@ class Policy:
     closers: list[Callable[[], Awaitable[None]]] = field(default_factory=list)
 
 
-async def decide(policy: Policy, rating_key: str, client_id: str, remote_ip: str, token: str) -> Decision:
+def cut_boundaries(removed: list[int]) -> dict[int, int]:
+    """Map the segment index that follows each run of removed segments to the run's number (0, 1, ...)."""
+    out: dict[int, int] = {}
+    run = 0
+    for i, index in enumerate(removed):
+        if i + 1 == len(removed) or removed[i + 1] != index + 1:
+            out[index + 1] = run
+            run += 1
+    return out
+
+
+async def record_cut_played(session: "_Session", span: Range) -> int:
+    """Record a skip event for each segment of the title inside *span* that this viewer's settings skip.
+
+    The proxy removes time, not segments, so the segments are looked up by overlap. Called
+    when the client fetches the first segment after the cut, i.e. when the viewer really
+    passed it. Returns how many events were recorded.
+    """
+    from . import database as db
+    from . import events
+    from .filter_engine import _is_filtered, _resolve_action
+
+    segments = await db.get_active_segments_for_rating_key(session.rating_key)
+    prefs = await db.get_user_category_prefs(session.username) if session.username else {}
+    recorded = 0
+    for seg in segments:
+        if seg["end_ms"] <= span[0] or seg["start_ms"] >= span[1]:
+            continue
+        if not _is_filtered(seg, prefs) or _resolve_action(seg, prefs) != "skip":
+            continue
+        await db.record_skip_event(
+            plex_guid=seg["plex_guid"], title=seg.get("title", ""), username=session.username or "",
+            client_identifier=session.client_id, client_title=session.client_title,
+            category=seg.get("category", ""), action="skip", segment_id=seg["id"],
+            position_ms=span[0], target_ms=span[1], success=True, latency_ms=0,
+        )
+        events.publish("skip_recorded", guid=seg["plex_guid"])
+        recorded += 1
+    return recorded
+
+
+# Products live skipping can never reach: a browser exposes no control port and the server
+# answers its player commands with 404 (verified on Plex Web 4.162, 2026-11-05). Waiting to
+# learn that from a failed skip would let the first viewing play the segment.
+NEVER_CONTROLLABLE_PRODUCTS = {"Plex Web"}
+
+
+async def decide(
+    policy: Policy, rating_key: str, client_id: str, remote_ip: str, token: str, product: str = ""
+) -> Decision:
     """Apply the policy's conditions in order and return the outcome with the reason."""
-    if policy.client_controllable and await policy.client_controllable(client_id, remote_ip):
+    if (
+        product not in NEVER_CONTROLLABLE_PRODUCTS
+        and policy.client_controllable
+        and await policy.client_controllable(client_id, remote_ip)
+    ):
         return Decision(False, "live skipping reaches this client")
     username = await policy.resolve_user(token) if policy.resolve_user and token else None
     if policy.filter_enabled:
@@ -226,10 +458,13 @@ def eligible_ranges(pre_ms: int = 3000, post_ms: int = 3000) -> RangesProvider:
     async def provider(rating_key: str, username: str | None) -> list[Range]:
         segments = await db.get_active_segments_for_rating_key(rating_key)
         prefs = await db.get_user_category_prefs(username) if username else {}
+        # A playlist cannot lower the volume: mute segments are either cut or left alone (#184).
+        cut_mutes = (await db.get_setting("enforcement_mute_mode", "leave")) == "cut"
+        actions = {"skip", "mute"} if cut_mutes else {"skip"}
         return [
             (max(0, seg["start_ms"] - pre_ms), seg["end_ms"] + post_ms)
             for seg in segments
-            if _is_filtered(seg, prefs) and _resolve_action(seg, prefs) == "skip"
+            if _is_filtered(seg, prefs) and _resolve_action(seg, prefs) in actions
         ]
 
     return provider
@@ -274,10 +509,12 @@ class PlexTvUsers:
     """Resolve a Plex token to the account name Cleanplex keys its user settings by."""
 
     TTL_S = 600  # a token's owner does not change; this only bounds a revoked token's lifetime
+    FAIL_TTL_S = 60  # a failed lookup is not retried on every request (plex.tv slow or down)
 
     def __init__(self, transport: httpx.AsyncBaseTransport | None = None):
-        self._client = httpx.AsyncClient(base_url="https://plex.tv", transport=transport, timeout=10)
-        self._cache: dict[str, tuple[float, str]] = {}
+        # Short timeout: playback start waits on this, and an unknown viewer is treated as filtered.
+        self._client = httpx.AsyncClient(base_url="https://plex.tv", transport=transport, timeout=3)
+        self._cache: dict[str, tuple[float, str | None]] = {}
 
     async def __call__(self, token: str) -> str | None:
         cached = self._cache.get(token)
@@ -292,6 +529,7 @@ class PlexTvUsers:
             data = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning("Could not identify the Plex user for a token: %s", exc)
+            self._cache[token] = (time.monotonic() + self.FAIL_TTL_S, None)
             return None
         # Managed users have no username; their title is what Plex shows (and what sessions report).
         name = data.get("username") or data.get("title") or None
@@ -303,13 +541,27 @@ class PlexTvUsers:
         await self._client.aclose()
 
 
-def db_policy(
-    pre_ms: int = 3000, post_ms: int = 3000, unknown_user_filtered: bool = True, ignore_client: bool = False
-) -> Policy:
-    """The production policy: live-skip clients, filter switch and the viewer's own levels.
+async def db_keyframes(rating_key: str) -> list[int] | None:
+    """Keyframes of a title's single media file, if indexed and unchanged; None means re-encode."""
+    from . import database as db
+    from .keyframe_index import keyframes_for
 
-    *ignore_client* drops the first condition so a client live skipping reaches (a local Apple TV)
-    can still be put through the proxy, for testing.
+    # Copy mode only for a title with exactly one file: with several versions Plex may play a
+    # different one than the file that was indexed, and its keyframes would not match.
+    if not rating_key or await db.count_parts_for_rating_key(rating_key) != 1:
+        return None
+    path = await db.get_file_for_rating_key(rating_key)
+    return (await keyframes_for(path) or None) if path else None
+
+
+def db_policy(
+    pre_ms: int = 3000, post_ms: int = 3000, unknown_user_filtered: bool = True, ignore_client: bool = True
+) -> Policy:
+    """The production policy: filter switch and the viewer's own levels, for every client.
+
+    Every client is edited by default (#184): since Plex's 2026 apps, phones, Apple TV and
+    browsers accept no remote commands, so "live skipping reaches this client" is not a safe
+    reason to leave a stream alone. ignore_client=False restores that check.
     """
     users = PlexTvUsers()
     return Policy(
@@ -329,6 +581,9 @@ def create_proxy_app(
     transport: httpx.AsyncBaseTransport | None = None,
     trust_forwarded_for: bool = False,
     ws_connect=None,
+    keyframes_provider: Callable[[str], Awaitable[list[int] | None]] | None = None,
+    session_store: "SessionStore | None" = None,
+    part_lookup: Callable[[int], Awaitable[str | None]] | None = None,
 ) -> FastAPI:
     """Build the proxy app. *token* is added to requests that carry none (local testing only).
 
@@ -342,7 +597,37 @@ def create_proxy_app(
         "by_client": {},  # (client identifier, rating key) -> transcode session id, for progress reports
         "requests": deque(maxlen=5000),  # segment fetches: what the client really asked for
         "telemetry": deque(maxlen=2000),  # reports posted by the test page
+        "part_decisions": {},  # (token, rating key) -> (expires, Decision)
     }
+
+    async def _get_session(session_id: str) -> "_Session | None":
+        """The edit state of a transcode session, reloaded from the store after a restart."""
+        found = state["sessions"].get(session_id)
+        if found is not None or not session_store or not session_id:
+            return found
+        stored = await session_store.load(session_id)
+        if not stored:
+            return None
+        found = _Session(
+            stored["rating_key"], stored["offset_ms"], spans=stored["spans"], removed=stored["removed"],
+            ranges=stored["ranges"], username=stored["username"] or None, client_id=stored["client_id"],
+            client_title=stored["client_title"],
+            keyframes=(await keyframes_provider(stored["rating_key"])) if keyframes_provider else None,
+        )
+        found.after_cut = cut_boundaries(found.removed)
+        state["sessions"][session_id] = found
+        return found
+
+    async def _save_session(session_id: str, sess: "_Session") -> None:
+        if session_store:
+            try:
+                await session_store.save(session_id, {
+                    "rating_key": sess.rating_key, "username": sess.username, "client_id": sess.client_id,
+                    "client_title": sess.client_title, "offset_ms": sess.offset_ms, "ranges": sess.ranges,
+                    "spans": sess.spans, "removed": sess.removed,
+                })
+            except Exception as exc:  # persistence must never break playback
+                logger.warning("Could not store proxy session %s: %s", session_id, exc)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -390,7 +675,8 @@ def create_proxy_app(
             return known
         client_id = params.get("X-Plex-Client-Identifier") or request.headers.get("x-plex-client-identifier", "")
         plex_token = params.get("X-Plex-Token") or request.headers.get("x-plex-token", "")
-        decision = await decide(policy, rating_key, client_id, _remote_ip(request), plex_token)
+        product = params.get("X-Plex-Product") or request.headers.get("x-plex-product", "")
+        decision = await decide(policy, rating_key, client_id, _remote_ip(request), plex_token, product)
         logger.info("Stream decision for session %s (rating key %s, client %s): %s: %s",
                     session_id, rating_key, client_id or "?", "EDIT" if decision.inject else "leave alone", decision.reason)
         state["decisions"][session_id] = decision
@@ -421,6 +707,70 @@ def create_proxy_app(
         if session is None or not session.spans:
             return
         params["time"] = str(edited_to_original(int(raw), session.spans))
+
+    async def _refuse_part(part_id: int, request: Request, params: dict[str, str]) -> bool:
+        """True when a direct file request must be refused: its title is flagged for this viewer (#184)."""
+        if not part_lookup:
+            return False
+        rating_key = await part_lookup(part_id)
+        if not rating_key:
+            return False
+        plex_token = params.get("X-Plex-Token") or request.headers.get("x-plex-token", "")
+        key = (plex_token, rating_key)
+        cached = state["part_decisions"].get(key)
+        if cached and cached[0] > time.monotonic():
+            decision = cached[1]
+        else:
+            client_id = params.get("X-Plex-Client-Identifier") or request.headers.get("x-plex-client-identifier", "")
+            product = params.get("X-Plex-Product") or request.headers.get("x-plex-product", "")
+            decision = await decide(policy, rating_key, client_id, _remote_ip(request), plex_token, product)
+            state["part_decisions"][key] = (time.monotonic() + _PART_DECISION_TTL_S, decision)
+        if decision.inject:
+            # Fail closed: the original file of a flagged title cannot be edited.
+            logger.info("Refused direct file request for rating key %s: %s", rating_key, decision.reason)
+        return decision.inject
+
+    async def _note_segment(session_id: str, index: int) -> None:
+        """Record a played cut when the client asks for the first segment after it."""
+        state["requests"].append({"session": session_id, "segment": index})
+        played = await _get_session(session_id)
+        cut = played.after_cut.get(index) if played else None
+        if played and cut is not None and cut not in played.recorded and cut < len(played.spans):
+            played.recorded.add(cut)
+            try:
+                await record_cut_played(played, played.spans[cut])
+            except Exception as exc:  # recording is bookkeeping; it must never break playback
+                logger.warning("Could not record a skip for session %s: %s", session_id, exc)
+
+    @app.get("/_proxy/authorize")
+    async def authorize(request: Request) -> Response:
+        """nginx auth_request for direct file requests: 204 to serve the bytes from Plex, 403 to refuse.
+
+        nginx streams the file itself; only this yes/no reaches Python (X-Original-URI).
+        """
+        original = request.headers.get("x-original-uri", "")
+        path, _, query = original.partition("?")
+        part = _PART.match(path)
+        params = dict(parse_qsl(query, keep_blank_values=True))
+        if part and await _refuse_part(int(part.group(1)), request, params):
+            return Response(status_code=403)
+        return Response(status_code=204)
+
+    @app.get("/_proxy/segment")
+    async def segment_seen(request: Request) -> Response:
+        """nginx auth_request for HLS segments: records played cuts and refuses removed ones.
+
+        A removed segment is not in the edited playlist, but a player that builds segment URLs
+        itself would otherwise get it straight from Plex (#184). Bytes come from Plex either way.
+        """
+        seg = _SEGMENT.match(request.headers.get("x-original-uri", "").partition("?")[0])
+        if seg:
+            sess = await _get_session(seg.group(1))
+            if sess and int(seg.group(2)) in set(sess.removed):
+                logger.info("Refused removed segment %s of session %s", seg.group(2), seg.group(1))
+                return Response(status_code=403)
+            await _note_segment(seg.group(1), int(seg.group(2)))
+        return Response(status_code=204)
 
     @app.get("/_proxy/report")
     async def report() -> JSONResponse:
@@ -501,23 +851,76 @@ def create_proxy_app(
         full_path = "/" + path
         params = _params(request)
 
+        part = _PART.match(full_path)
+        if part and await _refuse_part(int(part.group(1)), request, params):
+            return Response("This title is filtered for this viewer; play it again to get the filtered stream.",
+                            status_code=403)
+
         if full_path in _START_PATHS or full_path == _DECISION_PATH:
             decision = await _decide_playback(request, params)
+            if decision and decision.inject and (
+                params.get("protocol", "hls") != "hls" or full_path.endswith(".mpd")
+            ):
+                # Only HLS playlists are edited; any other stream of a flagged title is refused (#184).
+                logger.info("Refused %s stream for a filtered title", params.get("protocol") or "dash")
+                return Response("This title is filtered for this viewer and needs an HLS stream.", status_code=403)
             if decision and decision.inject:
-                # Direct play would bypass the edit entirely, so take it off the table.
-                params.update({"directPlay": "0", "directStream": "0"})
+                # Direct play would bypass the edit entirely, so take it off the table. With the
+                # file's keyframes known the video is copied, keeping 4K/HDR intact; otherwise it is
+                # re-encoded, whose segments fall on an exact grid.
+                _, rk = _playback_ids(request, params)
+                keyframes = await keyframes_provider(rk) if keyframes_provider else None
+                params.update({"directPlay": "0", "directStream": "1" if keyframes else "0"})
                 if full_path in _START_PATHS:
                     session_id, rating_key = _playback_ids(request, params)
                     offset_ms = int(float(params.get("offset", "0") or 0) * 1000)
-                    state["sessions"][session_id] = _Session(
-                        rating_key, offset_ms, ranges=decision.ranges, username=decision.username
-                    )
                     client_id = params.get("X-Plex-Client-Identifier") or request.headers.get("x-plex-client-identifier", "")
+                    state["sessions"][session_id] = _Session(
+                        rating_key, offset_ms, ranges=decision.ranges, username=decision.username, client_id=client_id,
+                        client_title=params.get("X-Plex-Device-Name") or params.get("X-Plex-Product", ""),
+                        keyframes=keyframes or None,
+                    )
                     if client_id:
                         state["by_client"][(client_id, rating_key)] = session_id
+                    await _save_session(session_id, state["sessions"][session_id])
 
         if full_path in _PROGRESS_PATHS:
             _remap_progress(request, params)
+
+        if full_path == _SUBTITLES_PATH:
+            sid = params.get("session") or request.headers.get("x-plex-session-identifier", "")
+            sub_session = await _get_session(sid)
+            upstream = await client.send(
+                client.build_request("GET", full_path, params=params, headers=_forward_headers(request)), stream=True
+            )
+            if sub_session is None or upstream.status_code != 200:
+                return StreamingResponse(upstream.aiter_raw(), status_code=upstream.status_code,
+                                         headers=_response_headers(upstream, decoded=False),
+                                         background=BackgroundTask(upstream.aclose))
+            if not sub_session.spans:
+                # Subtitles can be asked for before the playlist; work out the cuts from it now.
+                pl = await client.get(f"/video/:/transcode/universal/session/{sid}/base/index.m3u8",
+                                      params={k: v for k, v in params.items() if k.lower().startswith("x-plex")},
+                                      headers=_forward_headers(request))
+                if pl.status_code == 200:
+                    edit = edit_playlist(pl.text, sub_session.ranges, sub_session.offset_ms, sub_session.keyframes)
+                    sub_session.spans, sub_session.removed = edit.spans, edit.removed
+                    sub_session.after_cut = cut_boundaries(edit.removed)
+                    await _save_session(sid, sub_session)
+            shifter = SubtitleShifter(sub_session.spans, sub_session.offset_ms)
+            logger.info("Re-timing subtitles for session %s across %d cut(s)", sid, len(sub_session.spans))
+
+            async def retimed():
+                async for chunk in upstream.aiter_text():
+                    out = shifter.feed(chunk)
+                    if out:
+                        yield out.encode()
+                tail = shifter.close()
+                if tail:
+                    yield tail.encode()
+
+            return StreamingResponse(retimed(), status_code=200, headers=_response_headers(upstream),
+                                     background=BackgroundTask(upstream.aclose))
 
         variant = _VARIANT.match(full_path)
         if variant:
@@ -526,19 +929,21 @@ def create_proxy_app(
             # and edit the whole playlist and answer 200.
             headers = {k: v for k, v in _forward_headers(request).items() if k.lower() not in ("range", "if-range")}
             upstream = await client.get(full_path, params=params, headers=headers)
-            session = state["sessions"].get(variant.group(1))
+            session = await _get_session(variant.group(1))
             if upstream.status_code != 200 or session is None:
                 return Response(upstream.content, upstream.status_code, _response_headers(upstream))
-            edit = edit_playlist(upstream.text, session.ranges, session.offset_ms)
+            edit = edit_playlist(upstream.text, session.ranges, session.offset_ms, session.keyframes)
             session.spans = edit.spans
             session.removed = edit.removed
+            session.after_cut = cut_boundaries(edit.removed)
+            await _save_session(variant.group(1), session)
             logger.info("Edited playlist for session %s: removed %d segment(s), %d ms",
                         variant.group(1), len(edit.removed), edit.removed_ms)
             return Response(edit.text, 200, _response_headers(upstream), media_type="application/vnd.apple.mpegurl")
 
         segment = _SEGMENT.match(full_path)
         if segment:
-            state["requests"].append({"session": segment.group(1), "segment": int(segment.group(2))})
+            await _note_segment(segment.group(1), int(segment.group(2)))
 
         body = await request.body()
         upstream_request = client.build_request(
@@ -572,7 +977,8 @@ def _response_headers(upstream: httpx.Response, decoded: bool = True) -> dict[st
     encoding and length no longer describe what we send. decoded=False is for raw
     streaming, where both stay correct.
     """
-    skip = _HOP_BY_HOP | ({"content-encoding", "content-length"} if decoded else set())
+    # date/server: the ASGI server adds its own, and nginx warns about duplicates.
+    skip = _HOP_BY_HOP | {"date", "server"} | ({"content-encoding", "content-length"} if decoded else set())
     return {k: v for k, v in upstream.headers.items() if k.lower() not in skip}
 
 

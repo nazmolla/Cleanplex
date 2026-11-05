@@ -211,3 +211,13 @@ async def test_scanner_status_lists_the_queue_from_the_database_force_first(http
     assert [(i["guid"], i["force"], i["position"]) for i in data["queue_items"]] == [
         ("c", True, 1), ("a", False, 2), ("b", False, 3),
     ]
+
+
+async def test_get_sessions_thumb_url_never_carries_the_plex_token(http_client):
+    """Regression for #183: the thumbnail is served through the same-origin image proxy."""
+    mock_client = make_mock_plex_client(sessions=[_active_session(thumb="/library/metadata/1/thumb/9")])
+    mock_client.thumb_url = lambda t: f"http://plex{t}?X-Plex-Token=SECRET"
+    with patch("cleanplex.web.routes.sessions.plex_mod.get_client", return_value=mock_client):
+        resp = await http_client.get("/api/sessions")
+    assert "SECRET" not in resp.text and "X-Plex-Token" not in resp.text
+    assert resp.json()["sessions"][0]["thumb_url"].startswith("/api/plex-image?path=")

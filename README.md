@@ -32,6 +32,7 @@ Cleanplex also writes a short **"Cleanplex scan:" block into each scanned title'
 - `ffmpeg` and `ffprobe` installed on the server
 - Plex Media Server on the same network
 - A Plex authentication token
+- For filtering every client ([front door](#stream-filtering-for-every-client-front-door)): Cleanplex on the same machine as Plex, and `nginx` with the stream module (macOS: `brew install nginx`; Debian/Ubuntu: `apt install nginx-full`; Fedora: `dnf install nginx nginx-mod-stream`; Windows: nginx for Windows)
 
 ## Installation
 
@@ -85,9 +86,23 @@ sudo systemctl enable --now cleanplex
 sudo journalctl -u cleanplex -f   # View logs
 ```
 
+To install on a remote Linux host over SSH (Python, Node and the frontend build included): `./deploy.sh user@host [remote_dir]`.
+
+**Windows**: run `start.bat`, or register `.venv\Scripts\cleanplex.exe` as a service (for example with NSSM). Run it as the same account as Plex so the front door can read Plex's certificate.
+
+### 6. Filter every client (optional)
+
+Plex's 2026 apps and Plex Web accept no remote commands, so live skipping only reaches a few players. To filter every client, install the [front door](#stream-filtering-for-every-client-front-door) on the Plex machine:
+
+```bash
+sudo bash scripts/frontdoor/install.sh              # macOS / Linux
+```
+
+On Windows, run `scripts\frontdoor\install-windows.ps1` in an elevated PowerShell.
+
 ## Configuration
 
-All configuration is done via the **web UI** at `http://your-server:7979/settings`, grouped into sections (Plex Connection, Users, Playback, Scan Scope & Schedule, NudeNet Detection, SigLIP Fallback, Segments, Sharing). No config files to edit.
+All configuration is done via the **web UI** at `http://your-server:7979/settings`, grouped into sections (Plex Connection, Users, Playback, Stream Filtering, Scan Scope & Schedule, NudeNet Detection, SigLIP Fallback, Segments, Sharing). No config files to edit.
 
 | Setting | Default | Description |
 |---|---|---|
@@ -129,7 +144,7 @@ All configuration is done via the **web UI** at `http://your-server:7979/setting
 
 **Segments** group flagged frames closer together than the *Segment Merge Gap* (12 s). A cluster needs *Minimum Hits* flagged frames to be kept. Severity follows the labels (see [Categories, severity and actions](#categories-severity-and-actions)).
 
-**False-positive verifier** (off by default) is a small filter trained on *your* verdicts. Frames you marked as false positives are compared with frames of segments you kept, using SigLIP's image embedding, and a per-detector classifier (NudeNet hits and SigLIP hits separately) learns what your rejects look like. At scan time a flagged segment whose peak frame looks like them is **rejected**: stored inactive, with its frame, under Analytics → False positives (filter *Rejected by the verifier*), where the undo button restores a wrong rejection. Setup: mark false positives as you review, then Settings → SigLIP Fallback → *Train* (needs at least 30 false positives and 30 kept segments per detector and SigLIP's models), pick a level, save, and rescan (*Rescan Titles → scanned by an older scanner*). The level is how many good segments you accept losing: **5% Gentle, 10% Balanced, 20% Strict**. Retrain after you have marked more.
+**False-positive verifier** (off by default) is a small filter trained on *your* verdicts. Frames you marked as false positives are compared with frames of segments you kept, using SigLIP's image embedding, and a separate classifier per detector **and label** (for example SigLIP hits on `BUTTOCKS_EXPOSED`) learns what your rejects look like. A label that does not yet have at least 30 rejected and 30 kept examples has no model, so its detections are never rejected; rejections you made under one label cannot affect another. At scan time a flagged segment whose peak frame looks like them is **rejected**: stored inactive, with its frame, under Analytics → False positives (filter *Rejected by the verifier*), where the undo button restores a wrong rejection. Setup: mark false positives as you review, then Settings → SigLIP Fallback → *Train* (needs at least 30 false positives and 30 kept segments for a label, and SigLIP's models), pick a level, save, and rescan (*Rescan Titles → scanned by an older scanner*). The level is how many good segments you accept losing: **5% Gentle, 10% Balanced, 20% Strict**. Retrain after you have marked more.
 
 ### Tuning accuracy
 
@@ -246,7 +261,7 @@ Once saved, the token is never sent back to the browser: Settings shows "Saved. 
 - **Browse all titles** with scan status icons
 - **Trigger scans** per title or entire library
 - **"Scan Now"** to prioritize a title — moves it to the front of the scanning queue for immediate processing
-- **Sort & filter** — filters by ratings and segment count; defaults to hiding ignored titles and sorting by date added (newest first)
+- **Sort & filter** — filters by ratings, by **actor** (the cast is copied from Plex in the background; type a name or pick a suggestion), and by a **From/To range** that follows the sort: scan dates for *Scanned Date*, release years for *Release Year*;  defaults to hiding ignored titles and sorting by date added (newest first)
 - **Scan completion timestamps** — shows when each title finished scanning
 
 #### Segments
@@ -297,9 +312,39 @@ Optional and **always manual**: Settings → Sharing connects to one shared GitH
 
 `POST /mcp` speaks the Model Context Protocol (Streamable HTTP). Point an MCP client at `http://your-server:7979/mcp` to list libraries and titles, read segments, check scanner status, queue a scan, delete segments and read settings. Like the rest of the API it has no login (see [Security](#security)).
 
-## Experimental: Stream Proxy
+## Stream Filtering for Every Client (front door)
 
-`cleanplex/stream_proxy.py` is a standalone prototype (`python -m cleanplex.stream_proxy`, issue #132) that sits in front of Plex and, for clients that cannot be skipped live, serves an HLS playlist with filtered ranges removed. It is not part of the service, and it has not been verified on real Plex clients.
+Plex's 2026 apps (iPhone, iPad, Apple TV) and Plex Web accept no remote commands, so live skipping cannot reach them. The **front door** filters every client instead, in or out of the house: Cleanplex sits in front of Plex's port and removes the filtered ranges from the stream itself.
+
+How it works:
+- A firewall redirect sends Plex's port 32400 to an nginx front on port 32480. nginx uses Plex's own `plex.direct` certificate, so encrypted connections keep working, and streams video straight from Plex. Plex stays on `127.0.0.1:32400`, untouched.
+- For a viewer whose filtering is on, playing a title with segments their levels skip, Cleanplex refuses direct play, asks Plex for an HLS stream and removes the segments covering those ranges from the playlist (and re-times subtitles). When the file's keyframes are indexed (a background job does this for flagged titles) the video is **copied, not re-encoded**, so 4K, HDR and Dolby Vision are kept; cuts then widen to whole segments (up to ~10 s). Otherwise Plex re-encodes, with ~1 s precision.
+- **Fail closed**: the original file, downloads and DASH/progressive streams of such a title are refused for that viewer.
+- **Backstop**: a filtered viewer's stream of a flagged title that did not pass the front door (Plex Relay, DLNA) is stopped with a message.
+- Everyone else, and unflagged titles, play exactly as before (direct play included).
+- Each cut a viewer plays across is recorded as a skip in the skip history.
+
+Install (macOS with pf, or Linux with nftables; needs nginx with the stream module):
+
+```bash
+sudo bash scripts/frontdoor/install.sh            # macOS default account: server; Linux: plex (--user to change)
+sudo bash scripts/frontdoor/install.sh --uninstall
+```
+
+- **Docker**: publish the host's `32400` to the front door's `32480` instead of to the Plex container, and give Cleanplex the Plex data folder (`CLEANPLEX_PLEX_DATA`).
+- **Windows** (Mode B, untested): `scripts/frontdoor/install-windows.ps1` runs the front door on 32480, prints the URL to set as Plex's *Custom server access URL*, and blocks other machines from 32400 so clients fail over to it.
+
+Settings → **Stream Filtering**:
+
+| Setting | Default | Notes |
+|---|---|---|
+| Mute segments in filtered streams | Leave | A stream cannot be muted by editing it: profanity is either cut like a skip or left in (`enforcement_mute_mode`: `cut`/`leave`) |
+| Stop streams that bypassed the front door | On | Acts only once the front door is installed (`enforcement_enabled`, set by the installer) |
+| Plex Relay | — | **Recommended off**: relayed streams never reach the front door. Remote viewers then need Plex's direct remote access (Settings → Remote Access, "mapped"); behind CGNAT without a port forward they lose remote access |
+| Plex DLNA | — | Recommended off: DLNA serves files on its own port |
+| Simultaneous transcodes | Plex's | Filtered streams of flagged titles are copied or re-encoded by Plex; raise it for several viewers at once |
+
+Limits: the viewer sees a shortened timeline (progress and resume are mapped back for Plex). Scrub-bar preview thumbnails are not filtered (a deliberate choice: a small leak, and previews keep working). Offline downloads made before the front door are unfiltered.
 
 ## Data, Backups & Maintenance
 
@@ -322,11 +367,11 @@ The seek command is sent via the Plex Player Control API and works with most mod
 
 | Client | Supported |
 |---|---|
-| Plex Web | ✅ Fully supported |
-| Plex for iOS / Android | ✅ Fully supported |
+| Plex Web (browser) | ❌ for live skipping (tested 2026-11-05: Plex answers its seek with 404). ✅ with the front door, see [Stream Filtering](#stream-filtering-for-every-client-front-door) |
+| Plex for iOS / Android | ❌ for live skipping on Plex for iOS 2026.20 (no remote-control port). Use the front door |
 | Plex HTPC | ✅ Fully supported |
 | Plex Media Player (desktop) | ✅ Fully supported |
-| Apple TV | ✅ Fully supported |
+| Apple TV | ❌ for live skipping on Plex for Apple TV 2026.20 (no remote-control port). Use the front door |
 | Roku | ⚠️ Limited support |
 | Some Smart TV apps | ⚠️ Limited support |
 
@@ -366,6 +411,11 @@ Titles can be marked as **ignored** to skip them during background scans:
 | `CLEANPLEX_LOG_FILE` | none | Write the log to this file, rotated at 10 MB with 4 backups, instead of stdout. The macOS install script sets it to `~/.cleanplex/cleanplex.log` |
 | `CLEANPLEX_NICE` | `10` | How much to lower the service's CPU priority at startup, so Plex's transcoder wins when the scanner is busy. `0` leaves the priority alone |
 | `CLEANPLEX_CORS_ORIGINS` | none | Comma-separated origins allowed to call the API from another site; same-origin use needs nothing |
+| `CLEANPLEX_PROXY_PORT` | `7981` | Port of the stream proxy the front door talks to; `0` turns it off |
+| `CLEANPLEX_PROXY_HOST` | `CLEANPLEX_HOST` | Bind address of the stream proxy. The service installers set `127.0.0.1`: only nginx needs it |
+| `CLEANPLEX_PLEX_DATA` | per OS | Plex data folder (the one holding `Preferences.xml`), for a Linux or Docker layout the front door cannot find itself |
+| `CLEANPLEX_PLEX_MACHINE_ID` | from Plex | Plex's `ProcessedMachineIdentifier`, if it cannot be read from Plex's preferences |
+| `CLEANPLEX_NGINX` | `nginx` | nginx binary used to reload the front door when Plex renews its certificate |
 
 ## Troubleshooting
 
@@ -383,6 +433,13 @@ Titles can be marked as **ignored** to skip them during background scans:
 
 **Scans are slow or the machine is busy?**
 - Raise the Scan Frame Interval, lower Scanner Workers, keep hardware decoding on, and keep SigLIP off if you do not need it. The service already runs at lower CPU priority (`CLEANPLEX_NICE`).
+
+**Plex says the server is unavailable after installing the front door?**
+- Remove it at once: `sudo bash scripts/frontdoor/install.sh --uninstall` (Windows: `install-windows.ps1 -Uninstall`). Clients reach Plex directly again within seconds.
+- Then check that nginx answers on `http://<server>:32480/identity` *from another device*, and look at `~/.cleanplex/frontdoor/cleanplex-nginx-error.log`. Requests from the server itself take a different path and can succeed while other devices fail.
+
+**A filtered title shows an error instead of playing?**
+- The front door refuses what it cannot filter: the original file, downloads and non-HLS streams of a title with segments for that viewer. Playing it again from the app gets the filtered stream.
 
 **Some rated titles still appear in the library?**
 - Check Settings → Content Ratings. The filter uses exact matching (e.g., "PG" ≠ "PG-13"). "Unrated" is an explicit checkbox option, not the same as empty rating.

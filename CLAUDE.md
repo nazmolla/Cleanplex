@@ -41,9 +41,12 @@ Every change — regardless of size — must follow these rules. No exceptions.
 | `database.py` | All SQL — no raw queries outside this file |
 | `scanner.py` | Frame extraction, NudeNet inference, segment writing, and the queue API (`enqueue`, `force_scan_job`, `rebuild_queue`, `sync_queue`) over the DB-backed scan queue |
 | `siglip_detector.py` | SigLIP zero-shot fallback for frames NudeNet did not flag — model download, prompts from `scan_labels`, scoring |
-| `verifier.py` | Feedback-trained false-positive filter (#165): trains a logistic head on SigLIP image embeddings of the frames users marked as false positives versus the thumbnails of kept segments, one model per detector family, and judges a flagged cluster's peak frame at scan time. Only filters detections; never creates segments. A rejected cluster is stored with `segments.false_positive = 2` (`db.FP_VERIFIER`): inactive like a user mark (1), shown in the false-positive list, restorable, and excluded from accuracy rates and from training as a kept example |
+| `verifier.py` | Feedback-trained false-positive filter (#165): trains a logistic head on SigLIP image embeddings of the frames users marked as false positives versus the thumbnails of kept segments, one model per detector family and label (`siglip:BUTTOCKS_EXPOSED`; a label without enough accepted and rejected examples has no model and is never rejected, #178), and judges a flagged cluster's peak frame at scan time. Only filters detections; never creates segments. A rejected cluster is stored with `segments.false_positive = 2` (`db.FP_VERIFIER`): inactive like a user mark (1), shown in the false-positive list, restorable, and excluded from accuracy rates and from training as a kept example |
+| `cast_sync.py` | Background job (#180): copies each movie's and show's cast from Plex (`PlexClient.get_cast`, chunked metadata requests) into `title_cast`; episodes use their show's cast. Drains unsynced titles in batches, re-syncs after 30 days, never runs inside the library pass |
 | `ort_runtime.py` | Shared onnxruntime session options: caps threads per inference session so scan workers do not oversubscribe the CPU. Every `InferenceSession` the scanner or SigLIP builds goes through it |
-| `stream_proxy.py` | Prototype (#132): reverse proxy in front of Plex that, only when a client cannot be skipped live, the viewer's filtering is on and the title has segments their levels would skip, forces an HLS transcode and removes those ranges from the playlist. Standalone (`python -m cleanplex.stream_proxy`), not wired into `main.py` yet |
+| `stream_proxy.py` | The enforcement proxy (#132, #184), run by `main.py` on `CLEANPLEX_PROXY_PORT` behind the front door. For a filtered viewer and a title with segments their levels skip: refuses direct play, gets an HLS stream (video copied when the file's keyframes are indexed, else re-encoded), removes the overlapping segments from the playlist, re-times subtitles, maps progress back, records played cuts as skip events, and fails closed (403) on original files, downloads and non-HLS streams. Sessions persist in `proxy_sessions`. Only decisions, playlists, subtitles and progress reach it; nginx streams all bytes |
+| `frontdoor.py` | Front door (#184): extracts Plex's `plex.direct` certificate (cert-v2.p12, password SHA-512 of "plex"+ProcessedMachineIdentifier) per OS, renders the nginx config (TLS/plain split on one port, PROXY protocol, X-Forwarded-For only for public client addresses), and reloads nginx when Plex renews the certificate. Installed by `scripts/frontdoor/install.sh` (pf anchor `com.apple/cleanplex` on macOS, nftables on Linux) |
+| `keyframe_index.py` | Background job indexing video keyframes of flagged single-file titles (ffprobe, one file per minute) into `keyframe_index`, so the proxy can cut copied streams: in copy mode Plex starts a segment on a keyframe near its nominal time |
 | `plex_summary.py` | The Cleanplex block in a title's Plex summary: builds the description from the database (`db.get_summary_stats`) and refreshes it (debounced) after scans, deletes, false positives, relabels, imports and subtitle scans. Plex writes go through `PlexClient.update_cleanplex_summary` |
 | `segment_refine.py` | Dense sampling of a flagged window (`dense_hits`): the frames above threshold inside it, growing while the scene runs on. Shared by the scanner and the backfill, so both choose thumbnails and bounds the same way |
 | `thumbnail_backfill.py` | Background job (scan window, one segment at a time) that re-samples segments stored before dense sampling existed: better thumbnail, bounds that only grow, `refined_at` so each is processed once, hover preview reset when the window changes |
@@ -53,8 +56,8 @@ Every change — regardless of size — must follow these rules. No exceptions.
 | `subtitle_scanner.py` | Subtitle parsing and profanity matching — emits muted language segments |
 | `importers/` | Skip file parsers and exporters (`.skp`, `.edl`, `.mcf`, pasted lists). One module per format; all return the same normalized segment dict |
 | `plex_client.py` | All Plex API calls — no `plexapi` imports elsewhere |
-| `filter_engine.py` | Playback position checks and seek decisions |
-| `watcher.py` | Polling loops only — no business logic. The library pass runs every 5 min and must look titles up in chunks, never per item |
+| `filter_engine.py` | Playback position checks and seek decisions (live skipping). Stands down for streams the proxy edited (`db.is_proxied`); seeks to the widened segment end (#185) |
+| `watcher.py` | Polling loops only — no business logic. The library pass runs every 5 min and must look titles up in chunks, never per item. The session loop also runs the enforcement backstop (stops a filtered stream that bypassed the front door, only when `enforcement_enabled`) |
 | `sync.py` / `sync_merge.py` | GitHub sync and segment merge logic |
 | `bg_jobs.py` | Background job lifecycle — no domain logic |
 | `events.py` | In-process event bus streamed to browsers by `GET /api/events` (SSE). Publish where a change happens; events name what changed, not the new state |
@@ -291,6 +294,17 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 - **Never return secrets from the API.** `GET /api/settings` masks `plex_token` (`plex_token_set` instead) and a blank token on save means unchanged; CORS is same-origin unless `CLEANPLEX_CORS_ORIGINS` is set.
 - **Close async generators you stop iterating early.** Wrap ffmpeg frame streams in `contextlib.aclosing` so a pause, skip or error closes them at once instead of at shutdown.
 
+
+### 5.9 Stream Proxy & Front Door
+
+- **Video bytes never pass through Python.** nginx streams segments and files from Plex; the Python proxy only sees decisions, starts, playlists, subtitles and progress, and answers nginx `auth_request` yes/no checks (`/_proxy/authorize`, `/_proxy/segment`).
+- **Fail closed for a filtered viewer and a flagged title**: refuse the original file, downloads, non-HLS streams and removed segments (403). Preview thumbnails (`/indexes/`) are deliberately allowed.
+- **X-Forwarded-For carries only public client addresses.** nginx replaces whatever the client sent; LAN clients get none, because Plex ignores a private address there and marks the viewer remote.
+- **nginx passes `Host $http_host`**, never `$host`: Plex builds redirect URLs from it and `$host` drops the port.
+- **Redirect to the interface's own address, never to loopback**: macOS drops other machines' traffic redirected to 127.0.0.1 (outage 2026-11-05).
+- **Copy mode only with a matching keyframe index**: one Plex part for the title (`title_parts`) and an unchanged file; otherwise Plex re-encodes. Cut decisions use the conservative keyframe bounds in `edit_playlist`.
+- **The backstop acts only when `enforcement_enabled` is set** (by the installer), and a dev instance must keep it off — it watches the same Plex.
+
 ---
 
 ## 6. Test Coverage
@@ -496,7 +510,10 @@ bash scripts/dev-verify.sh       # smoke-test all API endpoints
 bash scripts/dev-stop.sh         # stop the dev instance
 ```
 
-`dev-start.sh --fresh` wipes `~/.cleanplex-dev/` and reseeds from production.
+`dev-start.sh --fresh` wipes `~/.cleanplex-dev/` and reseeds from production. The scripts run on macOS,
+Linux and Windows (Git Bash); `CLEANPLEX_PROD_DB` points at the production database when it is another
+account's (on the Mac Mini: `/Users/server/.cleanplex/cleanplex.db`, copied with sudo). The dev instance runs
+no stream proxy and always has the enforcement backstop switched off.
 
 ### 10.2 Mandatory Pre-Deploy Checklist
 
@@ -515,21 +532,25 @@ Steps 3–5 catch runtime errors (missing attributes, import failures, startup c
 
 ### 10.3 Production Restart Procedure
 
-**Production runs as a Windows service**, `Cleanplex`, supervised by NSSM as LocalSystem and
-launching `.venv/Scripts/cleanplex.exe` from this repo. The package is installed editable, so a
-restart is all that is needed to pick up new code — no reinstall, no copy step.
+**Production runs on the Mac Mini (192.168.0.80) as a LaunchDaemon**, `com.homeserv.cleanplex`,
+under the `server` account, from `/opt/cleanplex` (installed with uv, Python 3.12). Data and log live in
+`/Users/server/.cleanplex/`. Deploying copies the working tree to `/opt/cleanplex`, so commit or not,
+what is deployed is what is on disk.
 
-Because the service runs as LocalSystem, **restarting it requires an elevated shell**. A normal
-session gets `Access is denied` from `Stop-Process` and `Cannot open Cleanplex service` from
-`Restart-Service`. Do not try to kill the process directly; it is supervised and NSSM will fight you.
+The front door (§5.9) runs beside it: `com.homeserv.cleanplex-frontdoor` (nginx on 32480) and the pf
+anchor `com.apple/cleanplex` (loaded by `com.homeserv.cleanplex-pf`). Plex is `com.homeserv.plex`.
 
 1. Confirm the dev instance passes every check in §10.2
 2. Back up the database first — migrations run against it on startup:
-   `cp ~/.cleanplex/cleanplex.db ~/.cleanplex/cleanplex.db.bak-$(date +%Y%m%d-%H%M%S)`
-3. Restart, **from an elevated PowerShell**: `Restart-Service -Name Cleanplex -Force`
+   `sudo cp /Users/server/.cleanplex/cleanplex.db /Users/server/.cleanplex/cleanplex.db.bak-$(date +%Y%m%d-%H%M%S)`
+3. Deploy and restart: `sudo bash scripts/install-macos-service.sh server` (waits for the old process to exit)
 4. Verify: poll `http://localhost:7979/api/settings` until it responds
-5. Confirm the process actually recycled — its PID must differ from the pre-restart one
-6. Check `cleanplex.log` for errors before declaring done
+5. Confirm the process actually recycled — its PID (`pgrep -f bin/cleanplex`) must differ from before
+6. Check `/Users/server/.cleanplex/cleanplex.log` for errors before declaring done
+7. If the front door is installed, check Plex still answers through it:
+   `curl -s http://192.168.0.80:32400/identity` and, after a front door change, a phone on Wi-Fi
 
-If the deploy is being run by an agent or any non-elevated session, it must stop at step 3 and hand
-the command to a human. Reporting a deploy as done without a changed PID is a false success.
+Front door changes: `sudo bash scripts/frontdoor/install.sh` / `--uninstall` (§5.9). **Any change to the
+redirect or nginx config must be proven from another device on a spare port before it touches 32400** —
+this machine's own traffic takes a different (loopback) path and cannot show a redirect is broken.
+Reporting a deploy as done without a changed PID is a false success.

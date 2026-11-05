@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -287,3 +288,31 @@ async def test_update_cleanplex_summary_returns_false_on_exception():
     with patch("cleanplex.plex_client.asyncio.to_thread", side_effect=Exception("fetch failed")):
         result = await c.update_cleanplex_summary("42", "Scanned", 3)
     assert result is False
+
+
+async def test_get_active_sessions_reads_a_real_plexapi_session_with_its_audio_language():
+    """Regression for #182: plexapi's audioStreams is a method; a list-shaped fake hid that it was iterated unbound."""
+    import xml.etree.ElementTree as ET
+    from plexapi.video import MovieSession
+
+    xml = (
+        '<Video guid="plex://movie/1" librarySectionID="1" ratingKey="6680" sessionKey="19" title="Film" '
+        'type="movie" viewOffset="49000" duration="6000000" thumb="/t">'
+        '<Media id="1"><Part id="2" container="mkv">'
+        '<Stream id="3" streamType="1" codec="h264"/>'
+        '<Stream id="4" streamType="2" codec="aac" languageCode="eng" selected="1"/>'
+        '</Part></Media>'
+        '<User id="1" title="Viewer"/>'
+        '<Player machineIdentifier="m1" state="playing" title="Chrome" product="Plex Web" local="1"/>'
+        '</Video>'
+    )
+    fake_server = SimpleNamespace(_baseurl="http://x", _token="t", _session=None, url=lambda p, includeToken=True: "http://x" + p)
+    session = MovieSession(fake_server, ET.fromstring(xml), initpath="/status/sessions")
+    client = PlexClient("http://x", "t")
+    client._server = SimpleNamespace(sessions=lambda: [session])
+
+    sessions = await client.get_active_sessions()
+
+    assert len(sessions) == 1
+    assert sessions[0].user == "Viewer" and sessions[0].audio_language == "eng"
+    assert sessions[0].client_title == "Chrome" and sessions[0].position_ms == 49000

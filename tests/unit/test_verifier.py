@@ -92,9 +92,9 @@ async def test_train_builds_a_model_from_feedback_and_kept_segments(setup_db, tm
 
     status = await verifier.train()
 
-    assert status["groups"]["siglip"]["auc"] > 0.9
+    assert status["groups"]["siglip:BUTTOCKS_EXPOSED"]["auc"] > 0.9
     assert verifier.model_path().is_file()
-    assert "nudenet" not in status["groups"]  # no nudenet examples, so no model for that family
+    assert not any(g.startswith("nudenet") for g in status["groups"])  # no nudenet examples, so no model for that family
 
 
 async def test_train_fails_clearly_without_enough_examples(setup_db, monkeypatch):
@@ -105,3 +105,27 @@ async def test_train_fails_clearly_without_enough_examples(setup_db, monkeypatch
     with pytest.raises(RuntimeError, match="at least"):
         await verifier.train()
     assert verifier.status()["error"]
+
+
+async def test_training_rows_group_by_label_so_one_labels_rejections_stay_with_it(setup_db, tmp_path):
+    for i, (label, fp) in enumerate([("BUTTOCKS_EXPOSED", True), ("BUTTOCKS_EXPOSED", False),
+                                     ("FEMALE_BREAST_EXPOSED", False)]):
+        f = tmp_path / f"{i}.jpg"
+        f.write_bytes(b"x")
+        seg_id = await db.insert_segment(f"g{i}", "T", i * 100_000, i * 100_000 + 500, 0.8, str(f), label,
+                                         source="siglip", detector="siglip-base-224")
+        if fp:
+            await db.mark_segment_false_positive(seg_id, str(f))
+
+    rows = await db.get_verifier_training_rows(100)
+
+    by_group = {}
+    for r in rows:
+        by_group.setdefault(r["group"], []).append(r["fp"])
+    assert sorted(by_group["siglip:BUTTOCKS_EXPOSED"]) == [0, 1]
+    assert by_group["siglip:FEMALE_BREAST_EXPOSED"] == [0]  # no rejected examples: this label gets no model
+
+
+def test_group_key_uses_the_peak_label_and_falls_back_to_the_family():
+    assert verifier.group_key("siglip", ["ANUS_EXPOSED", "BUTTOCKS_EXPOSED"]) == "siglip:ANUS_EXPOSED"
+    assert verifier.group_key("nudenet", []) == "nudenet"

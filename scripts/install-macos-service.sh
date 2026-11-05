@@ -92,12 +92,15 @@ cat > "$PLIST" <<PLIST
     <key>USER</key><string>${RUN_USER}</string>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>CLEANPLEX_PORT</key><string>${PORT}</string>
+    <key>CLEANPLEX_PROXY_PORT</key><string>7981</string>
+    <key>CLEANPLEX_PROXY_HOST</key><string>127.0.0.1</string>
     <key>CLEANPLEX_LOG_FILE</key><string>${LOG_FILE}</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key>
   <dict><key>SuccessfulExit</key><false/></dict>
   <key>ThrottleInterval</key><integer>10</integer>
+  <key>ExitTimeOut</key><integer>30</integer>
   <key>StandardOutPath</key><string>/dev/null</string>
   <key>StandardErrorPath</key><string>${CRASH_LOG}</string>
 </dict>
@@ -110,6 +113,12 @@ plutil -lint "$PLIST" >/dev/null || die "Generated plist is invalid."
 # ── 4. (Re)load service ───────────────────────────────────────────────────────
 info "Loading service ..."
 launchctl bootout "system/${LABEL}" 2>/dev/null || true
+# bootout returns before the old process has exited; bootstrapping while it is still
+# shutting down fails with "Input/output error". Wait for it (the app force-exits within 20s).
+for _ in $(seq 1 40); do
+  launchctl print "system/${LABEL}" >/dev/null 2>&1 || break
+  sleep 1
+done
 launchctl enable "system/${LABEL}"
 launchctl bootstrap system "$PLIST"
 

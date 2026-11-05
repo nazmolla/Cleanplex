@@ -70,6 +70,7 @@ def _mock_db(mock_db, segments, prefs=None):
     mock_db.get_segments_by_rating_key = AsyncMock(return_value=[])
     mock_db.get_user_category_prefs = AsyncMock(return_value=prefs or {})
     mock_db.record_skip_event = AsyncMock(return_value=1)
+    mock_db.is_proxied = AsyncMock(return_value=False)
     return mock_db
 
 
@@ -123,7 +124,7 @@ async def test_guid_mismatch_falls_back_to_rating_key():
 # ── Buffers (issue #58) ────────────────────────────────────────────────────────
 
 async def test_pre_buffer_widens_segment_start():
-    """A 3000ms pre-buffer must move the trigger and target to 27000, not 25000.
+    """A 3000ms pre-buffer must move the trigger to 27000, not 25000; the seek lands past the end.
 
     Regression test for the hardcoded 5000ms expansion that ignored the setting.
     """
@@ -135,7 +136,7 @@ async def test_pre_buffer_widens_segment_start():
 
     client.seek.assert_awaited_once()
     _, seek_ms, *_ = client.seek.call_args[0]
-    assert seek_ms == 27000
+    assert seek_ms == 43000  # 40000 end + 3000 post-buffer
 
 
 async def test_pre_buffer_is_honoured_when_changed():
@@ -146,7 +147,7 @@ async def test_pre_buffer_is_honoured_when_changed():
         await fe.process(session, client, pre_buffer_ms=8000, post_buffer_ms=1000, lookahead_ms=0)
 
     _, seek_ms, *_ = client.seek.call_args[0]
-    assert seek_ms == 22000
+    assert seek_ms == 41000  # triggered at 22000 by the 8000 pre-buffer; lands at end + 1000
 
 
 async def test_post_buffer_bounds_the_trigger_window():
@@ -168,7 +169,7 @@ async def test_pre_buffer_clamps_at_zero():
         await fe.process(session, client, pre_buffer_ms=8000, post_buffer_ms=3000, lookahead_ms=0)
 
     _, seek_ms, *_ = client.seek.call_args[0]
-    assert seek_ms == 0
+    assert seek_ms == 8000  # the start clamps at 0 so 500 triggers; the seek lands at 5000 + 3000
 
 
 # ── Lookahead trigger ──────────────────────────────────────────────────────────
@@ -184,7 +185,19 @@ async def test_position_within_lookahead_triggers_seek():
 
     client.seek.assert_awaited_once()
     _, seek_ms, *_ = client.seek.call_args[0]
-    assert seek_ms == 27000
+    assert seek_ms == 43000
+
+
+async def test_skip_from_inside_a_segment_never_seeks_backwards():
+    """Regression for #185: a viewer near the end of a segment was sent back to its start."""
+    session = _session(position_ms=39000)
+    client = _make_client()
+    with patch("cleanplex.filter_engine.db") as mock_db:
+        _mock_db(mock_db, _segs(30000, 40000))
+        await fe.process(session, client, pre_buffer_ms=3000, post_buffer_ms=3000, lookahead_ms=0)
+
+    _, seek_ms, *_ = client.seek.call_args[0]
+    assert seek_ms > session.position_ms and seek_ms == 43000
 
 
 async def test_position_before_lookahead_does_not_seek():
