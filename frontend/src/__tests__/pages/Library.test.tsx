@@ -219,15 +219,15 @@ describe('Library', () => {
 
       await waitFor(() => expect(screen.queryByText('Kids Movie')).not.toBeInTheDocument())
       expect(screen.getByText('Old G Movie')).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: /^Pending/ })).toHaveTextContent('(1)')
+      expect(screen.getByRole('button', { name: /^Pending/ })).toHaveTextContent('Pending1')
     })
 
     it('does not count titles the list hides', async () => {
       await openLibrary()
 
       expect(screen.queryByText('Ignored Movie')).not.toBeInTheDocument()
-      expect(screen.getByRole('button', { name: /^Scanning/ })).not.toHaveTextContent('(1)')
-      expect(screen.getByRole('button', { name: /^All/ })).toHaveTextContent('(3)')
+      expect(screen.getByRole('button', { name: /^Scanning/ })).not.toHaveTextContent('Scanning1')
+      expect(screen.getByRole('button', { name: /^All/ })).toHaveTextContent('All3')
     })
   })
 
@@ -500,5 +500,60 @@ describe('Library: date and cast filters, rejected segments (#177, #179, #180)',
       await vi.advanceTimersByTimeAsync(600)
     })
     await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/titles/segments/batch', { guids: ['b'] }))
+  })
+})
+
+describe('Library: scan a show or a season (#187)', () => {
+  const ep = (guid: string, season: string, name: string) => ({
+    plex_guid: guid, rating_key: guid, title: `Big Show – ${season} – ${name}`, status: 'done', progress: 1,
+    finished_at: null, thumb_url: '', poster_url: '', show_guid: 'show-1', show_title: 'Big Show',
+    segment_count: 0, false_positive_count: 0, content_rating: 'TV-MA', media_type: 'episode', year: 2020,
+    ignored: false,
+  })
+  const episodes = [ep('e1', 'Season 1', 'Pilot'), ep('e2', 'Season 2', 'Return')]
+
+  beforeEach(() => {
+    mockApi.get.mockImplementation((path: string) => {
+      if (path.includes('scanner-status')) return Promise.resolve(scannerIdle)
+      if (path.includes('libraries') && !path.includes('titles')) {
+        return Promise.resolve({ libraries: [{ id: 'tv', title: 'TV Shows', type: 'show' }] })
+      }
+      if (path.includes('titles')) return Promise.resolve({ titles: JSON.parse(JSON.stringify(episodes)) })
+      return Promise.resolve({})
+    })
+    mockApi.post.mockResolvedValue({ ok: true, queued: 1, already_scanning: 0 })
+  })
+
+  async function openShow() {
+    renderLibrary()
+    await waitFor(() => screen.getAllByText('TV Shows')[0])
+    await act(async () => { fireEvent.change(screen.getAllByRole('combobox')[0], { target: { value: 'tv' } }) })
+    await screen.findByText('Big Show')
+  }
+
+  it('queues the whole show for tonight from the show header', async () => {
+    await openShow()
+    fireEvent.click(screen.getByRole('button', { name: 'Scan whole show tonight' }))
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/scan/show', {
+      show_guid: 'show-1', show_title: 'Big Show', season: '', library_id: 'tv', now: false,
+    }))
+    expect(await screen.findByText(/Big Show: 1 episode queued for tonight/)).toBeInTheDocument()
+  })
+
+  it('queues one season now from the season header', async () => {
+    await openShow()
+    fireEvent.click(screen.getByTitle('Expand show'))
+    fireEvent.click(screen.getByRole('button', { name: 'Scan Season 2 now' }))
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/scan/show', {
+      show_guid: 'show-1', show_title: 'Big Show', season: 'Season 2', library_id: 'tv', now: true,
+    }))
+    expect(await screen.findByText(/Big Show · Season 2: 1 episode queued to scan now/)).toBeInTheDocument()
+  })
+
+  it('reports the error when queueing a show fails', async () => {
+    mockApi.post.mockRejectedValue(new Error('404 nothing'))
+    await openShow()
+    fireEvent.click(screen.getByRole('button', { name: 'Scan whole show now' }))
+    expect(await screen.findByText(/Could not queue Big Show: 404 nothing/)).toBeInTheDocument()
   })
 })
