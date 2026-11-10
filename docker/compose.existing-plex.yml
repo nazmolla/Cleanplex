@@ -1,0 +1,26 @@
+# Cleanplex in front of a Plex container you already run (#194).
+# Change your Plex container so it no longer publishes 32400 to the host (remove its "32400:32400"
+# port line, keep the container on the network named below), then:
+#   docker compose -f docker/compose.existing-plex.yml up -d
+# Cleanplex publishes host port 32400 itself, so clients, Plex Remote Access and apps keep working.
+services:
+  cleanplex:
+    image: ghcr.io/nazmolla/cleanplex:latest
+    restart: unless-stopped
+    ports:
+      - "32400:32480"   # the front door takes Plex's public port
+      - "7979:7979"
+    environment:
+      CLEANPLEX_PLEX_DATA: /plex-config
+      CLEANPLEX_PLEX_UPSTREAM: ${PLEX_HOST:-plex}:32400   # your Plex container's name on the shared network
+    volumes:
+      - ${PLEX_CONFIG:?set PLEX_CONFIG to your Plex /config folder}:/plex-config:ro
+      - ${MEDIA_PATH:?set MEDIA_PATH}:${MEDIA_PATH}:ro   # same path Plex uses
+      - cleanplex-data:/data
+    networks: [plex]
+networks:
+  plex:
+    external: true
+    name: ${PLEX_NETWORK:-plex_default}
+volumes:
+  cleanplex-data:

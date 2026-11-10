@@ -1,0 +1,11 @@
+.git
+.venv
+**/node_modules
+**/__pycache__
+*.log
+*.db*
+.DS_Store
+tests
+frontend/dist
+cleanplex/web/static
+tmp_*.py

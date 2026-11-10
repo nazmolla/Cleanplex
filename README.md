@@ -100,6 +100,23 @@ sudo bash scripts/frontdoor/install.sh              # macOS / Linux
 
 On Windows, run `scripts\frontdoor\install-windows.ps1` in an elevated PowerShell.
 
+### Docker (NAS, Unraid, Synology, QNAP, TrueNAS, any Docker host)
+
+The image `ghcr.io/nazmolla/cleanplex` needs no manual setup. On first start it reads Plex's URL, token and certificate from Plex's config folder, starts the front door, turns enforcement on and switches Plex Relay and DLNA off (set `CLEANPLEX_CONFIGURE_PLEX=false` to leave Plex's settings alone).
+
+**New setup (Plex and Cleanplex together):** set `MEDIA_PATH` (and optionally `PLEX_CONFIG`, `PUID`, `PGID`, `TZ`) in a `.env` file and run `docker compose up -d` with [docker-compose.yml](docker-compose.yml). Claim the server at `http://<host>:32400/web`; Cleanplex is at `http://<host>:7979`. Cleanplex joins Plex's network, and the host's port 32400 goes to the front door, so every client passes it.
+
+**You already run Plex in Docker:** remove the `32400:32400` port line from your Plex container, then use [docker/compose.existing-plex.yml](docker/compose.existing-plex.yml). It publishes 32400 itself and reaches Plex by container name (`PLEX_HOST`, `PLEX_NETWORK`).
+
+**Plex uses host networking:** use [docker/compose.host-network.yml](docker/compose.host-network.yml). It adds an nftables rule on the host for the lifetime of the container and needs a kernel with nftables (many Synology models do not have it; use the existing-plex file there).
+
+Rules for every layout:
+- Mount the Plex config folder read-only at `/plex-config` and set `CLEANPLEX_PLEX_DATA=/plex-config`; the container runs as that folder's owner (override with `PUID`/`PGID`).
+- Mount media at the **same path Plex sees it at**: Plex reports file paths and Cleanplex opens them to scan.
+- Plex creates its certificate only after the server is claimed; until then Cleanplex waits and retries, and the web UI works.
+- To skip the front door entirely (scan and mark only) set `CLEANPLEX_FRONTDOOR=0`.
+- Updating: `docker compose pull && docker compose up -d`. The database lives in the `cleanplex-data` volume.
+
 ## Configuration
 
 All configuration is done via the **web UI** at `http://your-server:7979/settings`, grouped into sections (Plex Connection, Users, Playback, Stream Filtering, Scan Scope & Schedule, NudeNet Detection, SigLIP Fallback, Segments, Sharing). No config files to edit.
@@ -331,7 +348,7 @@ sudo bash scripts/frontdoor/install.sh            # macOS default account: serve
 sudo bash scripts/frontdoor/install.sh --uninstall
 ```
 
-- **Docker**: publish the host's `32400` to the front door's `32480` instead of to the Plex container, and give Cleanplex the Plex data folder (`CLEANPLEX_PLEX_DATA`).
+- **Docker**: see [Docker](#docker-nas-unraid-synology-qnap-truenas-any-docker-host); the image sets this up itself.
 - **Windows** (Mode B, untested): `scripts/frontdoor/install-windows.ps1` runs the front door on 32480, prints the URL to set as Plex's *Custom server access URL*, and blocks other machines from 32400 so clients fail over to it.
 
 Settings → **Stream Filtering**:
@@ -413,7 +430,13 @@ Titles can be marked as **ignored** to skip them during background scans:
 | `CLEANPLEX_CORS_ORIGINS` | none | Comma-separated origins allowed to call the API from another site; same-origin use needs nothing |
 | `CLEANPLEX_PROXY_PORT` | `7981` | Port of the stream proxy the front door talks to; `0` turns it off |
 | `CLEANPLEX_PROXY_HOST` | `CLEANPLEX_HOST` | Bind address of the stream proxy. The service installers set `127.0.0.1`: only nginx needs it |
-| `CLEANPLEX_PLEX_DATA` | per OS | Plex data folder (the one holding `Preferences.xml`), for a Linux or Docker layout the front door cannot find itself |
+| `CLEANPLEX_PLEX_DATA` | per OS | The folder that contains `Library/Application Support/Plex Media Server` (a Plex Docker volume's `/config`), for a layout the front door cannot find itself |
+| `CLEANPLEX_PLEX_UPSTREAM` | `127.0.0.1:32400` | `host:port` the front door and Cleanplex reach Plex at (Plex in another container) |
+| `CLEANPLEX_PLEX_URL` / `CLEANPLEX_PLEX_TOKEN` | from Plex's folder | Docker: set the Plex URL and token without the web UI; they override saved values on every start |
+| `CLEANPLEX_FRONTDOOR` | `1` | Docker: `0` runs without the front door (no nginx, no stream filtering) |
+| `CLEANPLEX_CONFIGURE_PLEX` | `1` | Docker: switch Plex Relay and DLNA off on the first start |
+| `CLEANPLEX_REDIRECT` | — | Docker host-network mode: `nft` adds the 32400 to 32480 redirect |
+| `PUID` / `PGID` | owner of Plex's folder | Docker: user and group the container runs as |
 | `CLEANPLEX_PLEX_MACHINE_ID` | from Plex | Plex's `ProcessedMachineIdentifier`, if it cannot be read from Plex's preferences |
 | `CLEANPLEX_NGINX` | `nginx` | nginx binary used to reload the front door when Plex renews its certificate |
 
