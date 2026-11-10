@@ -110,7 +110,7 @@ The image `ghcr.io/nazmolla/cleanplex` (mirrored to Docker Hub as `nazmolla/clea
 
 **Plex uses host networking:** use [docker/compose.host-network.yml](docker/compose.host-network.yml). It adds an nftables rule on the host for the lifetime of the container and needs a kernel with nftables (many Synology models do not have it; use the existing-plex file there).
 
-**Unraid:** install from Community Apps (search *Cleanplex*), or add the template by hand: Docker tab, *Add Container*, template URL `https://raw.githubusercontent.com/nazmolla/Cleanplex/main/unraid/cleanplex.xml`. It uses host networking, as Unraid's Plex does, with `NET_ADMIN` for the redirect. Point *Plex appdata* at Plex's appdata folder and mount your media at the same path Plex uses (add one *Media* entry per Plex media mount). If your Plex is in bridge mode, use the existing-Plex compose file instead.
+**Unraid:** install from Community Apps (search *Cleanplex*), or add the template by hand: Docker tab, *Add Container*, template URL `https://raw.githubusercontent.com/nazmolla/unraid-templates/main/templates/cleanplex.xml` (the template lives in [nazmolla/unraid-templates](https://github.com/nazmolla/unraid-templates)). It uses host networking, as Unraid's Plex does, with `NET_ADMIN` for the redirect. Point *Plex appdata* at Plex's appdata folder and mount your media at the same path Plex uses (add one *Media* entry per Plex media mount). If your Plex is in bridge mode, use the existing-Plex compose file instead.
 
 **Home Assistant:** the separate [ha-cleanplex](https://github.com/nazmolla/ha-cleanplex) integration (HACS custom repository) shows scan queue, progress, streams and front door state, and has a switch to pause scanning. It only polls Cleanplex's web API.
 
