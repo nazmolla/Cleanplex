@@ -66,3 +66,4 @@ check_scanner_status_api.py
 diagnose_monamour.py
 monitor_until_monamour.py
 run_monamour_test.py
+.smoke-plex.*

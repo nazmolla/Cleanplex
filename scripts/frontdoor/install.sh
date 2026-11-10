@@ -173,8 +173,15 @@ UNIT
   # non-loopback address. Loopback is exempt so the proxy still reaches Plex directly.
   cat > /etc/cleanplex-redirect.nft <<NFT
 table inet cleanplex {
-  chain prerouting { type nat hook prerouting priority dstnat; tcp dport ${PLEX_PORT} redirect to :${FRONT_PORT} }
-  chain output { type nat hook output priority -100; ip daddr != 127.0.0.0/8 tcp dport ${PLEX_PORT} redirect to :${FRONT_PORT}; ip6 daddr != ::1 tcp dport ${PLEX_PORT} redirect to :${FRONT_PORT} }
+  chain prerouting {
+    type nat hook prerouting priority dstnat;
+    tcp dport ${PLEX_PORT} redirect to :${FRONT_PORT}
+  }
+  chain output {
+    type nat hook output priority -100;
+    ip daddr != 127.0.0.0/8 tcp dport ${PLEX_PORT} redirect to :${FRONT_PORT}
+    ip6 daddr != ::1 tcp dport ${PLEX_PORT} redirect to :${FRONT_PORT}
+  }
 }
 NFT
   cat > /etc/systemd/system/cleanplex-redirect.service <<UNIT

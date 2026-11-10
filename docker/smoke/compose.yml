@@ -1,0 +1,19 @@
+# Smoke-test stack: a fake Plex plus Cleanplex in the bundled layout (see ../../docker-compose.yml).
+name: cleanplex-smoke
+services:
+  plex:
+    image: python:3.12-slim
+    command: python /fake_plex.py
+    volumes: ["./fake_plex.py:/fake_plex.py:ro"]
+    ports: ["33400:32480", "17979:7979"]   # Cleanplex's front door takes the "Plex" port
+  cleanplex:
+    image: ${CLEANPLEX_IMAGE:-cleanplex:dev}
+    network_mode: service:plex
+    depends_on: [plex]
+    environment:
+      CLEANPLEX_PLEX_DATA: /plex-config
+    volumes:
+      - ${PLEX_CONFIG:?set PLEX_CONFIG}:/plex-config:ro
+      - smoke-data:/data
+volumes:
+  smoke-data:

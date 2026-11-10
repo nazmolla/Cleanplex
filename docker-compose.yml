@@ -1,0 +1,39 @@
+# Plex + Cleanplex in one stack, nothing to configure by hand (#194).
+#   1. Set the paths below (or put them in a .env file next to this one).
+#   2. docker compose up -d
+#   3. Open Plex at http://<host>:32400/web and claim the server; open Cleanplex at http://<host>:7979.
+# Cleanplex shares Plex's network namespace: its front door (nginx, port 32480) is published as
+# the host's 32400, so every Plex client passes through it, while Plex itself stays private.
+# On first start Cleanplex reads Plex's URL, token and certificate from the Plex config folder,
+# turns enforcement on and switches Plex Relay and DLNA off (CLEANPLEX_CONFIGURE_PLEX=false skips that).
+services:
+  plex:
+    image: lscr.io/linuxserver/plex:latest
+    restart: unless-stopped
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-Etc/UTC}
+      VERSION: docker
+    volumes:
+      - ${PLEX_CONFIG:-./plex-config}:/config
+      - ${MEDIA_PATH:?set MEDIA_PATH to your media folder}:${MEDIA_PATH}
+    ports:
+      - "32400:32480"   # the front door, not Plex: clients keep using port 32400
+      - "7979:7979"     # Cleanplex web UI
+
+  cleanplex:
+    image: ghcr.io/nazmolla/cleanplex:latest
+    restart: unless-stopped
+    network_mode: service:plex
+    depends_on: [plex]
+    environment:
+      CLEANPLEX_PLEX_DATA: /plex-config
+    volumes:
+      - ${PLEX_CONFIG:-./plex-config}:/plex-config:ro
+      # Same path as inside Plex: Plex reports file paths and Cleanplex opens them to scan.
+      - ${MEDIA_PATH}:${MEDIA_PATH}:ro
+      - cleanplex-data:/data
+
+volumes:
+  cleanplex-data:

@@ -1,0 +1,19 @@
+# Cleanplex beside a Plex that uses host networking (#194). Needs a kernel with nftables.
+# The container adds an nftables rule on the host that sends other machines' traffic for port 32400
+# to the front door (32480) and removes it when the container stops.
+#   docker compose -f docker/compose.host-network.yml up -d
+services:
+  cleanplex:
+    image: ghcr.io/nazmolla/cleanplex:latest
+    restart: unless-stopped
+    network_mode: host
+    cap_add: [NET_ADMIN]
+    environment:
+      CLEANPLEX_PLEX_DATA: /plex-config
+      CLEANPLEX_REDIRECT: nft
+    volumes:
+      - ${PLEX_CONFIG:?set PLEX_CONFIG to your Plex /config folder}:/plex-config:ro
+      - ${MEDIA_PATH:?set MEDIA_PATH}:${MEDIA_PATH}:ro
+      - cleanplex-data:/data
+volumes:
+  cleanplex-data:
