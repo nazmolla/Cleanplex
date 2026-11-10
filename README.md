@@ -102,7 +102,7 @@ On Windows, run `scripts\frontdoor\install-windows.ps1` in an elevated PowerShel
 
 ### Docker (NAS, Unraid, Synology, QNAP, TrueNAS, any Docker host)
 
-The image `ghcr.io/nazmolla/cleanplex` (mirrored to Docker Hub as `nazmolla/cleanplex`) needs no manual setup. On first start it reads Plex's URL, token and certificate from Plex's config folder, starts the front door, turns enforcement on and switches Plex Relay and DLNA off (set `CLEANPLEX_CONFIGURE_PLEX=false` to leave Plex's settings alone).
+The image `ghcr.io/nazmolla/cleanplex` (mirrored to Docker Hub as `mnazmi/cleanplex`) needs no manual setup. On first start it reads Plex's URL, token and certificate from Plex's config folder, starts the front door, turns enforcement on and switches Plex Relay and DLNA off (set `CLEANPLEX_CONFIGURE_PLEX=false` to leave Plex's settings alone).
 
 **New setup (Plex and Cleanplex together):** set `MEDIA_PATH` (and optionally `PLEX_CONFIG`, `PUID`, `PGID`, `TZ`) in a `.env` file and run `docker compose up -d` with [docker-compose.yml](docker-compose.yml). Claim the server at `http://<host>:32400/web`; Cleanplex is at `http://<host>:7979`. Cleanplex joins Plex's network, and the host's port 32400 goes to the front door, so every client passes it.
 
