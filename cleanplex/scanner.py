@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
 import re
 import threading
 import time
 from contextlib import aclosing
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -150,6 +152,32 @@ def is_scan_eligible(job: dict, excluded_library_ids: set[str], scan_ratings: se
     if not rating_allowed(job.get("content_rating"), scan_ratings):
         return False
     return True
+
+
+# A failed title is tried again after this long even if nothing about it changed: the usual causes
+# (share offline, file still copying) clear on their own, and a failure that repeats costs one probe.
+FAILED_RETRY_AFTER_S = 24 * 3600
+
+
+def failed_job_retryable(job: dict, plex_files: list[str], now: float) -> bool:
+    """True if a failed title is worth scanning again (#190). Blocking: stats the files.
+
+    Retry when Plex now reports different files; never while a file is missing (nothing to scan);
+    otherwise when the failure is a day old or a file was modified after it.
+    """
+    try:
+        stored = json.loads(job.get("part_files") or "[]")
+    except ValueError:
+        stored = []
+    if sorted(plex_files) != sorted(stored or [job.get("file_path") or ""]):
+        return True
+    if not all(os.path.isfile(p) for p in plex_files):
+        return False
+    try:
+        finished = datetime.fromisoformat(job["finished_at"]).replace(tzinfo=timezone.utc).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return True
+    return now - finished >= FAILED_RETRY_AFTER_S or any(os.stat(p).st_mtime > finished for p in plex_files)
 
 
 async def get_queue_size() -> int:
@@ -955,7 +983,9 @@ async def scan_video(plex_guid: str, config) -> None:
                         await _notify_workers()
                         return
 
-                    if _paused:
+                    # A forced scan ignores the scan window, so it ignores the window-driven pause
+                    # too: otherwise an idle worker's pause_scanner() aborts it (#201).
+                    if _paused and not is_force_scan:
                         # Re-queue for later
                         await db.release_scan_job(plex_guid, requeue=True, progress=idx / total_steps)
                         await _notify_workers()

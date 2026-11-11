@@ -83,6 +83,7 @@ describe('Dashboard', () => {
       client: 'Plex Web',
       is_controllable: true,
       filtering_enabled: true,
+      filtering_state: 'active',
       thumb_url: '',
     }
     mockApi.get.mockImplementation((path: string) => {
@@ -93,6 +94,29 @@ describe('Dashboard', () => {
     renderDashboard()
     await waitFor(() => expect(screen.getByText('Inception')).toBeInTheDocument())
     expect(screen.getByText(/alice/)).toBeInTheDocument()
+  })
+
+  it.each([
+    ['active', 'Being cut'],
+    ['clear', 'Not cut: nothing to cut'],
+    ['ignored', 'Not cut: title ignored'],
+    ['library_excluded', 'Not cut: library excluded'],
+    ['rating_skipped', 'Not cut: rating not scanned'],
+    ['not_scanned', 'Not cut: not scanned yet'],
+    ['off', 'Not cut: filtering off'],
+  ])('labels a %s stream as "%s"', async (state, text) => {
+    const session = {
+      session_key: 's1', user: 'alice', title: 'Inception', media_type: 'movie', position_ms: 0,
+      duration_ms: 7200000, client: 'Plex Web', is_controllable: true, filtering_enabled: state !== 'off',
+      filtering_state: state, thumb_url: '',
+    }
+    mockApi.get.mockImplementation((path: string) => {
+      if (path.includes('skips/history')) return Promise.resolve(emptyEvents)
+      if (path.includes('scanner-status')) return Promise.resolve(scannerIdle)
+      return Promise.resolve({ sessions: [session] })
+    })
+    renderDashboard()
+    await waitFor(() => expect(screen.getByText(text)).toBeInTheDocument())
   })
 
   it('shows scanner scanning status when active scans present', async () => {

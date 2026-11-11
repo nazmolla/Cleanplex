@@ -81,6 +81,26 @@ async def get_libraries():
         return {"libraries": [], "error": "Plex not configured"}
 
 
+async def _requeue_changed_failures(failed: list[dict], plex_items: dict) -> int:
+    """Queue again the failed titles whose files changed or that failed long enough ago; return how many (#190)."""
+    if not failed:
+        return 0
+    excluded = set(json.loads(await db.get_setting("excluded_library_ids", "[]")))
+    ratings = set(json.loads(await db.get_setting("scan_ratings", "[]")))
+    now = time.time()
+    candidates = [j for j in failed if j["plex_guid"] in plex_items and scan_mod.is_scan_eligible(j, excluded, ratings)]
+    flags = await asyncio.to_thread(lambda: [
+        scan_mod.failed_job_retryable(j, plex_items[j["plex_guid"]].part_files or [plex_items[j["plex_guid"]].file_path], now)
+        for j in candidates
+    ])
+    guids = [j["plex_guid"] for j, retry in zip(candidates, flags) if retry]
+    if guids:
+        await db.reset_scan_jobs(guids)
+        await scan_mod.rebuild_queue()
+        events.publish("scanner_changed")
+    return len(guids)
+
+
 @router.post("/libraries/{library_id}/sync")
 async def sync_library(library_id: str):
     """Sync a library from Plex into DB. Returns count of new titles added."""
@@ -96,6 +116,8 @@ async def sync_library(library_id: str):
         # filter when deciding what to scan, not at discovery time.
         file_items = [i for i in items if i.file_path]
         existing_guids = await db.get_existing_guids([i.plex_guid for i in file_items])
+        # Read before the refresh below overwrites the stored paths (#190).
+        failed_before = await db.get_failed_jobs_for_library(library_id)
 
         # Refresh mutable Plex metadata for all existing titles in one transaction
         # so that manual rating changes in Plex are reflected after sync.
@@ -107,7 +129,7 @@ async def sync_library(library_id: str):
         # Remove DB entries for titles Plex no longer reports in this library
         # (e.g. deleted files or removed duplicates).
         plex_guids = [i.plex_guid for i in file_items]
-        removed = await db.delete_scan_jobs_not_in(library_id, plex_guids)
+        removed = await db.remove_titles_not_in(library_id, plex_guids)
         if removed:
             logger.info(f"Library {library_id} sync: removed {removed} stale titles")
 
@@ -124,11 +146,13 @@ async def sync_library(library_id: str):
             for i in file_items if i.plex_guid not in existing_guids
         ])
 
-        logger.info(f"Library {library_id} synced: {added} new titles added")
+        retried = await _requeue_changed_failures(failed_before, {i.plex_guid: i for i in file_items})
+
+        logger.info(f"Library {library_id} synced: {added} new titles added, {retried} failed titles retried")
         if added:
             await scan_mod.sync_queue()
         events.publish("titles_changed", library_id=library_id)
-        return {"ok": True, "synced": len(items), "new": added, "removed": removed}
+        return {"ok": True, "synced": len(items), "new": added, "removed": removed, "retried": retried}
     except RuntimeError as e:
         logger.error(f"Plex client error during library sync: {e}")
         return {"ok": False, "error": str(e)}
@@ -200,6 +224,8 @@ async def get_titles_in_library(library_id: str):
             "status": job["status"],
             "progress": job["progress"],
             "finished_at": job.get("finished_at"),
+            # Why a scan failed; empty for every other status.
+            "error_msg": (job.get("error_msg") or "") if job["status"] == "failed" else "",
             "thumb_url": thumb_url,
             "poster_url": poster_url,
             "show_guid": show_guid,
@@ -485,10 +511,23 @@ PREVIEW_CACHE_FILES = 50
 # One render per clip at a time: Safari opens several requests for one <video>.
 # Entries are removed once nobody is waiting, so the dict does not grow.
 _preview_locks: dict[str, asyncio.Lock] = {}
+# At most this many clips render at once. Each is a full ffmpeg transcode, so a burst of
+# clicks otherwise runs them all side by side, each several times slower (#189).
+PREVIEW_MAX_RENDERS = 2
+_render_slots: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore] | None = None
 
 
-async def _segment_source(segment_id: int) -> tuple[dict, str]:
-    """Return (segment, readable source path) or raise 404.
+def _render_semaphore() -> asyncio.Semaphore:
+    """The render semaphore for the running loop (created on first use, as a Semaphore binds to one loop)."""
+    global _render_slots
+    loop = asyncio.get_running_loop()
+    if _render_slots is None or _render_slots[0] is not loop:
+        _render_slots = (loop, asyncio.Semaphore(PREVIEW_MAX_RENDERS))
+    return _render_slots[1]
+
+
+async def _segment_source(segment_id: int) -> tuple[dict, str, str | None]:
+    """Return (segment, readable source path, the title's part_files JSON) or raise 404.
 
     The path is opened by this server process, i.e. the service account, which
     is the account with access to the media shares; the browser never touches it.
@@ -498,13 +537,16 @@ async def _segment_source(segment_id: int) -> tuple[dict, str]:
         raise HTTPException(status_code=404, detail="Segment not found")
 
     job = await db.get_scan_job_by_guid(seg["plex_guid"])
-    if not job or not job.get("file_path"):
+    if not job:
+        # Library sync drops a removed or re-matched title's job but keeps its segments for a while.
+        raise HTTPException(status_code=404, detail="This title is no longer in the library, so its source file is unknown")
+    if not job.get("file_path"):
         raise HTTPException(status_code=404, detail="Source file not found for this segment")
 
     file_path = job["file_path"]
     if not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="Source media file does not exist on disk")
-    return seg, file_path
+    return seg, file_path, job.get("part_files")
 
 
 @router.get("/segments/{segment_id}/vlc")
@@ -542,9 +584,13 @@ async def preview_segment(segment_id: int):
     rendered once and served as a file, so byte-range requests work (Safari will
     not play a video without them).
     """
-    seg, file_path = await _segment_source(segment_id)
-    start_ms = max(int(seg["start_ms"]) - PREVIEW_PAD_MS, 0)
-    duration_ms = min(int(seg["end_ms"]) + PREVIEW_PAD_MS - start_ms, PREVIEW_MAX_MS)
+    seg, file_path, part_files = await _segment_source(segment_id)
+    # Segment times run across all parts of a multi-part title (#188): cut from the right part.
+    file_path, seg_start_ms, seg_duration_ms = await frame_extractor.resolve_window(
+        file_path, part_files, int(seg["start_ms"]), int(seg["end_ms"]),
+    )
+    start_ms = max(seg_start_ms - PREVIEW_PAD_MS, 0)
+    duration_ms = min(seg_start_ms + seg_duration_ms + PREVIEW_PAD_MS - start_ms, PREVIEW_MAX_MS)
     # The source's mtime is in the key so a replaced file is never served stale.
     mtime = int(os.stat(file_path).st_mtime)
     key = f"{segment_id}_{start_ms}_{duration_ms}_{mtime}"
@@ -556,7 +602,9 @@ async def preview_segment(segment_id: int):
             async with lock:
                 if not clip.is_file():
                     PREVIEWS_DIR.mkdir(parents=True, exist_ok=True)
-                    if not await frame_extractor.render_clip(file_path, start_ms, duration_ms, clip):
+                    async with _render_semaphore():
+                        rendered = await frame_extractor.render_clip(file_path, start_ms, duration_ms, clip)
+                    if not rendered:
                         raise HTTPException(status_code=502, detail="Could not render a preview of this segment")
                     _prune_preview_cache(keep=clip)
         finally:
@@ -584,7 +632,7 @@ async def hover_preview(segment_id: int):
 @router.get("/segments/{segment_id}/stream")
 async def stream_segment_source(segment_id: int):
     """Stream the original source file (range requests supported), e.g. for VLC."""
-    _, file_path = await _segment_source(segment_id)
+    _, file_path, _ = await _segment_source(segment_id)
     media_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
     return FileResponse(path=file_path, media_type=media_type)
 

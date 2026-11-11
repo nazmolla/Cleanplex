@@ -90,3 +90,41 @@ async def test_an_ignored_title_claimed_by_mistake_leaves_the_queue(tmp_path):
     job = await db.get_scan_job_by_guid("g")
     assert job["status"] == "pending"
     assert await db.count_queued_scan_jobs() == 0
+
+
+async def test_a_forced_scan_keeps_running_while_the_scanner_is_paused(tmp_path, monkeypatch):
+    await _job(tmp_path)  # the helper forces the job
+    monkeypatch.setattr(scanner, "_paused", True)  # an idle worker paused the scanner (#201)
+    frames: list[int] = []
+
+    async def batch(path, step_ms, duration_ms, size, hardware=False):
+        for t in range(0, 6000, step_ms):
+            yield t, b"frame"
+
+    def classify(jpeg, *a, **k):
+        frames.append(1)
+        return False, 0.0, []
+
+    with patch.object(scanner, "extract_frames_batch", batch), \
+         patch.object(scanner, "get_duration_ms", AsyncMock(return_value=6_000)), \
+         patch.object(scanner, "_classify_frame", classify):
+        await scanner.scan_video("g", Config(scan_step_ms=2000, siglip_enabled=False))
+
+    assert len(frames) == 3
+    assert (await db.get_scan_job_by_guid("g"))["status"] == "done"
+
+
+async def test_a_normal_scan_stops_and_requeues_while_the_scanner_is_paused(tmp_path, monkeypatch):
+    await _job(tmp_path)
+    await db.set_force_scan("g", False)
+    monkeypatch.setattr(scanner, "_paused", True)
+
+    async def batch(path, step_ms, duration_ms, size, hardware=False):
+        yield 0, b"frame"
+
+    with patch.object(scanner, "extract_frames_batch", batch), \
+         patch.object(scanner, "get_duration_ms", AsyncMock(return_value=60_000)), \
+         patch.object(scanner, "_classify_frame", lambda *a, **k: (False, 0.0, [])):
+        await scanner.scan_video("g", Config(scan_step_ms=2000, siglip_enabled=False))
+
+    assert (await db.get_scan_job_by_guid("g"))["status"] == "pending"

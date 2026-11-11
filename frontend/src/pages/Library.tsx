@@ -9,6 +9,8 @@ import ThumbnailTime from '../components/ThumbnailTime'
 import SkipFileImport from '../components/SkipFileImport'
 import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2, Eye, EyeOff, X, ThumbsDown, Search, Users, ArrowDown, ArrowUp } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
+import SegmentPlayer from '../components/SegmentPlayer'
+import { parseDbTimestamp } from '../utils/dbTime'
 
 interface Library {
   id: string
@@ -38,6 +40,8 @@ interface Title {
   /** Actors Plex lists for the title (a show's for its episodes), for the cast filter (#180). */
   cast?: string[]
   ignored: boolean
+  /** Why the last scan failed; empty unless status is 'failed' (#190). */
+  error_msg?: string
 }
 
 interface Segment {
@@ -169,6 +173,17 @@ function ActionIcon({ label, title, onClick, disabled, tone, children }: {
   )
 }
 
+/** Shortens "Could not determine video duration for: /long/path/file.mp4" to the file name. */
+function failureText(message: string): string {
+  return message.replace(/(: )(?:\/|[A-Za-z]:\\)\S.*?([^\/\\]+)$/, '$1$2')
+}
+
+/** The reason a title failed, under its status badge, so a Failed title never stands unexplained (#190). */
+function FailureReason({ title }: { title: Title }) {
+  if (title.status !== 'failed' || !title.error_msg) return null
+  return <p className="text-xs text-red-400/80 mt-1 break-words" title={title.error_msg}>{failureText(title.error_msg)}</p>
+}
+
 function StatusBadge({ status, progress }: { status: string; progress: number }) {
   switch (status) {
     case 'done':
@@ -188,7 +203,7 @@ function StatusBadge({ status, progress }: { status: string; progress: number })
 
 function formatFinishedAt(value?: string | null): string {
   if (!value) return ''
-  const dt = new Date(value)
+  const dt = parseDbTimestamp(value)
   if (Number.isNaN(dt.getTime())) return ''
   return dt.toLocaleString()
 }
@@ -491,7 +506,7 @@ export default function Library() {
               </div>
               <ThumbnailTime ms={seg.thumbnail_ms} />
             </HoverPreview>
-            <div className="flex-1 p-2 flex items-center justify-between gap-2 min-w-0">
+            <div className="flex-1 p-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 min-w-0">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="font-mono text-xs text-plex-orange">{msToTimecode(seg.start_ms)}</span>
@@ -503,7 +518,7 @@ export default function Library() {
                 </div>
                 {renderLabels(seg.labels)}
               </div>
-              <div className="flex items-center gap-1 flex-shrink-0">
+              <div className="flex flex-wrap items-center gap-1 sm:flex-shrink-0">
                 <button
                   onClick={() => setPreviewSeg(seg)}
                   title="Preview segment video"
@@ -786,8 +801,8 @@ export default function Library() {
         break
       case 'scanned':
         // Titles never scanned sort to the end regardless of direction.
-        aVal = a.finished_at ? new Date(a.finished_at).getTime() : (sortDesc ? -Infinity : Infinity)
-        bVal = b.finished_at ? new Date(b.finished_at).getTime() : (sortDesc ? -Infinity : Infinity)
+        aVal = a.finished_at ? parseDbTimestamp(a.finished_at).getTime() : (sortDesc ? -Infinity : Infinity)
+        bVal = b.finished_at ? parseDbTimestamp(b.finished_at).getTime() : (sortDesc ? -Infinity : Infinity)
         break
       default:
         aVal = a.title.toLowerCase()
@@ -842,8 +857,8 @@ export default function Library() {
       .sort((a, b) => {
         // Sort shows by the same criterion as individual titles where applicable.
         if (sortBy === 'scanned') {
-          const aMax = Math.max(...a.episodes.map(ep => ep.finished_at ? new Date(ep.finished_at).getTime() : 0))
-          const bMax = Math.max(...b.episodes.map(ep => ep.finished_at ? new Date(ep.finished_at).getTime() : 0))
+          const aMax = Math.max(...a.episodes.map(ep => ep.finished_at ? parseDbTimestamp(ep.finished_at).getTime() : 0))
+          const bMax = Math.max(...b.episodes.map(ep => ep.finished_at ? parseDbTimestamp(ep.finished_at).getTime() : 0))
           return sortDesc ? bMax - aMax : aMax - bMax
         }
         if (sortBy === 'segments') {
@@ -1287,6 +1302,7 @@ export default function Library() {
                                                   <span className="text-xs text-gray-500">Finished {formatFinishedAt(title.finished_at)}</span>
                                                 )}
                                               </div>
+                                              <FailureReason title={title} />
                                               <div className="flex flex-wrap items-center gap-1 mt-1.5">
                                                 <SegmentToggle title={title} open={expandedSegments.has(title.plex_guid)} onToggle={() => toggleSegments(title.plex_guid)} />
                                                 {title.segment_count > 0 && (
@@ -1351,7 +1367,7 @@ export default function Library() {
                 })}
               </div>
             ) : (
-              <div className="grid gap-2">
+              <div className="grid gap-2 grid-cols-[minmax(0,1fr)]">
                 {sorted.map(title => (
                   <div
                     key={title.plex_guid}
@@ -1396,6 +1412,7 @@ export default function Library() {
                             <span className="text-xs text-gray-500">Finished {formatFinishedAt(title.finished_at)}</span>
                           )}
                         </div>
+                        <FailureReason title={title} />
                         <div className="flex flex-wrap items-center gap-1 mt-2">
                           <SegmentToggle title={title} open={expandedSegments.has(title.plex_guid)} onToggle={() => toggleSegments(title.plex_guid)} />
                           {title.segment_count > 0 && (
@@ -1480,13 +1497,7 @@ export default function Library() {
               </button>
             </div>
             <div className="p-3 sm:p-4">
-              <video
-                key={previewSeg.id}
-                controls
-                playsInline
-                className="w-full rounded-lg bg-black max-h-[50vh] sm:max-h-[70vh]"
-                src={`/api/segments/${previewSeg.id}/preview`}
-              />
+              <SegmentPlayer segmentId={previewSeg.id} className="max-h-[50vh] sm:max-h-[70vh]" />
               <p className="text-xs text-gray-500 mt-2">
                 The server cuts this clip from the source with 5s either side, so it plays in any browser.
               </p>

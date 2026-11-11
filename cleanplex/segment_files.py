@@ -28,8 +28,8 @@ POSTER_MAX_AGE_S = 30 * 24 * 3600
 PREVIEW_MAX_AGE_S = 14 * 24 * 3600
 PREVIEW_MAX_BYTES = 500 * 1024 * 1024
 GRACE_S = 3600
-# A segment whose title no longer exists is kept this long, in case the title comes back.
-ORPHAN_SEGMENT_DAYS = 30
+# What is saved for a removed title (apart from its segment marks) is kept this long, in case it comes back.
+REMOVED_TITLE_RETENTION_DAYS = 30
 SWEEP_INTERVAL_S = 6 * 3600
 STARTUP_DELAY_S = 120  # let the service settle before the first sweep
 
@@ -124,7 +124,9 @@ async def sweep(
 ) -> dict:
     """Remove orphaned segments and the files nothing references; return what was removed.
 
-    1. Segments whose title is gone and that are older than ORPHAN_SEGMENT_DAYS, with their files.
+    1. Segments whose title has no scan job move out of the live table (their marks are kept), and
+       what is saved for titles removed more than REMOVED_TITLE_RETENTION_DAYS ago is deleted (#191):
+       their segments' thumbnails and hover previews here, the database rows in db.purge_removed_titles.
     2. Thumbnails no segment points at, hover previews of segments that no longer exist, and
        feedback frames no feedback row points at (all only if older than the grace period).
     """
@@ -132,13 +134,13 @@ async def sweep(
         from . import scanner
 
         thumbnails_dir = scanner.THUMBNAILS_DIR
-    report = {"orphan_segments": 0, "thumbnails": 0, "hover": 0, "feedback_frames": 0, "posters": 0, "previews": 0, "bytes": 0}
+    report = {"archived_segments": 0, "purged_segments": 0, "thumbnails": 0, "hover": 0, "feedback_frames": 0, "posters": 0, "previews": 0, "bytes": 0}
 
-    orphans = await db.get_orphan_segment_refs(ORPHAN_SEGMENT_DAYS)
-    if orphans:
-        await db.delete_segments_by_ids([segment_id for segment_id, _ in orphans])
-        report["bytes"] += await remove_files(orphans)
-        report["orphan_segments"] = len(orphans)
+    report["archived_segments"] = await db.archive_orphan_segments()
+    purged = await db.purge_removed_titles(REMOVED_TITLE_RETENTION_DAYS)
+    if purged:
+        report["bytes"] += await remove_files(purged)
+        report["purged_segments"] = len(purged)
 
     thumbs, freed = await asyncio.to_thread(
         _sweep_directory, thumbnails_dir, await db.get_referenced_thumbnail_paths(), grace_s
@@ -183,9 +185,9 @@ async def segment_cleanup_loop() -> None:
             report = await sweep()
             if any(v for k, v in report.items() if k != "bytes"):
                 logger.info(
-                    "Segment file cleanup: removed %d orphan segment(s), %d thumbnail(s), %d hover preview(s), "
+                    "Segment file cleanup: archived %d segment(s) of removed titles, purged files of %d, %d thumbnail(s), %d hover preview(s), "
                     "%d feedback frame(s), %d poster(s), %d preview clip(s); freed %.1f MB",
-                    report["orphan_segments"], report["thumbnails"], report["hover"], report["feedback_frames"],
+                    report["archived_segments"], report["purged_segments"], report["thumbnails"], report["hover"], report["feedback_frames"],
                     report["posters"], report["previews"],
                     report["bytes"] / 1e6,
                 )

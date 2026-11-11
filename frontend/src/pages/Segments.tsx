@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { parseDbTimestamp } from '../utils/dbTime'
 import { api } from '../api/client'
 import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
@@ -8,6 +9,7 @@ import ThumbnailTime from '../components/ThumbnailTime'
 import ScanContextMenu, { ScanTarget } from '../components/ScanContextMenu'
 import { Film, Tv, ChevronRight, ChevronDown, Trash2, AlertTriangle, SkipForward, Play, Tv2 } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
+import SegmentPlayer from '../components/SegmentPlayer'
 
 interface Library {
   id: string
@@ -98,7 +100,7 @@ function msToTimecode(ms: number): string {
 
 function formatFinishedAt(value?: string | null): string {
   if (!value) return ''
-  const dt = new Date(value)
+  const dt = parseDbTimestamp(value)
   if (Number.isNaN(dt.getTime())) return ''
   return dt.toLocaleString()
 }
@@ -165,7 +167,7 @@ function SegmentCard({
         </div>
         <ThumbnailTime ms={seg.thumbnail_ms} />
       </HoverPreview>
-      <div className="flex-1 p-3 sm:p-4 flex items-center justify-between gap-3">
+      <div className="flex-1 min-w-0 p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2 mb-1">
             <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.start_ms)}</span>
@@ -175,10 +177,10 @@ function SegmentCard({
             <SegmentOriginBadge seg={seg} />
             {seg.false_positive && <FalsePositiveTag autoRejected={seg.auto_rejected} />}
           </div>
-          <p className="text-xs text-gray-500">Detected {new Date(seg.created_at).toLocaleDateString()}</p>
+          <p className="text-xs text-gray-500">Detected {parseDbTimestamp(seg.created_at).toLocaleDateString()}</p>
           {renderLabels(seg.labels)}
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex flex-wrap items-center gap-2 sm:flex-shrink-0">
           <button onClick={() => onPreview(seg)} title="Preview this segment in-app" className="p-2 text-gray-600 hover:text-green-400 hover:bg-green-400/10 rounded-lg transition-colors">
             <Play size={16} />
           </button>
@@ -224,7 +226,6 @@ export default function Segments() {
   const [labelFilter, setLabelFilter] = useState<Set<string>>(new Set())
   // Set when a show or season node (not individual episode) is selected from the tree.
   const [selectedGroup, setSelectedGroup] = useState<{ label: string; type: 'show' | 'season'; titles: Title[] } | null>(null)
-  const previewVideoRef = useRef<HTMLVideoElement | null>(null)
   const [scanMenu, setScanMenu] = useState<ScanTarget | null>(null)
   const [scanNotice, setScanNotice] = useState('')
 
@@ -986,7 +987,7 @@ export default function Segments() {
               </div>
             ) : (
               // Single episode or movie — flat list, no grouping
-              <div className="grid gap-3">
+              <div className="grid gap-3 grid-cols-[minmax(0,1fr)]">
                 {filteredSegments.map(seg => (
                   <SegmentCard key={seg.id} seg={seg} jumping={jumping} deleting={deleting} onPreview={openPreview} onJump={jumpToSegment} onDelete={deleteSegment} onFalsePositive={setFalsePositive} onRelabel={relabelSegment} />
                 ))}
@@ -1120,13 +1121,7 @@ export default function Segments() {
               </div>
 
               <div className="p-4">
-                <video
-                  ref={previewVideoRef}
-                  controls
-                  autoPlay
-                  className="w-full rounded-lg bg-black max-h-[70vh]"
-                  src={`/api/segments/${previewSeg.id}/preview`}
-                />
+                <SegmentPlayer segmentId={previewSeg.id} autoPlay className="max-h-[70vh]" />
                 <p className="text-xs text-gray-500 mt-2">
                   The server cuts this clip from the source with 5s either side, so it plays in any browser.
                 </p>

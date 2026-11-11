@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import aclosing
+import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -162,7 +164,9 @@ async def render_hover_clip(file_path: str, start_ms: int, duration_ms: int, out
             logger.warning("Hover preview timed out for %s", file_path)
             tmp.unlink(missing_ok=True)
             return False
-        if proc.returncode == 0 and tmp.is_file() and tmp.stat().st_size > 0:
+        # ffmpeg exits 0 with a tiny video-less file when the window lies past the end of
+        # the source, so a clean exit alone does not mean there is a preview.
+        if proc.returncode == 0 and tmp.is_file() and tmp.stat().st_size > 0 and await _has_video_stream(tmp):
             tmp.replace(out_path)
             return True
         logger.info(
@@ -362,6 +366,75 @@ async def _frame_stream(
         if proc.returncode is None:
             proc.kill()
         await proc.wait()
+
+
+def locate_in_parts(parts: list[str], durations_ms: list[int], start_ms: int, end_ms: int) -> tuple[str, int, int]:
+    """Map an absolute window of a multi-part title to (part file, part-local start, duration).
+
+    Segment times run across all parts joined end to end (the scanner adds each part's
+    offset). A window that spans a join is cut at the end of the part it starts in.
+    Past the last part there is nothing to map to, so the first file and the absolute
+    time are returned unchanged (what a single-file title would get).
+    """
+    offset = 0
+    for part, duration in zip(parts, durations_ms):
+        if start_ms < offset + duration:
+            local_start = start_ms - offset
+            return part, local_start, min(end_ms - offset, duration) - local_start
+        offset += duration
+    return parts[0], start_ms, end_ms - start_ms
+
+
+# Part durations by (path, size, mtime): previews of one title would otherwise
+# re-probe every part each time. Bounded by the number of multi-part files in use.
+_part_duration_cache: dict[tuple[str, int, int], int] = {}
+
+
+async def _part_duration_ms(path: str) -> int | None:
+    try:
+        st = await asyncio.to_thread(os.stat, path)
+        key = (path, st.st_size, int(st.st_mtime))
+    except OSError:
+        return await get_duration_ms(path)
+    if key not in _part_duration_cache:
+        duration = await get_duration_ms(path)
+        if not duration:
+            return None
+        _part_duration_cache[key] = duration
+    return _part_duration_cache[key]
+
+
+async def resolve_window(file_path: str, part_files: str | None, start_ms: int, end_ms: int) -> tuple[str, int, int]:
+    """Return (file, local start, duration) to cut a segment's window from its title's media.
+
+    *part_files* is the scan job's JSON list of parts. A title with one file (or none
+    recorded) is returned as is, without probing. If a part's duration cannot be read
+    the window falls back to the first file, as before part-awareness.
+    """
+    try:
+        parts = json.loads(part_files) if part_files else []
+    except ValueError:
+        parts = []
+    if len(parts) < 2:
+        return file_path, start_ms, end_ms - start_ms
+    durations: list[int] = []
+    for part in parts:
+        duration = await _part_duration_ms(part)
+        if not duration:
+            return file_path, start_ms, end_ms - start_ms
+        durations.append(duration)
+    return locate_in_parts(parts, durations, start_ms, end_ms)
+
+
+async def _has_video_stream(path: Path) -> bool:
+    """True if ffprobe finds a video stream in *path*."""
+    proc = await asyncio.create_subprocess_exec(
+        _FFPROBE_BIN, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type",
+        "-of", "csv=p=0", str(path),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await proc.communicate()
+    return b"video" in stdout
 
 
 async def get_duration_ms(file_path: str) -> int | None:

@@ -14,6 +14,8 @@ interface Session {
   client: string
   is_controllable: boolean
   filtering_enabled: boolean
+  // Whether this stream is being cut for this viewer, and why not when it is not (#192)
+  filtering_state: 'off' | 'active' | 'clear' | 'ignored' | 'library_excluded' | 'rating_skipped' | 'not_scanned'
   thumb_url: string
 }
 
@@ -39,6 +41,22 @@ interface ScannerStatus {
   workers_idle: number
   paused: boolean
   queue_items: QueueItem[]
+}
+
+const NOT_CUT = 'text-gray-400 bg-white/5'
+const FILTERING_BADGES: Record<Session['filtering_state'], { text: string; cls: string; title: string }> = {
+  active: { text: 'Being cut', cls: 'text-plex-orange bg-plex-orange/10', title: 'This title has segments that are skipped for this viewer.' },
+  clear: { text: 'Not cut: nothing to cut', cls: 'text-green-400 bg-green-400/10', title: 'Scanned: nothing in this title needs cutting at this viewer\'s levels.' },
+  ignored: { text: 'Not cut: title ignored', cls: NOT_CUT, title: 'This title is marked ignored, so it has no segments.' },
+  library_excluded: { text: 'Not cut: library excluded', cls: NOT_CUT, title: 'This title\'s library is excluded from scanning.' },
+  rating_skipped: { text: 'Not cut: rating not scanned', cls: NOT_CUT, title: 'This title\'s content rating is not in the scanned ratings.' },
+  not_scanned: { text: 'Not cut: not scanned yet', cls: 'text-yellow-400 bg-yellow-400/10', title: 'This title is waiting to be scanned, so nothing is being cut yet.' },
+  off: { text: 'Not cut: filtering off', cls: NOT_CUT, title: 'Filtering is switched off for this viewer.' },
+}
+
+function FilteringBadge({ state }: { state: Session['filtering_state'] }) {
+  const b = FILTERING_BADGES[state] ?? FILTERING_BADGES.not_scanned
+  return <span title={b.title} className={`text-xs px-2 py-0.5 rounded-full ${b.cls}`}>{b.text}</span>
 }
 
 function msToTime(ms: number): string {
@@ -272,10 +290,7 @@ export default function Dashboard() {
                         ? <span className="flex items-center gap-1 text-xs text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full"><Wifi size={11} />Controllable</span>
                         : <span className="flex items-center gap-1 text-xs text-gray-500 bg-white/5 px-2 py-0.5 rounded-full"><WifiOff size={11} />Not controllable</span>
                       }
-                      {s.filtering_enabled
-                        ? <span className="text-xs text-plex-orange bg-plex-orange/10 px-2 py-0.5 rounded-full">Filtering ON</span>
-                        : <span className="text-xs text-gray-500 bg-white/5 px-2 py-0.5 rounded-full">Filtering OFF</span>
-                      }
+                      <FilteringBadge state={s.filtering_state} />
                     </div>
                   </div>
                   <p className="text-sm text-gray-400 mt-1">{s.user} · {s.client}</p>

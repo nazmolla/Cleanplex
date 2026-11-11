@@ -40,8 +40,22 @@ async function upload<T>(path: string, form: FormData): Promise<T> {
   return res.json()
 }
 
+/** Ask for one byte of a media URL and report why it cannot be served. A <video> element
+ *  exposes only a generic error code, so this is how the player learns the server's reason. */
+async function mediaProblem(path: string): Promise<{ ok: boolean; detail: string }> {
+  const res = await fetch(`${BASE}${path}`, { headers: { Range: 'bytes=0-0' } })
+  if (res.ok) return { ok: true, detail: '' }
+  const text = await res.text()
+  try {
+    return { ok: false, detail: JSON.parse(text).detail ?? text }
+  } catch {
+    return { ok: false, detail: text || `Server answered ${res.status}` }
+  }
+}
+
 export const api = {
   upload,
+  mediaProblem,
   get: <T>(path: string, options?: RequestOptions) => request<T>('GET', path, undefined, options),
   put: <T>(path: string, body: unknown) => request<T>('PUT', path, body),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),

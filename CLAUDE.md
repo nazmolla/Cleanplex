@@ -51,7 +51,7 @@ Every change — regardless of size — must follow these rules. No exceptions.
 | `plex_summary.py` | The Cleanplex block in a title's Plex summary: builds the description from the database (`db.get_summary_stats`) and refreshes it (debounced) after scans, deletes, false positives, relabels, imports and subtitle scans. Plex writes go through `PlexClient.update_cleanplex_summary` |
 | `segment_refine.py` | Dense sampling of a flagged window (`dense_hits`): the frames above threshold inside it, growing while the scene runs on. Shared by the scanner and the backfill, so both choose thumbnails and bounds the same way |
 | `thumbnail_backfill.py` | Background job (scan window, one segment at a time) that re-samples segments stored before dense sampling existed: better thumbnail, bounds that only grow, `refined_at` so each is processed once, hover preview reset when the window changes |
-| `segment_files.py` | Files that belong to segments (thumbnails, hover previews, feedback frames) plus the poster and preview-clip caches (pruned by age/size): deletes them with their segment (`delete_segment`, `delete_segments_for_guid`: use these, never `db.delete_segment*` directly) and sweeps orphans on a schedule |
+| `segment_files.py` | Files that belong to segments (thumbnails, hover previews, feedback frames) plus the poster and preview-clip caches (pruned by age/size): deletes them with their segment (`delete_segment`, `delete_segments_for_guid`: use these, never `db.delete_segment*` directly) and sweeps orphans on a schedule. Removed titles (#191): the sweep archives segments left without a scan job and, 30 days after removal, purges the rest of what is saved for the title; the segments (marks) are never deleted |
 | `db_backup.py` | Daily `VACUUM INTO` backup to `~/.cleanplex/backups/` (newest 7 kept) and pruning of deploy-time `cleanplex.db.bak-*` copies (newest 3 kept) |
 | `hover_previews.py` | Job rendering each active segment's hover preview (small silent MP4) inside its own window (default 00:00–07:00); separate from the scanner, never part of a scan |
 | `subtitle_scanner.py` | Subtitle parsing and profanity matching — emits muted language segments |
@@ -244,6 +244,8 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 - **No N+1 queries.** If a route or function calls the DB once per item in a list, it is a bug. Use `IN (...)`, `JOIN`, or batch queries.
 - **Schema migrations are additive only.** Never drop or rename columns in a migration. Add new columns with defaults.
 - **Index every foreign-key-like column** (`plex_guid`, `file_hash`, `status`).
+
+- **A title Plex no longer reports is removed with `db.remove_titles_not_in`, never a bare `DELETE FROM scan_jobs`** (#191). Its segments move to `removed_segments` (the marks; every live query ignores that table) and the title is recorded in `removed_titles`. `db.purge_removed_titles` deletes everything else saved for it after `REMOVED_TITLE_RETENTION_DAYS`, except data a live title still uses (same rating key or file). `db.upsert_scan_jobs_batch` restores the marks of a title that returns. A new per-title table must be added to the purge.
 
 ### 5.3 HTTP & Plex Client
 

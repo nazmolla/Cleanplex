@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { parseDbTimestamp } from '../utils/dbTime'
 import { useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { useLiveRefresh } from '../api/events'
@@ -10,6 +11,7 @@ import SkipAnalytics from '../components/SkipAnalytics'
 import DetectionAccuracy from '../components/DetectionAccuracy'
 import { BarChart2, X, AlertTriangle, Trash2, Play, SkipForward, ChevronLeft, ChevronRight } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
+import SegmentPlayer from '../components/SegmentPlayer'
 import CollapsibleSection from '../components/CollapsibleSection'
 
 interface LabelCount {
@@ -61,7 +63,7 @@ const TABS = [
 type TabId = typeof TABS[number]['id']
 
 function formatMarkedAt(v: string): string {
-  const d = new Date(v.replace(' ', 'T') + 'Z')
+  const d = parseDbTimestamp(v)
   return isNaN(d.getTime()) ? v : d.toLocaleDateString()
 }
 
@@ -720,13 +722,7 @@ export default function Analytics() {
               </button>
             </div>
             <div className="p-3 sm:p-4">
-              <video
-                key={previewSeg.id}
-                controls
-                playsInline
-                className="w-full rounded-lg bg-black max-h-[50vh] sm:max-h-[70vh]"
-                src={`/api/segments/${previewSeg.id}/preview`}
-              />
+              <SegmentPlayer segmentId={previewSeg.id} className="max-h-[50vh] sm:max-h-[70vh]" />
             </div>
           </div>
         </div>

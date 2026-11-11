@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { parseDbTimestamp } from '../utils/dbTime'
 import { api } from '../api/client'
 import { useLiveRefresh } from '../api/events'
 import { SkipForward, Clock, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
@@ -24,7 +25,7 @@ const PAGE_SIZE = 25
 
 // created_at is SQLite's naive UTC timestamp; mark it as UTC so it renders local.
 function formatTime(createdAt: string): string {
-  return new Date(createdAt.replace(' ', 'T') + 'Z').toLocaleString()
+  return parseDbTimestamp(createdAt).toLocaleString()
 }
 
 // Date inputs are local calendar days. Send local midnight as an ISO instant so the
