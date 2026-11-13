@@ -99,7 +99,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
     <div>
       <label className="block text-sm font-medium text-gray-300 mb-1">{label}</label>
       {children}
-      {hint && <p className="text-xs text-gray-600 mt-1">{hint}</p>}
+      {hint && <p className="text-xs text-muted mt-1">{hint}</p>}
     </div>
   )
 }
@@ -357,9 +357,9 @@ export default function SettingsPage() {
   }
 
   const h2Cls = "text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border"
-  const inputCls = "w-full px-3 py-2 bg-plex-darker border border-plex-border rounded-lg text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-plex-orange/60 transition-colors"
+  const inputCls = "w-full px-3 py-2 bg-plex-darker border border-plex-border rounded-lg text-sm text-gray-100 placeholder-muted focus:border-plex-orange/60 transition-colors"
 
-  if (loading) return <div className="text-gray-500 text-sm">Loading...</div>
+  if (loading) return <div className="text-muted text-sm">Loading...</div>
 
   const sections: { id: SectionId; label: string }[] = [
     { id: 'connection', label: 'Plex Connection' },
@@ -428,7 +428,7 @@ export default function SettingsPage() {
                     <button
                       type="button"
                       onClick={() => setShowToken(v => !v)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-300"
                     >
                       {showToken ? <EyeOff size={15} /> : <Eye size={15} />}
                     </button>
@@ -458,7 +458,7 @@ export default function SettingsPage() {
           {section === 'playback' && (
             <section>
               <h2 className={h2Cls}>Playback</h2>
-              <p className="text-xs text-gray-500 mb-4">How Cleanplex watches active streams and acts on segments.</p>
+              <p className="text-xs text-muted mb-4">How Cleanplex watches active streams and acts on segments.</p>
               <div className="grid gap-4 lg:grid-cols-2 items-start">
                 <Field label="Poll Interval (seconds)" hint="How often to check active streams for scenes to skip">
                             <input type="number" min="2" max="30" value={form.poll_interval} onChange={set('poll_interval')} className={inputCls} />
@@ -473,7 +473,7 @@ export default function SettingsPage() {
           {section === 'filtering' && (
             <section>
               <h2 className={h2Cls}>Stream Filtering</h2>
-              <p className="text-xs text-gray-500 mb-4">
+              <p className="text-xs text-muted mb-4">
                 Filters every Plex app, in or out of the house, by removing filtered scenes from the stream itself.
                 These settings apply immediately.
               </p>
@@ -485,7 +485,7 @@ export default function SettingsPage() {
             <>
               <section>
                 <h2 className={h2Cls}>Scan Schedule</h2>
-                <p className="text-xs text-gray-500 mb-4">Background video scanning only runs within this time window to avoid slowing your device during the day.</p>
+                <p className="text-xs text-muted mb-4">Background video scanning only runs within this time window to avoid slowing your device during the day.</p>
                 <div className="flex gap-4">
                   <Field label="Start Time">
                     <input type="time" value={form.scan_window_start} onChange={set('scan_window_start')} className={inputCls} />
@@ -497,7 +497,7 @@ export default function SettingsPage() {
       </section>
               <section>
                 <h2 className={h2Cls}>Rescan Titles</h2>
-                <p className="text-xs text-gray-500 mb-4">
+                <p className="text-xs text-muted mb-4">
                   Queue many titles to be scanned again, for example after an update to the detector. They wait for the scan
                   window like any scheduled scan, in the usual order, and their current segments stay in use until the new scan
                   replaces them.
@@ -506,7 +506,7 @@ export default function SettingsPage() {
               </section>
               <section>
                 <h2 className={h2Cls}>Hover Previews</h2>
-                <p className="text-xs text-gray-500 mb-4">
+                <p className="text-xs text-muted mb-4">
                   A separate job renders a short silent loop of each segment (about 20 KB each), played when you hover its
                   thumbnail. It runs in this window, and when the scan queue is empty if that option is on, one segment at a time, and picks up segments it has not done yet.
                   The window may cross midnight (e.g. 22:00 to 07:00).
@@ -530,7 +530,7 @@ export default function SettingsPage() {
                   />
                   <span className="text-sm text-gray-300">
                     Also render as soon as the scan queue is empty
-                    <span className="block text-xs text-gray-600">Stops again when a scan starts. Outside this, it only runs in the window below.</span>
+                    <span className="block text-xs text-muted">Stops again when a scan starts. Outside this, it only runs in the window below.</span>
                   </span>
                 </label>
                 <div className="flex gap-4">
@@ -557,7 +557,7 @@ export default function SettingsPage() {
                     />
                     <span className="text-sm text-gray-300">
                       Hardware video decoding
-                      <span className="block text-xs text-gray-500">
+                      <span className="block text-xs text-muted">
                         Uses this machine's video decoder when it has one (much faster on 4K HEVC). Files it cannot
                         handle are decoded in software automatically; turn off only if scans misbehave.
                       </span>
@@ -567,7 +567,7 @@ export default function SettingsPage() {
               </section>
               <section>
                 <h2 className={h2Cls}>Scan Ratings</h2>
-                <p className="text-xs text-gray-500 mb-3">Only scan titles with these content ratings. Leave all unchecked to scan everything.</p>
+                <p className="text-xs text-muted mb-3">Only scan titles with these content ratings. Leave all unchecked to scan everything.</p>
                 <div className="grid grid-cols-2 gap-2">
                   {/* VALUE is the exact content_rating string stored in Plex / the DB.
                       Empty string ("") represents titles Plex left unrated. */}
@@ -594,7 +594,7 @@ export default function SettingsPage() {
                     return (
                       <label key={value === '' ? '__unrated__' : value} className="flex items-center gap-2 cursor-pointer">
                         <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 accent-plex-orange" />
-                        <span className={`text-sm ${checked ? 'text-gray-100' : 'text-gray-500'}`}>{label}</span>
+                        <span className={`text-sm ${checked ? 'text-gray-100' : 'text-muted'}`}>{label}</span>
                       </label>
                     )
                   })}
@@ -603,7 +603,7 @@ export default function SettingsPage() {
               {libraries.length > 0 && (
                 <section>
                   <h2 className={h2Cls}>Library Exclusions</h2>
-                    <p className="text-xs text-gray-500 mb-3">Excluded libraries will not be scanned or synced.</p>
+                    <p className="text-xs text-muted mb-3">Excluded libraries will not be scanned or synced.</p>
                     <div className="space-y-2">
                       {libraries.map(lib => (
                         <label key={lib.id} className="flex items-center gap-3 cursor-pointer group">
@@ -613,10 +613,10 @@ export default function SettingsPage() {
                             onChange={() => toggleExcluded(lib.id)}
                             className="w-4 h-4 accent-plex-orange"
                           />
-                          <span className={`text-sm ${excludedIds.includes(lib.id) ? 'text-gray-500 line-through' : 'text-gray-200'}`}>
+                          <span className={`text-sm ${excludedIds.includes(lib.id) ? 'text-muted line-through' : 'text-gray-200'}`}>
                             {lib.title}
                           </span>
-                          <span className="text-xs text-gray-600">{lib.type}</span>
+                          <span className="text-xs text-muted">{lib.type}</span>
                         </label>
                       ))}
                     </div>
@@ -665,7 +665,7 @@ export default function SettingsPage() {
               </section>
               <section>
                 <h2 className={h2Cls}>Detector Labels</h2>
-                <p className="text-xs text-gray-500 mb-3">Choose which NudeNet labels should count toward detection. Exposed-only labels are usually less noisy.</p>
+                <p className="text-xs text-muted mb-3">Choose which NudeNet labels should count toward detection. Exposed-only labels are usually less noisy.</p>
                 <div className="grid grid-cols-2 gap-2">
                   {detectorLabels.map(label => {
                     const selected = (() => { try { return JSON.parse(form.scan_labels) } catch { return [] } })()
@@ -677,7 +677,7 @@ export default function SettingsPage() {
                     return (
                       <label key={label} className="flex items-center gap-2 cursor-pointer">
                         <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 accent-plex-orange" />
-                        <span className={`text-sm ${checked ? 'text-gray-100' : 'text-gray-500'}`}>{label}</span>
+                        <span className={`text-sm ${checked ? 'text-gray-100' : 'text-muted'}`}>{label}</span>
                       </label>
                     )
                   })}
@@ -685,7 +685,7 @@ export default function SettingsPage() {
       </section>
               <section>
                 <h2 className={h2Cls}>Per-Label Thresholds</h2>
-                <p className="text-xs text-gray-500 mb-3">
+                <p className="text-xs text-muted mb-3">
                   Override the confidence threshold for a single label. A blank box uses the global threshold shown inside it.
                 </p>
                 <LabelThresholds
@@ -701,7 +701,7 @@ export default function SettingsPage() {
           {section === 'siglip' && (
             <section>
               <h2 className={h2Cls}>SigLIP Fallback</h2>
-              <p className="text-xs text-gray-500 mb-4">
+              <p className="text-xs text-muted mb-4">
                 A light whole-frame check that only looks at frames NudeNet did not flag, to catch scenes it misses.
                 It follows the Detector Labels: enabled labels count as hits, the others as counter-examples.
                 Its segments are marked <span className="text-gray-300">siglip</span> with medium severity.
@@ -732,7 +732,7 @@ export default function SettingsPage() {
                 </label>
                 <div className="lg:col-span-2">
                   <p className="text-sm font-medium text-gray-300 mb-1">Per-label SigLIP thresholds</p>
-                  <p className="text-xs text-gray-600 mb-2">A hit is judged by the threshold of the label it is tagged with. Blank uses the SigLIP threshold above.</p>
+                  <p className="text-xs text-muted mb-2">A hit is judged by the threshold of the label it is tagged with. Blank uses the SigLIP threshold above.</p>
                   <LabelThresholds
                     labels={enabledLabels}
                     value={form.siglip_label_thresholds}
@@ -752,7 +752,7 @@ export default function SettingsPage() {
           {section === 'segments' && (
             <section>
               <h2 className={h2Cls}>Segments</h2>
-              <p className="text-xs text-gray-500 mb-4">How flagged frames are grouped into segments.</p>
+              <p className="text-xs text-muted mb-4">How flagged frames are grouped into segments.</p>
               <div className="grid gap-4 lg:grid-cols-2 items-start">
                 <Field label="Segment Merge Gap (ms)" hint="Flagged frames closer than this are merged into one segment.">
                             <input type="number" min="1000" max="30000" step="500" value={form.segment_gap_ms} onChange={set('segment_gap_ms')} className={inputCls} />
@@ -776,7 +776,7 @@ export default function SettingsPage() {
           {section === 'sync' && (
             <section>
               <h2 className={h2Cls}>Segment Library Sync</h2>
-              <p className="text-xs text-gray-500 mb-4">Crowdsource segment detections through one shared GitHub repository. Upload and download are always manual.</p>
+              <p className="text-xs text-muted mb-4">Crowdsource segment detections through one shared GitHub repository. Upload and download are always manual.</p>
               <div className="grid gap-4 lg:grid-cols-2 items-start">
                 <Field label="Repository" hint="Fixed shared repository used by all users.">
                   <input
@@ -821,7 +821,7 @@ export default function SettingsPage() {
                   )}
                 </div>
                 <div className="pt-2 border-t border-plex-border/50 space-y-3">
-                  <p className="text-xs text-gray-500">Upload and download crowdsourced segment detections from the shared library.</p>
+                  <p className="text-xs text-muted">Upload and download crowdsourced segment detections from the shared library.</p>
                   <div className="flex items-center gap-3 flex-wrap">
                     <button
                       type="button"
@@ -855,7 +855,7 @@ export default function SettingsPage() {
                     )}
                   </div>
                   {syncStatus?.last_sync_time && (
-                    <p className="text-xs text-gray-600">Last sync: {syncStatus.last_sync_time}</p>
+                    <p className="text-xs text-muted">Last sync: {syncStatus.last_sync_time}</p>
                   )}
                 </div>
               </div>

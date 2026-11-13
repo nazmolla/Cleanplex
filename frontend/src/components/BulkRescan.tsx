@@ -85,7 +85,7 @@ export default function BulkRescan({ libraries }: { libraries: Library[] }) {
               className="mt-1 accent-plex-orange" />
             <span>
               <span className="text-sm text-gray-300">{s.label}</span>
-              <span className="block text-xs text-gray-600">{s.hint}</span>
+              <span className="block text-xs text-muted">{s.hint}</span>
             </span>
           </label>
         ))}
@@ -112,13 +112,13 @@ export default function BulkRescan({ libraries }: { libraries: Library[] }) {
           <>
             {counts.queued} title{counts.queued === 1 ? '' : 's'} will be queued
             {counts.skipped_ineligible > 0 && (
-              <span className="text-gray-500"> · {counts.skipped_ineligible} skipped by your rating filters or excluded libraries</span>
+              <span className="text-muted"> · {counts.skipped_ineligible} skipped by your rating filters or excluded libraries</span>
             )}
             {!!counts.skipped_missing_file && (
-              <span className="text-gray-500"> · {counts.skipped_missing_file} left failed because the media file is still missing</span>
+              <span className="text-muted"> · {counts.skipped_missing_file} left failed because the media file is still missing</span>
             )}
             {!!counts.ignored_cleared && (
-              <span className="text-gray-500"> · {counts.ignored_cleared} ignored title{counts.ignored_cleared === 1 ? '' : 's'} cleared from the Failed list</span>
+              <span className="text-muted"> · {counts.ignored_cleared} ignored title{counts.ignored_cleared === 1 ? '' : 's'} cleared from the Failed list</span>
             )}
           </>
         )}
@@ -126,14 +126,14 @@ export default function BulkRescan({ libraries }: { libraries: Library[] }) {
       {confirming ? (
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-400">Reset and queue {counts?.queued} title{counts?.queued === 1 ? '' : 's'}?</span>
-          <button onClick={queue} disabled={busy} className="px-3 py-1.5 text-sm rounded bg-plex-orange text-white disabled:opacity-40">Confirm</button>
+          <button onClick={queue} disabled={busy} className="px-3 py-1.5 text-sm rounded bg-plex-orange text-black font-medium disabled:opacity-40">Confirm</button>
           <button onClick={() => setConfirming(false)} disabled={busy} className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200">Cancel</button>
         </div>
       ) : (
         <button
           onClick={() => setConfirming(true)}
           disabled={!ready || !counts || counts.queued === 0}
-          className="px-3 py-1.5 text-sm rounded bg-plex-orange text-white disabled:opacity-40"
+          className="px-3 py-1.5 text-sm rounded bg-plex-orange text-black font-medium disabled:opacity-40"
         >
           Queue rescan
         </button>

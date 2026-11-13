@@ -18,7 +18,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <div className="p-5 border-b border-plex-border">
           <span className="text-plex-orange font-bold text-xl tracking-wide">Cleanplex</span>
         </div>
-        <nav className="flex-1 p-3 space-y-1">
+        <nav aria-label="Main" className="flex-1 p-3 space-y-1">
           {nav.map(({ to, icon: Icon, label }) => (
             <NavLink
               key={to}
@@ -37,7 +37,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </NavLink>
           ))}
         </nav>
-        <div className="p-4 border-t border-plex-border text-xs text-gray-600">v0.1.0</div>
+        <div className="p-4 border-t border-plex-border text-xs text-muted">v0.1.0</div>
       </aside>
 
       {/* Main content */}
@@ -46,20 +46,20 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </main>
 
       {/* Bottom nav — mobile only */}
-      <nav className="fixed bottom-0 left-0 right-0 z-50 flex md:hidden bg-plex-dark border-t border-plex-border">
+      <nav aria-label="Main" className="fixed bottom-0 left-0 right-0 z-40 flex md:hidden bg-plex-dark border-t border-plex-border pb-[env(safe-area-inset-bottom)]">
         {nav.map(({ to, icon: Icon, label }) => (
           <NavLink
             key={to}
             to={to}
             end={to === '/'}
             className={({ isActive }) =>
-              `flex-1 flex flex-col items-center justify-center gap-1 py-2 text-xs font-medium transition-colors ${
-                isActive ? 'text-plex-orange' : 'text-gray-500'
+              `flex-1 min-w-0 flex flex-col items-center justify-center gap-1 py-2 text-[11px] font-medium transition-colors ${
+                isActive ? 'text-plex-orange' : 'text-gray-400'
               }`
             }
           >
             <Icon size={20} />
-            <span>{label}</span>
+            <span className="max-w-full truncate">{label}</span>
           </NavLink>
         ))}
       </nav>

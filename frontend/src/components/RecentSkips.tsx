@@ -99,9 +99,9 @@ export default function RecentSkips() {
         <h2 className="text-lg font-semibold text-gray-200 flex items-center gap-2">
           <SkipForward size={18} className="text-plex-orange" />
           Recent Skips
-          <span className="text-sm font-normal text-gray-500">({data.total})</span>
+          <span className="text-sm font-normal text-muted">({data.total})</span>
         </h2>
-        <div className="flex items-center gap-2 text-xs text-gray-400 ml-auto">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400 sm:ml-auto">
           <label className="flex items-center gap-1">
             From
             <input
@@ -110,7 +110,7 @@ export default function RecentSkips() {
               value={from}
               max={to || undefined}
               onChange={setRange(setFrom)}
-              className="bg-plex-card border border-plex-border rounded px-2 py-1 text-gray-200"
+              className="bg-plex-card border border-plex-border rounded-lg px-2 py-1 text-gray-200"
             />
           </label>
           <label className="flex items-center gap-1">
@@ -121,7 +121,7 @@ export default function RecentSkips() {
               value={to}
               min={from || undefined}
               onChange={setRange(setTo)}
-              className="bg-plex-card border border-plex-border rounded px-2 py-1 text-gray-200"
+              className="bg-plex-card border border-plex-border rounded-lg px-2 py-1 text-gray-200"
             />
           </label>
           {(from || to) && (
@@ -142,15 +142,15 @@ export default function RecentSkips() {
       {error && <p className="text-sm text-red-400 mb-2">{error}</p>}
 
       {data.events.length === 0 ? (
-        <div className="bg-plex-card border border-plex-border rounded-xl p-6 text-center text-gray-500 text-sm">
+        <div className="bg-plex-card border border-plex-border rounded-xl p-6 text-center text-muted text-sm">
           {from || to ? 'No skips in this date range' : 'No skips yet'}
         </div>
       ) : (
         <div className="bg-plex-card border border-plex-border rounded-xl divide-y divide-plex-border">
           {data.events.map(ev => (
             <div key={ev.id} className="px-4 py-3 flex items-center gap-3 text-sm">
-              <Clock size={14} className="text-gray-600 flex-shrink-0" />
-              <span className="text-gray-500 w-44 flex-shrink-0">{formatTime(ev.created_at)}</span>
+              <Clock size={14} className="text-faint flex-shrink-0" />
+              <span className="text-muted w-44 flex-shrink-0">{formatTime(ev.created_at)}</span>
               <span className="text-gray-300 truncate flex-1">{ev.title}</span>
               <span className="text-xs text-gray-400 flex-shrink-0">
                 {ev.action}
@@ -161,7 +161,7 @@ export default function RecentSkips() {
                   <AlertTriangle size={14} className="text-yellow-500" />
                 </span>
               )}
-              <span className="text-gray-500 text-xs flex-shrink-0">
+              <span className="text-muted text-xs flex-shrink-0">
                 {ev.username} · {ev.client_title}
               </span>
             </div>

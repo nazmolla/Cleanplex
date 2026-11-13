@@ -43,7 +43,7 @@ export default function FalsePositiveButton({ seg, onChange }: Props) {
       className={`p-2 rounded-lg transition-colors disabled:opacity-40 ${
         marked
           ? 'text-amber-300 bg-amber-400/10 hover:bg-amber-400/20'
-          : 'text-gray-600 hover:text-amber-300 hover:bg-amber-400/10'
+          : 'text-gray-400 hover:text-amber-300 hover:bg-amber-400/10'
       }`}
     >
       {marked ? <Undo2 size={16} /> : <ThumbsDown size={16} />}

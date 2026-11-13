@@ -166,16 +166,16 @@ export default function Dashboard() {
                 </span>
               </span>
             </div>
-            <span className="text-gray-500">
+            <span className="text-muted">
               Workers: <span className="text-gray-300">{scanner.workers_active}/{scanner.workers_configured}</span>
             </span>
             {scanner.workers_target && scanner.workers_target !== scanner.workers_configured && (
-              <span className="text-gray-500">
+              <span className="text-muted">
                 Target: <span className="text-gray-300">{scanner.workers_target}</span>
               </span>
             )}
             {scanner.queue_size > 0 && (
-              <span className="text-gray-500 sm:ml-auto">Queue: <span className="text-gray-300">{scanner.queue_size}</span></span>
+              <span className="text-muted sm:ml-auto">Queue: <span className="text-gray-300">{scanner.queue_size}</span></span>
             )}
           </div>
           {scanner.active_scans.length > 0 && (
@@ -222,7 +222,7 @@ export default function Dashboard() {
             <span className="flex items-center gap-2">
               <Clock size={18} className="text-plex-orange" />
               Scan Queue
-              <span className="text-sm font-normal text-gray-500">
+              <span className="text-sm font-normal text-muted">
                 ({scanner.queue_size} pending
                 {scanner.queue_items.some(i => i.force) && (
                   <span className="text-plex-orange"> · {scanner.queue_items.filter(i => i.force).length} forced</span>
@@ -230,25 +230,25 @@ export default function Dashboard() {
                 )
               </span>
             </span>
-            {queueExpanded ? <ChevronDown size={16} className="text-gray-500" /> : <ChevronRight size={16} className="text-gray-500" />}
+            {queueExpanded ? <ChevronDown size={16} className="text-muted" /> : <ChevronRight size={16} className="text-muted" />}
           </button>
           {queueExpanded && (
             <div className="bg-plex-card border border-plex-border rounded-xl overflow-hidden">
               <div className="divide-y divide-plex-border max-h-96 overflow-y-auto">
                 {scanner.queue_items.map(item => (
                   <div key={item.guid} className="flex items-center gap-3 px-4 py-2.5 text-sm">
-                    <span className="text-gray-600 w-8 text-right flex-shrink-0 tabular-nums">
+                    <span className="text-muted w-8 text-right flex-shrink-0 tabular-nums">
                       {item.position}
                     </span>
                     {item.force
                       ? <Zap size={13} className="text-plex-orange flex-shrink-0" />
                       : item.media_type === 'episode'
-                        ? <Tv size={13} className="text-gray-600 flex-shrink-0" />
-                        : <Film size={13} className="text-gray-600 flex-shrink-0" />
+                        ? <Tv size={13} className="text-faint flex-shrink-0" />
+                        : <Film size={13} className="text-faint flex-shrink-0" />
                     }
                     <span className="flex-1 text-gray-300 truncate">{item.title}</span>
                     {item.content_rating && (
-                      <span className="text-xs text-gray-600 flex-shrink-0">{item.content_rating}</span>
+                      <span className="text-xs text-muted flex-shrink-0">{item.content_rating}</span>
                     )}
                   </div>
                 ))}
@@ -265,9 +265,9 @@ export default function Dashboard() {
           Active Streams
         </h2>
         {loading ? (
-          <div className="text-gray-500 text-sm">Loading...</div>
+          <div className="text-muted text-sm">Loading...</div>
         ) : sessions.length === 0 ? (
-          <div className="bg-plex-card border border-plex-border rounded-xl p-8 text-center text-gray-500">
+          <div className="bg-plex-card border border-plex-border rounded-xl p-8 text-center text-muted">
             No active streams
           </div>
         ) : (
@@ -288,14 +288,14 @@ export default function Dashboard() {
                     <div className="flex flex-wrap items-center gap-1.5">
                       {s.is_controllable
                         ? <span className="flex items-center gap-1 text-xs text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full"><Wifi size={11} />Controllable</span>
-                        : <span className="flex items-center gap-1 text-xs text-gray-500 bg-white/5 px-2 py-0.5 rounded-full"><WifiOff size={11} />Not controllable</span>
+                        : <span className="flex items-center gap-1 text-xs text-muted bg-white/5 px-2 py-0.5 rounded-full"><WifiOff size={11} />Not controllable</span>
                       }
                       <FilteringBadge state={s.filtering_state} />
                     </div>
                   </div>
                   <p className="text-sm text-gray-400 mt-1">{s.user} · {s.client}</p>
                   <div className="mt-2">
-                    <div className="flex justify-between text-xs text-gray-500 mb-1">
+                    <div className="flex justify-between text-xs text-muted mb-1">
                       <span>{msToTime(s.position_ms)}</span>
                       <span>{msToTime(s.duration_ms)}</span>
                     </div>

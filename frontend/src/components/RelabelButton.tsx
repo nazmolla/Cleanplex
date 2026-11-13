@@ -78,7 +78,7 @@ export default function RelabelButton({ seg, onChange }: Props) {
         onClick={show}
         title="Wrong label? Correct what this segment shows"
         aria-label="Edit labels"
-        className="p-2 rounded-lg text-gray-600 hover:text-sky-300 hover:bg-sky-400/10 transition-colors"
+        className="p-2 rounded-lg text-gray-400 hover:text-sky-300 hover:bg-sky-400/10 transition-colors"
       >
         <Tag size={16} />
       </button>
@@ -95,7 +95,7 @@ export default function RelabelButton({ seg, onChange }: Props) {
             onClick={e => e.stopPropagation()}
           >
             <h3 className="text-sm font-semibold text-gray-100 mb-1">Edit labels</h3>
-            <p className="text-xs text-gray-500 mb-4">
+            <p className="text-xs text-muted mb-4">
               Pick what this segment actually shows. Viewers' levels decide what to skip from these labels:
               exposed genitalia and anus are the most severe, exposed breast and buttocks next, covered parts the least.
             </p>
@@ -112,7 +112,7 @@ export default function RelabelButton({ seg, onChange }: Props) {
                 </label>
               ))}
             </div>
-            {all.length === 0 && !error && <p className="text-xs text-gray-500">Loading labels…</p>}
+            {all.length === 0 && !error && <p className="text-xs text-muted">Loading labels…</p>}
             {error && (
               <p className="text-xs text-red-400 mt-3">
                 {error}{' '}
@@ -128,7 +128,7 @@ export default function RelabelButton({ seg, onChange }: Props) {
               <button
                 onClick={save}
                 disabled={busy || picked.length === 0}
-                className="px-3 py-1.5 text-sm rounded bg-plex-orange text-white disabled:opacity-40"
+                className="px-3 py-1.5 text-sm rounded bg-plex-orange text-black font-medium disabled:opacity-40"
               >
                 Save
               </button>

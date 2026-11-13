@@ -54,7 +54,7 @@ export default function EnforcementPanel() {
     }
   }
 
-  if (!data) return <p className="text-sm text-gray-500">Loading…</p>
+  if (!data) return <p className="text-sm text-muted">Loading…</p>
 
   return (
     <div className="space-y-5">
@@ -64,7 +64,7 @@ export default function EnforcementPanel() {
             ? 'Front door active: every client reaches Plex through Cleanplex.'
             : 'Front door not installed: only clients Cleanplex can control are filtered.'}
         </p>
-        <p className="text-xs text-gray-500 mt-1">
+        <p className="text-xs text-muted mt-1">
           Install or remove it on the server with <code>sudo bash scripts/frontdoor/install.sh</code>
           {' '}(<code>--uninstall</code> to remove). Streams edited in the last day: {data.proxied_last_day}.
         </p>
@@ -81,7 +81,7 @@ export default function EnforcementPanel() {
           <option value="leave">Leave them (play unmuted)</option>
           <option value="cut">Cut them out like skips</option>
         </select>
-        <span className="text-xs text-gray-600">An edited stream cannot lower the volume, so profanity is either cut or left in.</span>
+        <span className="text-xs text-muted">An edited stream cannot lower the volume, so profanity is either cut or left in.</span>
       </label>
 
       <label className="flex items-center gap-3 cursor-pointer">
@@ -103,7 +103,7 @@ export default function EnforcementPanel() {
           <div className="flex items-center justify-between gap-3">
             <span className="text-gray-300">
               Relay: {onOff(data.plex.relay)}
-              <span className="block text-xs text-gray-600">Recommended off: relayed streams never reach the front door. Remote viewers then need Plex's direct remote access.</span>
+              <span className="block text-xs text-muted">Recommended off: relayed streams never reach the front door. Remote viewers then need Plex's direct remote access.</span>
             </span>
             <button disabled={busy} onClick={() => post('/api/enforcement/plex-settings', { relay: !isOn(data.plex.relay) })}
               className="px-3 py-1.5 text-xs rounded-lg border border-plex-border text-gray-200 hover:bg-white/5 disabled:opacity-40">
@@ -113,7 +113,7 @@ export default function EnforcementPanel() {
           <div className="flex items-center justify-between gap-3">
             <span className="text-gray-300">
               DLNA: {onOff(data.plex.dlna)}
-              <span className="block text-xs text-gray-600">Recommended off: DLNA serves files on its own port.</span>
+              <span className="block text-xs text-muted">Recommended off: DLNA serves files on its own port.</span>
             </span>
             <button disabled={busy} onClick={() => post('/api/enforcement/plex-settings', { dlna: !isOn(data.plex.dlna) })}
               className="px-3 py-1.5 text-xs rounded-lg border border-plex-border text-gray-200 hover:bg-white/5 disabled:opacity-40">
@@ -123,7 +123,7 @@ export default function EnforcementPanel() {
           <div className="flex items-center justify-between gap-3">
             <span className="text-gray-300">
               Simultaneous transcodes
-              <span className="block text-xs text-gray-600">Filtered streams of flagged titles are copied or re-encoded by Plex; raise this for several viewers at once (0 = unlimited).</span>
+              <span className="block text-xs text-muted">Filtered streams of flagged titles are copied or re-encoded by Plex; raise this for several viewers at once (0 = unlimited).</span>
             </span>
             <span className="flex items-center gap-2">
               <input type="number" min="0" max="50" value={limit} onChange={e => setLimit(e.target.value)}

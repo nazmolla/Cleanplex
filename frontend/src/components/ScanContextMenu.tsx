@@ -78,20 +78,20 @@ export default function ScanContextMenu({ target, onScan, onClose }: Props) {
       style={{ left, top }}
       className="fixed z-50 w-48 bg-plex-card border border-plex-border rounded-lg shadow-xl py-1 text-xs"
     >
-      <div className="px-3 py-1 text-gray-500 truncate">
+      <div className="px-3 py-1 text-muted truncate">
         {target.label}
         {count > 1 ? ` · ${count} titles` : ''}
       </div>
       {count > 0 && (
         <>
-          {target.whole && <div className="px-3 pt-1 text-[10px] uppercase tracking-wide text-gray-600">Listed {target.whole.kind === 'library' ? 'titles' : 'episodes'} ({count})</div>}
+          {target.whole && <div className="px-3 pt-1 text-[10px] uppercase tracking-wide text-muted">Listed {target.whole.kind === 'library' ? 'titles' : 'episodes'} ({count})</div>}
           {item(true, <Zap size={12} className="text-plex-orange" />, 'Rescan now')}
           {item(false, <Moon size={12} className="text-blue-400" />, 'Rescan tonight')}
         </>
       )}
       {target.whole && (
         <>
-          <div className="px-3 pt-2 text-[10px] uppercase tracking-wide text-gray-600">
+          <div className="px-3 pt-2 text-[10px] uppercase tracking-wide text-muted">
             {target.whole.kind === 'library' ? 'Whole library, every title' : `Whole ${target.whole.kind}, every episode`}
           </div>
           {/* A library is thousands of titles: only ever scheduled, never jumped to the front. */}

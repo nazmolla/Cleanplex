@@ -2,8 +2,56 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  @apply bg-plex-darker text-gray-100 font-sans;
+@layer base {
+  :root {
+    /* Native date pickers, selects and scrollbars follow the dark UI. */
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-plex-darker text-gray-100 font-sans;
+  }
+
+  /* One focus indicator for every control, shown for keyboard focus only (#204).
+     Do not add focus:outline-none to a control: it removes this ring. */
+  :focus-visible {
+    outline: 2px solid theme('colors.plex.orange');
+    outline-offset: 2px;
+  }
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline-offset: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  /* Buttons. Size with utilities (text-xs px-2 py-1) where a row needs a smaller one. */
+  .btn-primary,
+  .btn-outline,
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  /* Black on orange is 9:1; white on orange is 2.2:1. */
+  .btn-primary {
+    @apply bg-plex-orange border-plex-orange text-black hover:bg-[#f0b429];
+  }
+  .btn-outline {
+    @apply bg-plex-card border-plex-border text-gray-300 hover:text-white hover:border-gray-500;
+  }
+  .btn-danger {
+    @apply bg-red-500/15 border-red-500/30 text-red-300 hover:bg-red-500/25;
+  }
 }
 
 ::-webkit-scrollbar {

@@ -49,10 +49,10 @@ export default function CollapsibleSection({ id, title, hint, defaultOpen = true
         >
           <ChevronDown
             size={15}
-            className={`text-gray-500 group-hover:text-gray-300 transition-transform flex-shrink-0 ${open ? '' : '-rotate-90'}`}
+            className={`text-muted group-hover:text-gray-300 transition-transform flex-shrink-0 ${open ? '' : '-rotate-90'}`}
           />
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{title}</h2>
-          {hint && <span className="text-xs text-gray-600 truncate">— {hint}</span>}
+          {hint && <span className="text-xs text-muted truncate">— {hint}</span>}
         </button>
         {actions}
       </div>
