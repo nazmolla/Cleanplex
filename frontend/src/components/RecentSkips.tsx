@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { parseDbTimestamp } from '../utils/dbTime'
 import { api } from '../api/client'
 import { useLiveRefresh } from '../api/events'
-import { SkipForward, Clock, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
+import { ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
 
 interface SkipEvent {
   id: number
@@ -96,10 +96,9 @@ export default function RecentSkips() {
   return (
     <section>
       <div className="flex flex-wrap items-center gap-3 mb-3">
-        <h2 className="text-lg font-semibold text-gray-200 flex items-center gap-2">
-          <SkipForward size={18} className="text-plex-orange" />
-          Recent Skips
-          <span className="text-sm font-normal text-muted">({data.total})</span>
+        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
+          Recent skips
+          <span className="ml-2 text-muted font-normal normal-case tabular-nums">({data.total})</span>
         </h2>
         <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400 sm:ml-auto">
           <label className="flex items-center gap-1">
@@ -142,26 +141,29 @@ export default function RecentSkips() {
       {error && <p className="text-sm text-red-400 mb-2">{error}</p>}
 
       {data.events.length === 0 ? (
-        <div className="bg-plex-card border border-plex-border rounded-xl p-6 text-center text-muted text-sm">
+        <div className="bg-plex-card border border-plex-border rounded-xl px-4 py-5 text-muted text-sm">
           {from || to ? 'No skips in this date range' : 'No skips yet'}
         </div>
       ) : (
+        // One grid for every row, so time, title, action and viewer line up down the list (#206).
         <div className="bg-plex-card border border-plex-border rounded-xl divide-y divide-plex-border">
           {data.events.map(ev => (
-            <div key={ev.id} className="px-4 py-3 flex items-center gap-3 text-sm">
-              <Clock size={14} className="text-faint flex-shrink-0" />
-              <span className="text-muted w-44 flex-shrink-0">{formatTime(ev.created_at)}</span>
-              <span className="text-gray-300 truncate flex-1">{ev.title}</span>
-              <span className="text-xs text-gray-400 flex-shrink-0">
+            <div
+              key={ev.id}
+              className="px-4 py-2.5 grid items-center gap-x-4 gap-y-0.5 text-sm grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[11rem_minmax(0,1fr)_9rem_minmax(0,14rem)]"
+            >
+              <span className="text-muted tabular-nums order-3 md:order-none">{formatTime(ev.created_at)}</span>
+              <span className="text-gray-200 truncate" title={ev.title}>{ev.title}</span>
+              <span className="text-xs text-gray-400 flex items-center gap-1.5 justify-self-end md:justify-self-start">
                 {ev.action}
                 {ev.category ? ` · ${ev.category}` : ''}
+                {!ev.success && (
+                  <span title="The client did not confirm this action" className="flex-shrink-0">
+                    <AlertTriangle size={14} className="text-yellow-500" aria-label="Not confirmed by the client" />
+                  </span>
+                )}
               </span>
-              {!ev.success && (
-                <span title="The client did not confirm this action" className="flex-shrink-0">
-                  <AlertTriangle size={14} className="text-yellow-500" />
-                </span>
-              )}
-              <span className="text-muted text-xs flex-shrink-0">
+              <span className="text-muted text-xs truncate order-4 md:order-none justify-self-end md:justify-self-auto md:text-right">
                 {ev.username} · {ev.client_title}
               </span>
             </div>

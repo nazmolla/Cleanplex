@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, act } from '@testing-library/react'
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Dashboard from '../../pages/Dashboard'
 import { emitLive } from '../../test/fakeEventSource'
@@ -131,6 +131,30 @@ describe('Dashboard', () => {
     })
     renderDashboard()
     await waitFor(() => expect(screen.getByText('Some Movie')).toBeInTheDocument())
+  })
+
+  it('puts now playing above the scanner and keeps the queue inside the scanner card (#206)', async () => {
+    const queued = {
+      ...scannerIdle,
+      queue_size: 1,
+      queue_items: [{ guid: 'q1', position: 1, title: 'Queued Movie', force: true, media_type: 'movie', content_rating: 'R' }],
+    }
+    mockApi.get.mockImplementation((path: string) => {
+      if (path.includes('skips/history')) return Promise.resolve(emptyEvents)
+      if (path.includes('scanner-status')) return Promise.resolve(queued)
+      return Promise.resolve(emptySessions)
+    })
+    renderDashboard()
+
+    const toggle = await screen.findByRole('button', { name: /1 queued/ })
+    const headings = screen.getAllByRole('heading', { level: 2 }).map(h => h.textContent)
+    expect(headings.indexOf('Now playing')).toBeLessThan(headings.indexOf('Scanner'))
+    expect(screen.getByRole('region', { name: 'Scanner' })).toContainElement(toggle)
+
+    expect(screen.queryByText('Queued Movie')).not.toBeInTheDocument()
+    fireEvent.click(toggle)
+    expect(screen.getByText('Queued Movie')).toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
   })
 
   it('shows paused badge when scanner is paused', async () => {
