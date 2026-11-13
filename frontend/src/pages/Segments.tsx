@@ -157,7 +157,7 @@ function SegmentCard({
   onRelabel: (id: number, labels: string) => void
 }) {
   return (
-    <div className={`bg-plex-card border border-plex-border rounded-xl overflow-hidden flex flex-col sm:flex-row ${seg.false_positive ? 'opacity-50' : ''}`}>
+    <div className={`bg-plex-card border border-plex-border rounded-xl overflow-hidden flex flex-col sm:flex-row ${seg.false_positive ? '[&_img]:opacity-40 [&_video]:opacity-40' : ''}`}>
       <HoverPreview src={seg.hover_url} className="w-full sm:w-40 flex-shrink-0 bg-black">
         {seg.has_thumbnail ? (
           <img src={seg.thumbnail_url} alt="Flagged frame" loading="lazy" className="w-full h-full object-cover" style={{ minHeight: '90px', maxHeight: '160px' }} />
@@ -172,9 +172,10 @@ function SegmentCard({
       <div className="flex-1 min-w-0 p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2 mb-1">
-            <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.start_ms)}</span>
-            <span className="text-muted">→</span>
-            <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.end_ms)}</span>
+            {/* A false positive recedes without losing legibility: the thumbnail dims, the times are struck through. */}
+            <span className={`font-mono text-sm ${seg.false_positive ? 'text-gray-400 line-through' : 'text-plex-orange'}`}>{msToTimecode(seg.start_ms)}</span>
+            <span className="text-muted text-sm">→</span>
+            <span className={`font-mono text-sm ${seg.false_positive ? 'text-gray-400 line-through' : 'text-plex-orange'}`}>{msToTimecode(seg.end_ms)}</span>
             <span className="text-xs text-muted">({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)</span>
             <SegmentOriginBadge seg={seg} />
             {seg.false_positive && <FalsePositiveTag autoRejected={seg.auto_rejected} />}

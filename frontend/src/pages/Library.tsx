@@ -7,7 +7,7 @@ import RelabelButton from '../components/RelabelButton'
 import { ratingAllowed } from '../utils/ratings'
 import ThumbnailTime from '../components/ThumbnailTime'
 import SkipFileImport from '../components/SkipFileImport'
-import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2, Eye, EyeOff, X, ThumbsDown, Search, Users, ArrowDown, ArrowUp } from 'lucide-react'
+import { Film, Tv, ChevronRight, ChevronDown, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2, Eye, EyeOff, X, ThumbsDown, Search, Users, ArrowDown, ArrowUp } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
 import SegmentPlayer from '../components/SegmentPlayer'
 import Modal from '../components/Modal'
@@ -135,7 +135,7 @@ function SegmentToggle({ title, open, onToggle }: { title: Title; open: boolean;
       className={`flex items-center gap-1 px-1.5 py-1 text-xs rounded border transition-colors ${
         title.segment_count > 0
           ? 'text-red-400 bg-red-500/10 border-red-500/20 hover:bg-red-500/20'
-          : 'text-muted bg-white/5 border-plex-border hover:text-gray-300'
+          : 'text-gray-400 bg-white/5 border-plex-border hover:text-gray-300'
       }`}
     >
       {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
@@ -495,7 +495,7 @@ export default function Library() {
         ) : segs.length === 0 ? (
           <p className="text-xs text-muted px-1">No segments found</p>
         ) : segs.map(seg => (
-          <div key={seg.id} className={`flex flex-col sm:flex-row gap-0 bg-plex-darker border border-plex-border rounded-lg overflow-hidden ${seg.false_positive ? 'opacity-50' : ''}`}>
+          <div key={seg.id} className={`flex flex-col sm:flex-row gap-0 bg-plex-darker border border-plex-border rounded-lg overflow-hidden ${seg.false_positive ? '[&_img]:opacity-40 [&_video]:opacity-40' : ''}`}>
             {/* Thumbnail: full-width on mobile, fixed sidebar on desktop */}
             <HoverPreview src={seg.hover_url} className="w-full sm:w-40 sm:flex-shrink-0 bg-black">
               {seg.has_thumbnail ? (
@@ -511,9 +511,10 @@ export default function Library() {
             <div className="flex-1 p-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 min-w-0">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="font-mono text-xs text-plex-orange">{msToTimecode(seg.start_ms)}</span>
+                  {/* A false positive recedes without losing legibility: the thumbnail dims, the times are struck through. */}
+                  <span className={`font-mono text-xs ${seg.false_positive ? 'text-gray-400 line-through' : 'text-plex-orange'}`}>{msToTimecode(seg.start_ms)}</span>
                   <span className="text-muted text-xs">→</span>
-                  <span className="font-mono text-xs text-plex-orange">{msToTimecode(seg.end_ms)}</span>
+                  <span className={`font-mono text-xs ${seg.false_positive ? 'text-gray-400 line-through' : 'text-plex-orange'}`}>{msToTimecode(seg.end_ms)}</span>
                   <span className="text-xs text-muted">({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)</span>
                   <SegmentOriginBadge seg={seg} />
                   {seg.false_positive && <FalsePositiveTag autoRejected={seg.auto_rejected} />}
@@ -1192,9 +1193,9 @@ export default function Library() {
                           </p>
                         </div>
                         {allIgnored ? (
-                          <span className="text-xs bg-yellow-500/20 text-yellow-300 px-2 py-0.5 rounded-full font-semibold">IGNORED SHOW</span>
+                          <span className="text-xs bg-yellow-500/20 text-yellow-300 px-2 py-0.5 rounded-full">Ignored</span>
                         ) : someIgnored ? (
-                          <span className="text-xs bg-yellow-500/10 text-yellow-500 px-2 py-0.5 rounded-full font-medium">PARTIALLY IGNORED</span>
+                          <span className="text-xs bg-yellow-500/10 text-yellow-300 px-2 py-0.5 rounded-full">Partly ignored</span>
                         ) : null}
                         {machineId && plexWebUrl(group.episodes[0]?.show_rating_key || '') && (
                           <a href={plexWebUrl(group.episodes[0]?.show_rating_key || '')} target="_blank" rel="noopener noreferrer" title="Open show in Plex" className="p-1.5 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors">
@@ -1297,7 +1298,7 @@ export default function Library() {
                                             <div className="flex-1 min-w-0">
                                               <p className="text-sm text-gray-100 truncate">
                                                 {parsed.episode}
-                                                {title.ignored && <span className="ml-2 text-yellow-300 text-xs font-semibold">IGNORED</span>}
+                                                {title.ignored && <span className="ml-2 text-xs bg-yellow-500/15 text-yellow-300 px-2 py-0.5 rounded-full">Ignored</span>}
                                               </p>
                                               <div className="flex flex-wrap items-center gap-2 mt-1">
                                                 <StatusBadge status={title.status} progress={title.progress} />
@@ -1401,8 +1402,8 @@ export default function Library() {
                       )}
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-gray-100 truncate">
-                          {title.ignored && <span className="text-yellow-400 mr-1">[IGNORED]</span>}
                           {title.title}
+                          {title.ignored && <span className="ml-2 text-xs bg-yellow-500/15 text-yellow-300 px-2 py-0.5 rounded-full">Ignored</span>}
                         </p>
                         <div className="flex flex-wrap items-center gap-2 mt-1">
                           <StatusBadge status={title.status} progress={title.progress} />
@@ -1410,7 +1411,7 @@ export default function Library() {
                             <span className="text-xs bg-blue-500/15 text-blue-400 px-1.5 py-0.5 rounded font-medium">TV</span>
                           )}
                           {title.content_rating && (
-                            <span className="text-xs text-muted bg-white/5 px-1.5 py-0.5 rounded">{title.content_rating}</span>
+                            <span className="text-xs text-gray-400 bg-white/5 px-1.5 py-0.5 rounded">{title.content_rating}</span>
                           )}
                           {title.finished_at && (
                             <span className="text-xs text-muted">Finished {formatFinishedAt(title.finished_at)}</span>
@@ -1449,14 +1450,6 @@ export default function Library() {
                             className="p-1.5 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors disabled:opacity-40"
                           >
                             <Zap size={14} />
-                          </button>
-                          <button
-                            onClick={() => scanTitle(title.plex_guid, false)}
-                            disabled={scanning[title.plex_guid]}
-                            title="Re-scan"
-                            className="p-1.5 text-gray-400 hover:text-gray-300 hover:bg-white/5 rounded transition-colors disabled:opacity-40"
-                          >
-                            <RotateCcw size={14} />
                           </button>
                           <button
                             onClick={() => toggleIgnored(title.plex_guid, title.ignored, title.title)}

@@ -456,7 +456,7 @@ export default function Analytics() {
                         </span>
                         {seg.false_positive && <FalsePositiveTag autoRejected={seg.auto_rejected} />}
                         {seg.content_rating && (
-                          <span className="text-xs text-muted bg-white/5 px-1.5 py-0.5 rounded">
+                          <span className="text-xs text-gray-400 bg-white/5 px-1.5 py-0.5 rounded">
                             {seg.content_rating}
                           </span>
                         )}

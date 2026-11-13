@@ -285,6 +285,13 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 - **Polling intervals must cancel in-flight requests.** Use `AbortController` before each new poll tick.
 - **No polling loop may run unbounded.** Every `setInterval`/recursive `setTimeout` must have a terminal condition (success, error, or max-duration).
 - **Bulk actions must use bounded concurrency or a batch endpoint.** Never fire N sequential requests from a UI loop.
+- **The UI is a desktop tool.** Design and judge it at desktop width; a phone must not be broken (no clipped or unreachable control) but gets no layout of its own.
+- **Quiet text uses `text-muted`, never `text-gray-500/600/700`.** Those measure 2.8:1 and below on `plex-card`; `muted` is 4.7:1. `text-faint` (3.2:1) is for icons and separators only. A clickable icon rests at `text-gray-400`, so it is readable before hover (#204, found on the Segments and Library action rows).
+- **Never add `focus:outline-none`.** `index.css` draws one `:focus-visible` ring for every control (#204, found on every text input).
+- **Buttons with a label use `btn-primary`, `btn-outline` or `btn-danger`.** Text on `plex-orange` is black, never white (2.2:1) (#204, found on the Dashboard Skip button and the Edit labels dialog).
+- **Every overlay is a `components/Modal`** (focus trap, Escape, focus return). Never hand-write a `fixed inset-0` dialog (#205, found on Segments' three delete confirmations).
+- **Messages are `toast.error` / `toast.success` from `components/Toast`.** Never `alert()` or `confirm()` (#205, found in Library's scan and ignore handlers).
+- **Orange means active, selected or in progress.** Do not use it to decorate headings or icons. Page titles are a plain `text-2xl font-bold` `h1`; section labels use the small uppercase style of `CollapsibleSection` (#206, found on the Dashboard, Markers and Analytics headings).
 
 ### 5.7 Sync
 
