@@ -150,7 +150,7 @@ async def test_a_frame_outlives_the_segment_it_came_from(dirs):
     assert frame.exists()
 
 
-async def test_segments_of_a_removed_title_are_deleted_after_the_cutoff_with_their_files(dirs):
+async def test_segments_of_a_removed_title_are_archived_not_deleted_and_keep_their_files_until_the_purge(dirs):
     sid = await _segment(dirs, guid="gone", start=0)
     old = await _segment(dirs, guid="gone", start=5000)
     async with db.get_connection() as conn:
@@ -159,10 +159,11 @@ async def test_segments_of_a_removed_title_are_deleted_after_the_cutoff_with_the
 
     report = await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters", previews_dir=dirs / "previews")
 
-    assert report["orphan_segments"] == 1
-    assert await db.get_segment_by_id(old) is None
-    assert not (dirs / "thumbs" / "gone_5000.jpg").exists() and not hover_previews.hover_path(old).exists()
-    assert await db.get_segment_by_id(sid) is not None  # young: the title may come back
+    assert report["archived_segments"] == 1
+    assert await db.get_segment_by_id(old) is None  # hidden from the live table...
+    assert [m["id"] for m in await db.get_removed_segments("gone")] == [old]  # ...but the mark is kept
+    assert (dirs / "thumbs" / "gone_5000.jpg").exists()  # files stay until the retention period ends
+    assert await db.get_segment_by_id(sid) is not None  # young: not archived yet
 
 
 async def test_segments_of_a_title_that_still_exists_are_never_swept_as_orphans(dirs):
@@ -171,7 +172,7 @@ async def test_segments_of_a_title_that_still_exists_are_never_swept_as_orphans(
     async with db.get_connection() as conn:
         await conn.execute("UPDATE segments SET created_at = datetime('now', '-400 days') WHERE id = ?", (sid,))
         await conn.commit()
-    assert (await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters", previews_dir=dirs / "previews"))["orphan_segments"] == 0
+    assert (await segment_files.sweep(dirs / "thumbs", posters_dir=dirs / "posters", previews_dir=dirs / "previews"))["archived_segments"] == 0
     assert await db.get_segment_by_id(sid) is not None
 
 
@@ -189,7 +190,7 @@ async def test_a_missing_directory_is_not_an_error(tmp_path):
 
 async def test_the_loop_survives_a_failed_sweep_and_keeps_going(monkeypatch):
     monkeypatch.setattr(segment_files, "STARTUP_DELAY_S", 0)
-    sweeps = AsyncMock(side_effect=[RuntimeError("disk"), {"orphan_segments": 0, "thumbnails": 0, "hover": 0,
+    sweeps = AsyncMock(side_effect=[RuntimeError("disk"), {"archived_segments": 0, "purged_segments": 0, "thumbnails": 0, "hover": 0,
                                                            "feedback_frames": 0, "bytes": 0}])
     sleeps = []
 

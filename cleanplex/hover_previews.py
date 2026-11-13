@@ -65,9 +65,11 @@ async def render_pending(should_continue: Callable[[], Awaitable[bool]]) -> int:
                 # A share may be offline; 'missing' is reset at the start of each run.
                 await db.set_hover_status(cand["id"], "missing")
                 continue
-            ok = await frame_extractor.render_hover_clip(
-                file_path, cand["start_ms"], cand["end_ms"] - cand["start_ms"], hover_path(cand["id"]),
+            # Segment times run across all parts of a multi-part title (#188).
+            part_file, start_ms, duration_ms = await frame_extractor.resolve_window(
+                file_path, cand.get("part_files"), cand["start_ms"], cand["end_ms"],
             )
+            ok = await frame_extractor.render_hover_clip(part_file, start_ms, duration_ms, hover_path(cand["id"]))
             await db.set_hover_status(cand["id"], "done" if ok else "failed")
             rendered += ok
     if rendered:

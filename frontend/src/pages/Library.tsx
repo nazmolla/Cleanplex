@@ -7,8 +7,12 @@ import RelabelButton from '../components/RelabelButton'
 import { ratingAllowed } from '../utils/ratings'
 import ThumbnailTime from '../components/ThumbnailTime'
 import SkipFileImport from '../components/SkipFileImport'
-import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2, Eye, EyeOff, X, ThumbsDown, Search, Users, ArrowDown, ArrowUp } from 'lucide-react'
+import { Film, Tv, ChevronRight, ChevronDown, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2, Eye, EyeOff, X, ThumbsDown, Search, Users, ArrowDown, ArrowUp } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
+import SegmentPlayer from '../components/SegmentPlayer'
+import Modal from '../components/Modal'
+import { toast } from '../components/Toast'
+import { parseDbTimestamp } from '../utils/dbTime'
 
 interface Library {
   id: string
@@ -38,6 +42,8 @@ interface Title {
   /** Actors Plex lists for the title (a show's for its episodes), for the cast filter (#180). */
   cast?: string[]
   ignored: boolean
+  /** Why the last scan failed; empty unless status is 'failed' (#190). */
+  error_msg?: string
 }
 
 interface Segment {
@@ -129,7 +135,7 @@ function SegmentToggle({ title, open, onToggle }: { title: Title; open: boolean;
       className={`flex items-center gap-1 px-1.5 py-1 text-xs rounded border transition-colors ${
         title.segment_count > 0
           ? 'text-red-400 bg-red-500/10 border-red-500/20 hover:bg-red-500/20'
-          : 'text-gray-500 bg-white/5 border-plex-border hover:text-gray-300'
+          : 'text-gray-400 bg-white/5 border-plex-border hover:text-gray-300'
       }`}
     >
       {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
@@ -154,7 +160,7 @@ function ActionIcon({ label, title, onClick, disabled, tone, children }: {
 }) {
   const hover = tone === 'orange' ? 'text-plex-orange hover:bg-plex-orange/15'
     : tone === 'yellow' ? 'text-yellow-500 hover:bg-yellow-500/15'
-    : tone === 'red' ? 'text-gray-500 hover:text-red-400 hover:bg-red-400/10'
+    : tone === 'red' ? 'text-gray-400 hover:text-red-400 hover:bg-red-400/10'
     : 'text-gray-400 hover:text-white hover:bg-white/5'
   return (
     <button
@@ -167,6 +173,17 @@ function ActionIcon({ label, title, onClick, disabled, tone, children }: {
       {children}
     </button>
   )
+}
+
+/** Shortens "Could not determine video duration for: /long/path/file.mp4" to the file name. */
+function failureText(message: string): string {
+  return message.replace(/(: )(?:\/|[A-Za-z]:\\)\S.*?([^\/\\]+)$/, '$1$2')
+}
+
+/** The reason a title failed, under its status badge, so a Failed title never stands unexplained (#190). */
+function FailureReason({ title }: { title: Title }) {
+  if (title.status !== 'failed' || !title.error_msg) return null
+  return <p className="text-xs text-red-400/80 mt-1 break-words" title={title.error_msg}>{failureText(title.error_msg)}</p>
 }
 
 function StatusBadge({ status, progress }: { status: string; progress: number }) {
@@ -188,7 +205,7 @@ function StatusBadge({ status, progress }: { status: string; progress: number })
 
 function formatFinishedAt(value?: string | null): string {
   if (!value) return ''
-  const dt = new Date(value)
+  const dt = parseDbTimestamp(value)
   if (Number.isNaN(dt.getTime())) return ''
   return dt.toLocaleString()
 }
@@ -441,10 +458,10 @@ export default function Library() {
     try {
       const d = await api.post<{ ok: boolean; client: string; user: string; seek_to_ms: number }>(`/api/segments/${segId}/jump`)
       if (d.ok) {
-        alert(`Jumped playback to segment on ${d.client} (${d.user}) at ${msToTimecode(d.seek_to_ms)}.`)
+        toast.success(`Jumped to ${msToTimecode(d.seek_to_ms)} on ${d.client} (${d.user}).`)
       }
     } catch (err: any) {
-      alert(err?.message || 'Could not jump to segment. Start this title in Plex first.')
+      toast.error(err?.message || 'Could not jump to this segment. Start the title in Plex first.')
     } finally {
       setJumpingSegs(j => ({ ...j, [segId]: false }))
     }
@@ -472,49 +489,50 @@ export default function Library() {
           }}
         />
         {loadingSegments.has(guid) ? (
-          <p className="text-xs text-gray-500 px-1">Loading segments…</p>
+          <p className="text-xs text-muted px-1">Loading segments…</p>
         ) : !(guid in loadedSegments) ? (
           <p className="text-xs text-red-400 px-1">Could not load segments. Collapse and reopen to retry.</p>
         ) : segs.length === 0 ? (
-          <p className="text-xs text-gray-600 px-1">No segments found</p>
+          <p className="text-xs text-muted px-1">No segments found</p>
         ) : segs.map(seg => (
-          <div key={seg.id} className={`flex flex-col sm:flex-row gap-0 bg-plex-darker border border-plex-border rounded-lg overflow-hidden ${seg.false_positive ? 'opacity-50' : ''}`}>
+          <div key={seg.id} className={`flex flex-col sm:flex-row gap-0 bg-plex-darker border border-plex-border rounded-lg overflow-hidden ${seg.false_positive ? '[&_img]:opacity-40 [&_video]:opacity-40' : ''}`}>
             {/* Thumbnail: full-width on mobile, fixed sidebar on desktop */}
             <HoverPreview src={seg.hover_url} className="w-full sm:w-40 sm:flex-shrink-0 bg-black">
               {seg.has_thumbnail ? (
                 <img src={seg.thumbnail_url} alt="Flagged frame" loading="lazy" className="w-full object-cover" style={{ height: '140px' }} />
               ) : (
-                <div className="w-full flex items-center justify-center text-gray-700" style={{ height: '140px' }}><AlertTriangle size={20} /></div>
+                <div className="w-full flex items-center justify-center text-faint" style={{ height: '140px' }}><AlertTriangle size={20} /></div>
               )}
               <div className="absolute bottom-0.5 left-0.5 bg-black/70 text-xs text-gray-300 px-1 py-0.5 rounded text-[10px]">
                 {Math.round(seg.confidence * 100)}%
               </div>
               <ThumbnailTime ms={seg.thumbnail_ms} />
             </HoverPreview>
-            <div className="flex-1 p-2 flex items-center justify-between gap-2 min-w-0">
+            <div className="flex-1 p-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 min-w-0">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="font-mono text-xs text-plex-orange">{msToTimecode(seg.start_ms)}</span>
-                  <span className="text-gray-600 text-xs">→</span>
-                  <span className="font-mono text-xs text-plex-orange">{msToTimecode(seg.end_ms)}</span>
-                  <span className="text-xs text-gray-600">({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)</span>
+                  {/* A false positive recedes without losing legibility: the thumbnail dims, the times are struck through. */}
+                  <span className={`font-mono text-xs ${seg.false_positive ? 'text-gray-400 line-through' : 'text-plex-orange'}`}>{msToTimecode(seg.start_ms)}</span>
+                  <span className="text-muted text-xs">→</span>
+                  <span className={`font-mono text-xs ${seg.false_positive ? 'text-gray-400 line-through' : 'text-plex-orange'}`}>{msToTimecode(seg.end_ms)}</span>
+                  <span className="text-xs text-muted">({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)</span>
                   <SegmentOriginBadge seg={seg} />
                   {seg.false_positive && <FalsePositiveTag autoRejected={seg.auto_rejected} />}
                 </div>
                 {renderLabels(seg.labels)}
               </div>
-              <div className="flex items-center gap-1 flex-shrink-0">
+              <div className="flex flex-wrap items-center gap-1 sm:flex-shrink-0">
                 <button
                   onClick={() => setPreviewSeg(seg)}
                   title="Preview segment video"
-                  className="p-2 text-gray-600 hover:text-green-400 hover:bg-green-400/10 rounded transition-colors"
+                  className="p-2 text-gray-400 hover:text-green-400 hover:bg-green-400/10 rounded transition-colors"
                 >
                   <Play size={15} />
                 </button>
                 <a
                   href={`/api/segments/${seg.id}/vlc`}
                   title="Open in VLC"
-                  className="p-2 text-gray-600 hover:text-blue-400 hover:bg-blue-400/10 rounded transition-colors"
+                  className="p-2 text-gray-400 hover:text-blue-400 hover:bg-blue-400/10 rounded transition-colors"
                 >
                   <Tv2 size={15} />
                 </a>
@@ -522,7 +540,7 @@ export default function Library() {
                   onClick={() => jumpToSegmentInline(seg.id)}
                   disabled={jumpingSegs[seg.id]}
                   title="Jump active Plex playback to this segment"
-                  className="p-2 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors disabled:opacity-40"
+                  className="p-2 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors disabled:opacity-40"
                 >
                   <SkipForward size={15} />
                 </button>
@@ -548,7 +566,7 @@ export default function Library() {
                   onClick={() => deleteSegmentInline(seg.id, guid)}
                   disabled={deletingSegs[seg.id]}
                   title="Remove this segment"
-                  className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-40"
+                  className="p-2 text-gray-400 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-40"
                 >
                   <Trash2 size={15} />
                 </button>
@@ -596,7 +614,7 @@ export default function Library() {
       await api.post('/api/scan/title', { plex_guid: guid, now, library_id: selected?.id || null })
       setTitles(await loadTitles(selected!.id))
     } catch (err: any) {
-      alert(`Failed to scan: ${err.message || 'Unknown error'}`)
+      toast.error(`Could not queue the scan: ${err.message || 'Unknown error'}`)
     } finally {
       setScanning(s => ({ ...s, [guid]: false }))
     }
@@ -642,7 +660,7 @@ export default function Library() {
       await api.post(`/api/scan/library/${libId}`, { now })
       setTitles(await loadTitles(libId))
     } catch (err: any) {
-      alert(`Failed to scan library: ${err.message || 'Unknown error'}`)
+      toast.error(`Could not queue the library: ${err.message || 'Unknown error'}`)
     }
   }
 
@@ -673,7 +691,7 @@ export default function Library() {
     setSelectedGuids([])
     setTitles(await loadTitles(selected.id))
     if (errors.length > 0) {
-      alert(`${errors.length} title(s) failed to enqueue:\n${errors.slice(0, 5).join('\n')}`)
+      toast.error(`${errors.length} title${errors.length === 1 ? '' : 's'} could not be queued:\n${errors.slice(0, 5).join('\n')}`)
     }
   }
 
@@ -686,7 +704,7 @@ export default function Library() {
       setTitles(await loadTitles(selected!.id))
     } catch (err: any) {
       setTitles(prev => prev.map(t => (t.plex_guid === guid ? { ...t, ignored: currentIgnored } : t)))
-      alert(`Failed to update ignore status${label ? ` for ${label}` : ''}: ${err.message || 'Unknown error'}`)
+      toast.error(`Could not change ignore${label ? ` for ${label}` : ''}: ${err.message || 'Unknown error'}`)
     }
   }
 
@@ -713,7 +731,7 @@ export default function Library() {
         const previousIgnored = prevIgnoredByGuid.get(t.plex_guid)
         return typeof previousIgnored === 'boolean' ? { ...t, ignored: previousIgnored } : t
       }))
-      alert(`Failed to update ignore status${label ? ` for ${label}` : ''}: ${err.message || 'Unknown error'}`)
+      toast.error(`Could not change ignore${label ? ` for ${label}` : ''}: ${err.message || 'Unknown error'}`)
     }
   }
 
@@ -786,8 +804,8 @@ export default function Library() {
         break
       case 'scanned':
         // Titles never scanned sort to the end regardless of direction.
-        aVal = a.finished_at ? new Date(a.finished_at).getTime() : (sortDesc ? -Infinity : Infinity)
-        bVal = b.finished_at ? new Date(b.finished_at).getTime() : (sortDesc ? -Infinity : Infinity)
+        aVal = a.finished_at ? parseDbTimestamp(a.finished_at).getTime() : (sortDesc ? -Infinity : Infinity)
+        bVal = b.finished_at ? parseDbTimestamp(b.finished_at).getTime() : (sortDesc ? -Infinity : Infinity)
         break
       default:
         aVal = a.title.toLowerCase()
@@ -842,8 +860,8 @@ export default function Library() {
       .sort((a, b) => {
         // Sort shows by the same criterion as individual titles where applicable.
         if (sortBy === 'scanned') {
-          const aMax = Math.max(...a.episodes.map(ep => ep.finished_at ? new Date(ep.finished_at).getTime() : 0))
-          const bMax = Math.max(...b.episodes.map(ep => ep.finished_at ? new Date(ep.finished_at).getTime() : 0))
+          const aMax = Math.max(...a.episodes.map(ep => ep.finished_at ? parseDbTimestamp(ep.finished_at).getTime() : 0))
+          const bMax = Math.max(...b.episodes.map(ep => ep.finished_at ? parseDbTimestamp(ep.finished_at).getTime() : 0))
           return sortDesc ? bMax - aMax : aMax - bMax
         }
         if (sortBy === 'segments') {
@@ -923,7 +941,7 @@ export default function Library() {
               const lib = libraries.find(l => l.id === e.target.value)
               if (lib) selectLibrary(lib)
             }}
-            className="flex-1 px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200 focus:outline-none focus:border-plex-orange/60"
+            className="flex-1 px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200 focus:border-plex-orange/60"
           >
             <option value="">Select library…</option>
             {libraries.map(lib => (
@@ -932,7 +950,7 @@ export default function Library() {
           </select>
         </div>
         {!selected ? (
-          <div className="flex items-center justify-center h-64 text-gray-600">
+          <div className="flex items-center justify-center h-64 text-muted">
             Select a library to browse titles
           </div>
         ) : (
@@ -960,7 +978,7 @@ export default function Library() {
             {/* One thin line for running scans (#110); the per-scan bars are on the Dashboard. */}
             {scannerStatus && scannerStatus.active_scans.length > 0 && (
               <div
-                className="mb-2 flex items-center gap-3 text-xs text-gray-500 whitespace-nowrap overflow-hidden"
+                className="mb-2 flex items-center gap-3 text-xs text-muted whitespace-nowrap overflow-hidden"
                 title={scannerStatus.active_scans.map(s => `${s.title} ${Math.round(s.progress * 100)}%`).join('\n')}
               >
                 <span className="text-plex-orange animate-pulse flex-shrink-0">●</span>
@@ -1000,7 +1018,7 @@ export default function Library() {
                     >
                       {s === 'all' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}
                       {counts[s] != null && (
-                        <span className={`ml-1.5 tabular-nums ${statusFilter === s ? 'opacity-70' : 'text-gray-500'}`}>{counts[s] ?? 0}</span>
+                        <span className={`ml-1.5 tabular-nums ${statusFilter === s ? 'opacity-70' : 'text-muted'}`}>{counts[s] ?? 0}</span>
                       )}
                     </button>
                   ))}
@@ -1015,25 +1033,25 @@ export default function Library() {
                     Retry failed
                   </button>
                 )}
-                <span className="ml-auto text-xs text-gray-500 tabular-nums whitespace-nowrap">
+                <span className="ml-auto text-xs text-muted tabular-nums whitespace-nowrap">
                   {filtered.length} title{filtered.length === 1 ? '' : 's'}
                 </span>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
                 <div className="relative flex-1 min-w-[10rem]">
-                  <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+                  <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
                   <input
                     type="text"
                     placeholder="Filter titles…"
                     aria-label="Filter titles"
                     value={filter}
                     onChange={e => setFilter(e.target.value)}
-                    className="w-full pl-8 pr-3 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
+                    className="w-full pl-8 pr-3 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-100 placeholder-muted focus:border-plex-orange/50"
                   />
                 </div>
                 <div className="relative w-40">
-                  <Users size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+                  <Users size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
                   <input
                     type="text"
                     list="cast-suggestions"
@@ -1041,7 +1059,7 @@ export default function Library() {
                     aria-label="Filter by actor"
                     value={castFilter}
                     onChange={e => setCastFilter(e.target.value)}
-                    className="w-full pl-8 pr-3 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
+                    className="w-full pl-8 pr-3 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-100 placeholder-muted focus:border-plex-orange/50"
                   />
                 </div>
                 <datalist id="cast-suggestions">
@@ -1052,7 +1070,7 @@ export default function Library() {
                     value={ratingFilter}
                     aria-label="Filter by rating"
                     onChange={e => setRatingFilter(e.target.value)}
-                    className="px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 focus:outline-none focus:border-plex-orange/50"
+                    className="px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 focus:border-plex-orange/50"
                   >
                     <option value="all">All ratings</option>
                     {availableRatings.map(r => (
@@ -1066,7 +1084,7 @@ export default function Library() {
                     value={sortBy}
                     aria-label="Sort by"
                     onChange={e => { setSortBy(e.target.value as SortOption); setDateFrom(''); setDateTo('') }}
-                    className="px-2 py-1.5 bg-plex-card border border-plex-border rounded-l-lg text-sm text-gray-300 focus:outline-none focus:border-plex-orange/50"
+                    className="px-2 py-1.5 bg-plex-card border border-plex-border rounded-l-lg text-sm text-gray-300 focus:border-plex-orange/50"
                   >
                     <option value="date-added">Date Added</option>
                     <option value="scanned">Scanned Date</option>
@@ -1091,16 +1109,16 @@ export default function Library() {
                       aria-label={sortBy === 'scanned' ? 'Scanned from' : 'Released from year'}
                       value={dateFrom}
                       onChange={e => setDateFrom(e.target.value)}
-                      className="w-32 px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
+                      className="w-32 px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 placeholder-muted focus:border-plex-orange/50"
                     />
-                    <span className="text-gray-600 text-xs">–</span>
+                    <span className="text-muted text-xs">–</span>
                     <input
                       type={sortBy === 'scanned' ? 'date' : 'number'}
                       placeholder="To year"
                       aria-label={sortBy === 'scanned' ? 'Scanned to' : 'Released to year'}
                       value={dateTo}
                       onChange={e => setDateTo(e.target.value)}
-                      className="w-32 px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-plex-orange/50"
+                      className="w-32 px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 placeholder-muted focus:border-plex-orange/50"
                     />
                     {(dateFrom || dateTo) && (
                       <button
@@ -1120,7 +1138,7 @@ export default function Library() {
                   className={`p-2 border rounded-lg transition-colors ${
                     showIgnored
                       ? 'bg-yellow-500/15 border-yellow-500/30 text-yellow-400'
-                      : 'bg-plex-card border-plex-border text-gray-500 hover:text-gray-200'
+                      : 'bg-plex-card border-plex-border text-gray-400 hover:text-gray-200'
                   }`}
                 >
                   {showIgnored ? <Eye size={15} /> : <EyeOff size={15} />}
@@ -1132,9 +1150,9 @@ export default function Library() {
             {/* Title list */}
             <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pr-1 pb-6">
             {loadingTitles ? (
-              <div className="text-gray-500 text-sm">Loading...</div>
+              <div className="text-muted text-sm">Loading...</div>
             ) : filtered.length === 0 ? (
-              <div className="text-gray-600 text-sm">No titles found</div>
+              <div className="text-muted text-sm">No titles found</div>
             ) : isTvLibrary ? (
               <div className="space-y-3">
                 {showGroups.map(group => {
@@ -1165,7 +1183,7 @@ export default function Library() {
                         </button>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-semibold text-gray-100 truncate">{group.show}</p>
-                          <p className="text-xs text-gray-500">
+                          <p className="text-xs text-muted">
                             {group.seasons.length} season{group.seasons.length !== 1 ? 's' : ''} • {group.episodes.length} episode{group.episodes.length !== 1 ? 's' : ''}
                             {showSegCount > 0 && (
                               <span className="ml-2 text-red-400 bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded text-xs font-medium">
@@ -1175,12 +1193,12 @@ export default function Library() {
                           </p>
                         </div>
                         {allIgnored ? (
-                          <span className="text-xs bg-yellow-500/20 text-yellow-300 px-2 py-0.5 rounded-full font-semibold">IGNORED SHOW</span>
+                          <span className="text-xs bg-yellow-500/20 text-yellow-300 px-2 py-0.5 rounded-full">Ignored</span>
                         ) : someIgnored ? (
-                          <span className="text-xs bg-yellow-500/10 text-yellow-500 px-2 py-0.5 rounded-full font-medium">PARTIALLY IGNORED</span>
+                          <span className="text-xs bg-yellow-500/10 text-yellow-300 px-2 py-0.5 rounded-full">Partly ignored</span>
                         ) : null}
                         {machineId && plexWebUrl(group.episodes[0]?.show_rating_key || '') && (
-                          <a href={plexWebUrl(group.episodes[0]?.show_rating_key || '')} target="_blank" rel="noopener noreferrer" title="Open show in Plex" className="p-1.5 text-gray-500 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors">
+                          <a href={plexWebUrl(group.episodes[0]?.show_rating_key || '')} target="_blank" rel="noopener noreferrer" title="Open show in Plex" className="p-1.5 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors">
                             <ExternalLink size={13} />
                           </a>
                         )}
@@ -1223,7 +1241,7 @@ export default function Library() {
                                 >
                                   <ChevronRight size={13} className={seasonOpen ? 'rotate-90 transition-transform text-gray-400' : 'transition-transform text-gray-400'} />
                                   <span className="text-xs text-gray-300 font-medium">{season.season}</span>
-                                  <span className="text-xs text-gray-500 ml-auto flex items-center gap-2">
+                                  <span className="text-xs text-muted ml-auto flex items-center gap-2">
                                     {season.episodes.length} episode{season.episodes.length !== 1 ? 's' : ''}
                                     {seasonSegCount > 0 && (
                                       <span className="text-red-400 bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded text-xs font-medium">
@@ -1239,7 +1257,7 @@ export default function Library() {
                                   <Zap size={13} />
                                 </ActionIcon>
                                   {machineId && plexWebUrl(season.episodes[0]?.season_rating_key || '') && (
-                                    <a href={plexWebUrl(season.episodes[0]?.season_rating_key || '')} target="_blank" rel="noopener noreferrer" title="Open season in Plex" className="p-1 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors flex-shrink-0">
+                                    <a href={plexWebUrl(season.episodes[0]?.season_rating_key || '')} target="_blank" rel="noopener noreferrer" title="Open season in Plex" className="p-1 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors flex-shrink-0">
                                       <ExternalLink size={12} />
                                     </a>
                                   )}
@@ -1263,6 +1281,7 @@ export default function Library() {
                                               type="checkbox"
                                               checked={selectedGuids.includes(title.plex_guid)}
                                               onChange={() => toggleSelected(title.plex_guid)}
+                                              aria-label={`Select ${parsed.episode}`}
                                               className="w-4 h-4 accent-plex-orange flex-shrink-0 mt-1"
                                             />
                                             {title.thumb_url ? (
@@ -1279,14 +1298,15 @@ export default function Library() {
                                             <div className="flex-1 min-w-0">
                                               <p className="text-sm text-gray-100 truncate">
                                                 {parsed.episode}
-                                                {title.ignored && <span className="ml-2 text-yellow-300 text-xs font-semibold">IGNORED</span>}
+                                                {title.ignored && <span className="ml-2 text-xs bg-yellow-500/15 text-yellow-300 px-2 py-0.5 rounded-full">Ignored</span>}
                                               </p>
                                               <div className="flex flex-wrap items-center gap-2 mt-1">
                                                 <StatusBadge status={title.status} progress={title.progress} />
                                                 {title.finished_at && (
-                                                  <span className="text-xs text-gray-500">Finished {formatFinishedAt(title.finished_at)}</span>
+                                                  <span className="text-xs text-muted">Finished {formatFinishedAt(title.finished_at)}</span>
                                                 )}
                                               </div>
+                                              <FailureReason title={title} />
                                               <div className="flex flex-wrap items-center gap-1 mt-1.5">
                                                 <SegmentToggle title={title} open={expandedSegments.has(title.plex_guid)} onToggle={() => toggleSegments(title.plex_guid)} />
                                                 {title.segment_count > 0 && (
@@ -1294,13 +1314,13 @@ export default function Library() {
                                                     onClick={() => deleteAllTitleSegs(title.plex_guid)}
                                                     disabled={deletingAllSegs[title.plex_guid]}
                                                     title="Delete all segments for this episode"
-                                                    className="p-1.5 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-40"
+                                                    className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-40"
                                                   >
                                                     <Trash2 size={13} />
                                                   </button>
                                                 )}
                                                 {machineId && plexWebUrl(title.rating_key) && (
-                                                  <a href={plexWebUrl(title.rating_key)} target="_blank" rel="noopener noreferrer" title="Open in Plex" className="p-1.5 text-gray-500 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors">
+                                                  <a href={plexWebUrl(title.rating_key)} target="_blank" rel="noopener noreferrer" title="Open in Plex" className="p-1.5 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors">
                                                     <ExternalLink size={13} />
                                                   </a>
                                                 )}
@@ -1308,7 +1328,7 @@ export default function Library() {
                                                   onClick={() => scanTitle(title.plex_guid, false)}
                                                   disabled={scanning[title.plex_guid]}
                                                   title="Scan Tonight"
-                                                  className="p-1.5 text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded transition-colors disabled:opacity-40"
+                                                  className="p-1.5 text-gray-400 hover:text-gray-300 hover:bg-white/5 rounded transition-colors disabled:opacity-40"
                                                 >
                                                   <Moon size={14} />
                                                 </button>
@@ -1316,7 +1336,7 @@ export default function Library() {
                                                   onClick={() => scanTitle(title.plex_guid, true)}
                                                   disabled={scanning[title.plex_guid]}
                                                   title="Scan Now"
-                                                  className="p-1.5 text-gray-500 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors disabled:opacity-40"
+                                                  className="p-1.5 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors disabled:opacity-40"
                                                 >
                                                   <Zap size={14} />
                                                 </button>
@@ -1327,7 +1347,7 @@ export default function Library() {
                                                   className={`p-1.5 rounded transition-colors ${
                                                     title.ignored
                                                       ? 'text-yellow-600 hover:text-yellow-400 hover:bg-yellow-500/10'
-                                                      : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
+                                                      : 'text-gray-400 hover:text-gray-300 hover:bg-white/5'
                                                   }`}
                                                 >
                                                   {title.ignored ? <Eye size={14} /> : <EyeOff size={14} />}
@@ -1351,7 +1371,7 @@ export default function Library() {
                 })}
               </div>
             ) : (
-              <div className="grid gap-2">
+              <div className="grid gap-2 grid-cols-[minmax(0,1fr)]">
                 {sorted.map(title => (
                   <div
                     key={title.plex_guid}
@@ -1366,6 +1386,7 @@ export default function Library() {
                         type="checkbox"
                         checked={selectedGuids.includes(title.plex_guid)}
                         onChange={() => toggleSelected(title.plex_guid)}
+                        aria-label={`Select ${title.title}`}
                         className="w-4 h-4 accent-plex-orange flex-shrink-0 mt-1"
                       />
                       {title.thumb_url ? (
@@ -1381,8 +1402,8 @@ export default function Library() {
                       )}
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-gray-100 truncate">
-                          {title.ignored && <span className="text-yellow-400 mr-1">[IGNORED]</span>}
                           {title.title}
+                          {title.ignored && <span className="ml-2 text-xs bg-yellow-500/15 text-yellow-300 px-2 py-0.5 rounded-full">Ignored</span>}
                         </p>
                         <div className="flex flex-wrap items-center gap-2 mt-1">
                           <StatusBadge status={title.status} progress={title.progress} />
@@ -1390,12 +1411,13 @@ export default function Library() {
                             <span className="text-xs bg-blue-500/15 text-blue-400 px-1.5 py-0.5 rounded font-medium">TV</span>
                           )}
                           {title.content_rating && (
-                            <span className="text-xs text-gray-600 bg-white/5 px-1.5 py-0.5 rounded">{title.content_rating}</span>
+                            <span className="text-xs text-gray-400 bg-white/5 px-1.5 py-0.5 rounded">{title.content_rating}</span>
                           )}
                           {title.finished_at && (
-                            <span className="text-xs text-gray-500">Finished {formatFinishedAt(title.finished_at)}</span>
+                            <span className="text-xs text-muted">Finished {formatFinishedAt(title.finished_at)}</span>
                           )}
                         </div>
+                        <FailureReason title={title} />
                         <div className="flex flex-wrap items-center gap-1 mt-2">
                           <SegmentToggle title={title} open={expandedSegments.has(title.plex_guid)} onToggle={() => toggleSegments(title.plex_guid)} />
                           {title.segment_count > 0 && (
@@ -1403,13 +1425,13 @@ export default function Library() {
                               onClick={() => deleteAllTitleSegs(title.plex_guid)}
                               disabled={deletingAllSegs[title.plex_guid]}
                               title="Delete all segments for this title"
-                              className="p-1.5 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-40"
+                              className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-40"
                             >
                               <Trash2 size={14} />
                             </button>
                           )}
                           {machineId && plexWebUrl(title.rating_key) && (
-                            <a href={plexWebUrl(title.rating_key)} target="_blank" rel="noopener noreferrer" title="Open in Plex" className="p-1.5 text-gray-500 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors">
+                            <a href={plexWebUrl(title.rating_key)} target="_blank" rel="noopener noreferrer" title="Open in Plex" className="p-1.5 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors">
                               <ExternalLink size={14} />
                             </a>
                           )}
@@ -1417,7 +1439,7 @@ export default function Library() {
                             onClick={() => scanTitle(title.plex_guid, false)}
                             disabled={scanning[title.plex_guid]}
                             title="Scan Tonight"
-                            className="p-1.5 text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded transition-colors disabled:opacity-40"
+                            className="p-1.5 text-gray-400 hover:text-gray-300 hover:bg-white/5 rounded transition-colors disabled:opacity-40"
                           >
                             <Moon size={14} />
                           </button>
@@ -1425,17 +1447,9 @@ export default function Library() {
                             onClick={() => scanTitle(title.plex_guid, true)}
                             disabled={scanning[title.plex_guid]}
                             title="Scan Now"
-                            className="p-1.5 text-gray-500 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors disabled:opacity-40"
+                            className="p-1.5 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors disabled:opacity-40"
                           >
                             <Zap size={14} />
-                          </button>
-                          <button
-                            onClick={() => scanTitle(title.plex_guid, false)}
-                            disabled={scanning[title.plex_guid]}
-                            title="Re-scan"
-                            className="p-1.5 text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded transition-colors disabled:opacity-40"
-                          >
-                            <RotateCcw size={14} />
                           </button>
                           <button
                             onClick={() => toggleIgnored(title.plex_guid, title.ignored, title.title)}
@@ -1444,7 +1458,7 @@ export default function Library() {
                             className={`p-1.5 rounded transition-colors ${
                               title.ignored
                                 ? 'text-yellow-600 hover:text-yellow-400 hover:bg-yellow-500/10'
-                                : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'
+                                : 'text-gray-400 hover:text-gray-300 hover:bg-white/5'
                             }`}
                           >
                             {title.ignored ? <Eye size={14} /> : <EyeOff size={14} />}
@@ -1463,36 +1477,14 @@ export default function Library() {
       </div>
 
       {previewSeg && (
-        <div className="fixed inset-0 z-50 bg-black/90 flex items-end sm:items-center justify-center sm:p-4" onClick={() => setPreviewSeg(null)}>
-          <div className="w-full sm:max-w-4xl bg-plex-card sm:border border-t border-plex-border sm:rounded-xl overflow-hidden" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-4 py-3 border-b border-plex-border">
-              <div>
-                <h3 className="text-sm font-semibold text-gray-100">Segment Preview</h3>
-                <p className="text-xs text-gray-500">
-                  {msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)}
-                </p>
-              </div>
-              <button
-                onClick={() => setPreviewSeg(null)}
-                className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors"
-              >
-                Close
-              </button>
-            </div>
-            <div className="p-3 sm:p-4">
-              <video
-                key={previewSeg.id}
-                controls
-                playsInline
-                className="w-full rounded-lg bg-black max-h-[50vh] sm:max-h-[70vh]"
-                src={`/api/segments/${previewSeg.id}/preview`}
-              />
-              <p className="text-xs text-gray-500 mt-2">
-                The server cuts this clip from the source with 5s either side, so it plays in any browser.
-              </p>
-            </div>
-          </div>
-        </div>
+        <Modal
+          title="Segment preview"
+          subtitle={<>{msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)} · clip includes 5s either side</>}
+          size="xl"
+          onClose={() => setPreviewSeg(null)}
+        >
+          <SegmentPlayer segmentId={previewSeg.id} className="max-h-[70vh]" />
+        </Modal>
       )}
     </div>
   )

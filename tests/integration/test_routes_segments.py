@@ -249,6 +249,66 @@ async def test_preview_renders_the_padded_clip_once_and_serves_it(http_client, t
     assert fake_render.calls == [(str(media), 55000, 20000)]
 
 
+async def test_preview_of_a_part_two_segment_is_cut_from_part_two(http_client, tmp_path, fake_render, monkeypatch):
+    cd1, cd2 = tmp_path / "cd1.avi", tmp_path / "cd2.avi"
+    cd1.write_bytes(b"x")
+    cd2.write_bytes(b"y")
+    await db.upsert_scan_job(plex_guid="guid-mp", title="Movie", file_path=str(cd1), rating_key="1",
+                             library_id="lib", library_title="Lib", part_files=f'["{cd1}", "{cd2}"]')
+    seg_id = await db.insert_segment("guid-mp", "Movie", start_ms=15000, end_ms=20000)
+    durations = {str(cd1): 10000, str(cd2): 30000}
+
+    async def duration(path):
+        return durations[path]
+
+    monkeypatch.setattr("cleanplex.frame_extractor.get_duration_ms", duration)
+
+    resp = await http_client.get(f"/api/segments/{seg_id}/preview")
+
+    assert resp.status_code == 200
+    # 5 s into part two, less the 5 s of lead-in; the clip header reports the part-local start.
+    assert fake_render.calls == [(str(cd2), 0, 15000)]
+    assert resp.headers["x-clip-start-ms"] == "0"
+
+
+async def test_preview_of_a_segment_whose_title_left_the_library_says_so(http_client):
+    seg_id = await db.insert_segment("guid-gone", "Gone", start_ms=1000, end_ms=2000)
+
+    resp = await http_client.get(f"/api/segments/{seg_id}/preview")
+
+    assert resp.status_code == 404
+    assert "no longer in the library" in resp.json()["detail"]
+
+
+async def test_preview_renders_are_capped_so_a_burst_of_clicks_does_not_thrash(http_client, tmp_path, monkeypatch):
+    import asyncio
+    from cleanplex.web.routes import segments as seg_routes
+
+    monkeypatch.setattr(seg_routes, "PREVIEWS_DIR", tmp_path / "previews")
+    running = peak = 0
+
+    async def render(path, start_ms, duration_ms, out_path):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.05)
+        out_path.write_bytes(b"clip")
+        running -= 1
+        return True
+
+    monkeypatch.setattr(seg_routes.frame_extractor, "render_clip", render)
+    ids = []
+    for n in range(6):
+        seg_id, _ = await _segment_with_file(tmp_path, start_ms=60000 + n * 100000, end_ms=70000 + n * 100000)
+        ids.append(seg_id)
+        # Each segment reuses guid-prev's job; distinct start times give distinct clip keys.
+
+    results = await asyncio.gather(*(http_client.get(f"/api/segments/{i}/preview") for i in ids))
+
+    assert all(r.status_code == 200 for r in results)
+    assert peak == seg_routes.PREVIEW_MAX_RENDERS
+
+
 async def test_preview_answers_byte_range_requests_for_safari(http_client, tmp_path, fake_render):
     """Regression for #93: Safari plays nothing unless a range request gets a 206."""
     seg_id, _ = await _segment_with_file(tmp_path)

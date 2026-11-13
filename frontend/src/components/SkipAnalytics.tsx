@@ -58,11 +58,11 @@ export default function SkipAnalytics() {
     return () => controller.abort()
   }, [liveTick])
 
-  if (loading) return <div className="text-gray-500 text-sm">Loading skip history...</div>
+  if (loading) return <div className="text-muted text-sm">Loading skip history...</div>
 
   if (categories.length === 0 && clients.length === 0 && titles.length === 0) {
     return (
-      <div className="bg-plex-card border border-plex-border rounded-xl p-8 text-center text-gray-500 text-sm">
+      <div className="bg-plex-card border border-plex-border rounded-xl p-8 text-center text-muted text-sm">
         No skips recorded yet. History appears here once filtering fires during playback.
       </div>
     )
@@ -86,7 +86,7 @@ export default function SkipAnalytics() {
                   style={{ width: `${(c.count / maxCategory) * 100}%` }}
                 />
               </div>
-              <span className="text-xs text-gray-500 w-10 text-right">{c.count}</span>
+              <span className="text-xs text-muted w-10 text-right">{c.count}</span>
             </div>
           ))}
         </div>
@@ -98,7 +98,7 @@ export default function SkipAnalytics() {
         </h3>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
-            <thead className="text-gray-600">
+            <thead className="text-muted">
               <tr>
                 <th className="text-left font-normal pb-1.5">Client</th>
                 <th className="text-right font-normal pb-1.5">Skips</th>
@@ -112,11 +112,11 @@ export default function SkipAnalytics() {
                   <td className="py-1.5 truncate max-w-[10rem]">{c.client_title}</td>
                   <td className="text-right">{c.count}</td>
                   <td
-                    className={`text-right ${c.failure_rate > 0.1 ? 'text-red-400' : 'text-gray-500'}`}
+                    className={`text-right ${c.failure_rate > 0.1 ? 'text-red-400' : 'text-muted'}`}
                   >
                     {Math.round(c.failure_rate * 100)}%
                   </td>
-                  <td className="text-right text-gray-500">{c.avg_latency_ms}ms</td>
+                  <td className="text-right text-muted">{c.avg_latency_ms}ms</td>
                 </tr>
               ))}
             </tbody>
@@ -132,7 +132,7 @@ export default function SkipAnalytics() {
           {titles.map(t => (
             <div key={t.plex_guid} className="flex items-center justify-between py-1.5">
               <span className="text-xs text-gray-300 truncate">{t.title}</span>
-              <span className="text-xs text-gray-500 ml-3">{t.count}</span>
+              <span className="text-xs text-muted ml-3">{t.count}</span>
             </div>
           ))}
         </div>

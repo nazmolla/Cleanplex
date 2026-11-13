@@ -99,6 +99,90 @@ async def test_get_sessions_batches_user_filter_lookup(http_client):
     spy.assert_awaited_once()
 
 
+async def _state_for(http_client, session):
+    mock_client = make_mock_plex_client(sessions=[session])
+    with patch("cleanplex.web.routes.sessions.plex_mod.get_client", return_value=mock_client):
+        resp = await http_client.get("/api/sessions")
+    return resp.json()["sessions"][0]["filtering_state"]
+
+
+async def _title(guid="g1", status="done", rating_key="100", library="lib", rating="R", ignored=False):
+    await db.upsert_scan_job(plex_guid=guid, title=guid, file_path=f"/{guid}.mkv", rating_key=rating_key,
+                             library_id=library, library_title="Lib", content_rating=rating)
+    await db.update_scan_job_status(guid, status)
+    if ignored:
+        await db.set_ignored(guid, True)
+
+
+async def test_filtering_state_is_not_scanned_for_a_pending_title(http_client):
+    await _title(status="pending")
+    assert await _state_for(http_client, _active_session()) == "not_scanned"
+
+
+async def test_filtering_state_is_not_scanned_for_a_title_unknown_to_cleanplex(http_client):
+    assert await _state_for(http_client, _active_session()) == "not_scanned"
+
+
+async def test_filtering_state_says_ignored_for_an_ignored_title(http_client):
+    await _title(status="pending", ignored=True)
+    assert await _state_for(http_client, _active_session()) == "ignored"
+
+
+async def test_filtering_state_says_library_excluded_for_an_excluded_library(http_client):
+    await db.set_setting("excluded_library_ids", '["kids"]')
+    await _title(status="pending", library="kids")
+    assert await _state_for(http_client, _active_session()) == "library_excluded"
+
+
+async def test_filtering_state_says_rating_skipped_when_the_rating_is_not_scanned(http_client):
+    await db.set_setting("scan_ratings", '["R"]')
+    await _title(status="pending", rating="TV-G")
+    assert await _state_for(http_client, _active_session()) == "rating_skipped"
+
+
+async def test_filtering_state_is_not_cut_for_an_unscanned_title_even_with_segments(http_client):
+    await _title(status="pending")
+    await db.insert_segment("g1", "Movie", 1000, 5000, labels="BUTTOCKS_EXPOSED")
+    assert await _state_for(http_client, _active_session()) == "not_scanned"
+
+
+async def test_filtering_state_still_cuts_an_ignored_title_that_has_segments(http_client):
+    await _title(status="done", ignored=True)
+    await db.insert_segment("g1", "Movie", 1000, 5000, labels="BUTTOCKS_EXPOSED")
+    assert await _state_for(http_client, _active_session()) == "active"
+
+
+async def test_filtering_state_is_clear_for_a_scanned_title_without_segments(http_client):
+    await _title(status="done")
+    assert await _state_for(http_client, _active_session()) == "clear"
+
+
+async def test_filtering_state_is_active_when_a_segment_fires_for_the_viewer(http_client):
+    await _title(status="done")
+    await db.insert_segment("g1", "Movie", 1000, 5000, labels="BUTTOCKS_EXPOSED")
+    assert await _state_for(http_client, _active_session()) == "active"
+
+
+async def test_filtering_state_is_clear_when_the_viewers_level_lets_every_segment_through(http_client):
+    await _title(status="done")
+    await db.insert_segment("g1", "Movie", 1000, 5000, labels="FEET_EXPOSED", severity="low")
+    await db.upsert_user_category_pref("alice", "nudity", 2)
+    assert await _state_for(http_client, _active_session()) == "clear"
+
+
+async def test_filtering_state_finds_segments_through_the_rating_key(http_client):
+    await _title(guid="stored-guid", status="done", rating_key="100")
+    await db.insert_segment("stored-guid", "Movie", 1000, 5000, labels="BUTTOCKS_EXPOSED")
+    assert await _state_for(http_client, _active_session(plex_guid="session-guid")) == "active"
+
+
+async def test_filtering_state_is_off_when_the_viewer_disabled_filtering(http_client):
+    await _title(status="done")
+    await db.insert_segment("g1", "Movie", 1000, 5000, labels="BUTTOCKS_EXPOSED")
+    await db.upsert_user_filter("alice", enabled=False)
+    assert await _state_for(http_client, _active_session()) == "off"
+
+
 # ── GET /api/sessions/events ──────────────────────────────────────────────────
 
 async def test_get_skip_events_returns_empty_by_default(http_client):

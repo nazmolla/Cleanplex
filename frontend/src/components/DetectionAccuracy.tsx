@@ -48,13 +48,13 @@ export default function DetectionAccuracy() {
   // Marks and rescans both change these numbers.
   useLiveRefresh(['segments_changed'], load, { debounceMs: 2000 })
 
-  if (loading) return <div className="text-gray-500 text-sm">Loading detection accuracy...</div>
-  if (rows.length === 0) return <div className="text-gray-500 text-sm">No detected segments yet.</div>
+  if (loading) return <div className="text-muted text-sm">Loading detection accuracy...</div>
+  if (rows.length === 0) return <div className="text-muted text-sm">No detected segments yet.</div>
 
   return (
     <div className="space-y-2">
       {marked === 0 && (
-        <p className="text-xs text-gray-500">
+        <p className="text-xs text-muted">
           No false positives marked yet. Use the thumbs-down button on a segment that is not nudity; the numbers
           below then show which detector and label get it wrong, and at what scores.
         </p>
@@ -62,7 +62,7 @@ export default function DetectionAccuracy() {
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
-            <tr className="text-left text-gray-500 border-b border-plex-border">
+            <tr className="text-left text-muted border-b border-plex-border">
               <th className="py-1.5 pr-3 font-medium">Detector</th>
               <th className="py-1.5 pr-3 font-medium">Label</th>
               <th className="py-1.5 pr-3 font-medium text-right">Found</th>

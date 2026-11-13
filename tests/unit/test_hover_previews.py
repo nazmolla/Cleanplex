@@ -201,3 +201,29 @@ async def test_loop_survives_a_failed_run(monkeypatch):
     config = Config(hover_window_start=time(0, 0), hover_window_end=time(23, 59))
     # The error is logged and the loop carries on to its sleep (which stops the test).
     await _run_loop_once(monkeypatch, config, boom)
+
+
+async def test_hover_of_a_part_two_segment_is_cut_from_part_two(tmp_path, monkeypatch):
+    cd1, cd2 = tmp_path / "cd1.avi", tmp_path / "cd2.avi"
+    cd1.write_bytes(b"x")
+    cd2.write_bytes(b"x")
+    await db.upsert_scan_job(plex_guid="mp", title="T", file_path=str(cd1), rating_key="1", library_id="lib",
+                             library_title="Lib", part_files=f'["{cd1}", "{cd2}"]')
+    await db.insert_segment("mp", "T", 5_000, 9_000)
+    durations = {str(cd1): 3_000, str(cd2): 10_000}
+
+    async def duration(path):
+        return durations[path]
+
+    seen = []
+
+    async def render(file_path, start_ms, duration_ms, out_path):
+        seen.append((file_path, start_ms, duration_ms))
+        out_path.write_bytes(b"mp4")
+        return True
+
+    monkeypatch.setattr(frame_extractor, "get_duration_ms", duration)
+    monkeypatch.setattr(frame_extractor, "render_hover_clip", render)
+
+    assert await hover_previews.render_pending(_always) == 1
+    assert seen == [(str(cd2), 2_000, 4_000)]

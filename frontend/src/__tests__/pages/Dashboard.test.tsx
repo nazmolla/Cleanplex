@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, act } from '@testing-library/react'
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Dashboard from '../../pages/Dashboard'
 import { emitLive } from '../../test/fakeEventSource'
@@ -83,6 +83,7 @@ describe('Dashboard', () => {
       client: 'Plex Web',
       is_controllable: true,
       filtering_enabled: true,
+      filtering_state: 'active',
       thumb_url: '',
     }
     mockApi.get.mockImplementation((path: string) => {
@@ -93,6 +94,29 @@ describe('Dashboard', () => {
     renderDashboard()
     await waitFor(() => expect(screen.getByText('Inception')).toBeInTheDocument())
     expect(screen.getByText(/alice/)).toBeInTheDocument()
+  })
+
+  it.each([
+    ['active', 'Being cut'],
+    ['clear', 'Not cut: nothing to cut'],
+    ['ignored', 'Not cut: title ignored'],
+    ['library_excluded', 'Not cut: library excluded'],
+    ['rating_skipped', 'Not cut: rating not scanned'],
+    ['not_scanned', 'Not cut: not scanned yet'],
+    ['off', 'Not cut: filtering off'],
+  ])('labels a %s stream as "%s"', async (state, text) => {
+    const session = {
+      session_key: 's1', user: 'alice', title: 'Inception', media_type: 'movie', position_ms: 0,
+      duration_ms: 7200000, client: 'Plex Web', is_controllable: true, filtering_enabled: state !== 'off',
+      filtering_state: state, thumb_url: '',
+    }
+    mockApi.get.mockImplementation((path: string) => {
+      if (path.includes('skips/history')) return Promise.resolve(emptyEvents)
+      if (path.includes('scanner-status')) return Promise.resolve(scannerIdle)
+      return Promise.resolve({ sessions: [session] })
+    })
+    renderDashboard()
+    await waitFor(() => expect(screen.getByText(text)).toBeInTheDocument())
   })
 
   it('shows scanner scanning status when active scans present', async () => {
@@ -107,6 +131,30 @@ describe('Dashboard', () => {
     })
     renderDashboard()
     await waitFor(() => expect(screen.getByText('Some Movie')).toBeInTheDocument())
+  })
+
+  it('puts now playing above the scanner and keeps the queue inside the scanner card (#206)', async () => {
+    const queued = {
+      ...scannerIdle,
+      queue_size: 1,
+      queue_items: [{ guid: 'q1', position: 1, title: 'Queued Movie', force: true, media_type: 'movie', content_rating: 'R' }],
+    }
+    mockApi.get.mockImplementation((path: string) => {
+      if (path.includes('skips/history')) return Promise.resolve(emptyEvents)
+      if (path.includes('scanner-status')) return Promise.resolve(queued)
+      return Promise.resolve(emptySessions)
+    })
+    renderDashboard()
+
+    const toggle = await screen.findByRole('button', { name: /1 queued/ })
+    const headings = screen.getAllByRole('heading', { level: 2 }).map(h => h.textContent)
+    expect(headings.indexOf('Now playing')).toBeLessThan(headings.indexOf('Scanner'))
+    expect(screen.getByRole('region', { name: 'Scanner' })).toContainElement(toggle)
+
+    expect(screen.queryByText('Queued Movie')).not.toBeInTheDocument()
+    fireEvent.click(toggle)
+    expect(screen.getByText('Queued Movie')).toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
   })
 
   it('shows paused badge when scanner is paused', async () => {

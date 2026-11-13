@@ -85,7 +85,7 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
           onClick={() => setMode('file')}
           className={`px-2.5 py-1 rounded text-xs flex items-center gap-1 border ${
             mode === 'file'
-              ? 'bg-plex-orange border-plex-orange text-white'
+              ? 'bg-plex-orange border-plex-orange text-black'
               : 'border-plex-border text-gray-400'
           }`}
         >
@@ -95,14 +95,14 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
           onClick={() => setMode('paste')}
           className={`px-2.5 py-1 rounded text-xs flex items-center gap-1 border ${
             mode === 'paste'
-              ? 'bg-plex-orange border-plex-orange text-white'
+              ? 'bg-plex-orange border-plex-orange text-black'
               : 'border-plex-border text-gray-400'
           }`}
         >
           <ClipboardPaste size={12} /> Paste list
         </button>
 
-        <label className="ml-auto flex items-center gap-1.5 text-xs text-gray-500">
+        <label className="ml-auto flex items-center gap-1.5 text-xs text-muted">
           <input
             type="checkbox"
             checked={replace}
@@ -126,7 +126,7 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
             }}
             className="block w-full text-xs text-gray-400 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:bg-plex-border file:text-gray-200 hover:file:bg-plex-border/70"
           />
-          <p className="text-[11px] text-gray-600 mt-2">
+          <p className="text-[11px] text-muted mt-2">
             VideoSkip <code>.skp</code>, Kodi <code>.edl</code>, MovieContentFilter{' '}
             <code>.mcf</code>, or a plain <code>.txt</code> list. Importing skips the scan entirely.
           </p>
@@ -143,7 +143,7 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
           <button
             onClick={importPaste}
             disabled={busy || !pasted.trim()}
-            className="mt-2 px-3 py-1.5 rounded text-xs bg-plex-orange text-white disabled:opacity-40"
+            className="mt-2 px-3 py-1.5 rounded text-xs bg-plex-orange text-black font-medium disabled:opacity-40"
           >
             {busy ? 'Importing...' : 'Import list'}
           </button>
@@ -151,7 +151,7 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
       )}
 
       <div className="flex items-center gap-2 pt-1 border-t border-plex-border">
-        <span className="text-[11px] text-gray-600">Export:</span>
+        <span className="text-[11px] text-muted">Export:</span>
         <button onClick={() => exportAs('edl')} className="text-[11px] text-gray-400 hover:text-gray-200 flex items-center gap-1">
           <Download size={11} /> EDL
         </button>

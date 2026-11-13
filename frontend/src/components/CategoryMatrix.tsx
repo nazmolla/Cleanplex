@@ -128,7 +128,7 @@ export default function CategoryMatrix({ username, enabled }: Props) {
     setData(fresh)
   }
 
-  if (loading) return <div className="text-gray-500 text-sm px-5 py-4">Loading categories...</div>
+  if (loading) return <div className="text-muted text-sm px-5 py-4">Loading categories...</div>
   if (!data) return null
 
   return (
@@ -136,7 +136,7 @@ export default function CategoryMatrix({ username, enabled }: Props) {
       <div className="flex items-center justify-between px-5 py-3 border-b border-plex-border">
         <div>
           <p className="text-sm font-medium text-gray-200">Category filtering</p>
-          <p className="text-xs text-gray-500 mt-0.5">
+          <p className="text-xs text-muted mt-0.5">
             {data.uses_defaults
               ? 'Using defaults: everything is filtered.'
               : 'Customised for this user.'}
@@ -156,18 +156,18 @@ export default function CategoryMatrix({ username, enabled }: Props) {
       {/* The levels, spelled out, so nobody has to work out level + severity > 3. */}
       <details className="px-5 py-3 border-b border-plex-border text-xs text-gray-400">
         <summary className="cursor-pointer text-gray-300">What does each level skip?</summary>
-        <p className="mt-2 mb-2 text-gray-500">
+        <p className="mt-2 mb-2 text-muted">
           A detected segment is skipped when the level plus its severity (low 1, medium 2, high 3) is more than 3.
           Imported segments use the severity their author set.
         </p>
         <table className="w-full text-left">
           <thead>
-            <tr className="text-gray-500">
+            <tr className="text-muted">
               <th className="font-normal py-1 pr-3">Level</th>
               {SEVERITY_COLUMNS.map(col => (
                 <th key={col.name} className="font-normal py-1 pr-3">
                   {col.name}
-                  <span className="block text-[10px] text-gray-600">{col.examples}</span>
+                  <span className="block text-[10px] text-muted">{col.examples}</span>
                 </th>
               ))}
             </tr>
@@ -177,7 +177,7 @@ export default function CategoryMatrix({ username, enabled }: Props) {
               <tr key={level} className="border-t border-plex-border/60">
                 <td className="py-1 pr-3 text-gray-300">{level} · {name}</td>
                 {SEVERITY_COLUMNS.map(col => (
-                  <td key={col.name} className={`py-1 pr-3 ${level + col.rank > 3 ? 'text-red-300' : 'text-gray-600'}`}>
+                  <td key={col.name} className={`py-1 pr-3 ${level + col.rank > 3 ? 'text-red-300' : 'text-muted'}`}>
                     {level + col.rank > 3 ? 'skipped' : 'allowed'}
                   </td>
                 ))}
@@ -197,10 +197,10 @@ export default function CategoryMatrix({ username, enabled }: Props) {
                 {CATEGORY_LABELS[cat.category] ?? cat.category}
               </p>
               {!cat.has_segments && (
-                <p className="text-[11px] text-gray-600 mt-0.5">No segments yet</p>
+                <p className="text-[11px] text-muted mt-0.5">No segments yet</p>
               )}
               {cat.category === 'nudity' && (
-                <p className="text-[11px] text-gray-500 mt-0.5">{NUDITY_LEVEL_HINTS[cat.level]}</p>
+                <p className="text-[11px] text-muted mt-0.5">{NUDITY_LEVEL_HINTS[cat.level]}</p>
               )}
             </div>
 
@@ -215,7 +215,7 @@ export default function CategoryMatrix({ username, enabled }: Props) {
                 onChange={e => update(cat.category, Number(e.target.value), cat.action)}
                 className="flex-1 accent-plex-orange"
               />
-              <span className="text-xs text-gray-500 w-32" title={cat.category === 'nudity' ? NUDITY_LEVEL_HINTS[cat.level] : undefined}>
+              <span className="text-xs text-muted w-32" title={cat.category === 'nudity' ? NUDITY_LEVEL_HINTS[cat.level] : undefined}>
                 {LEVEL_LABELS[cat.level]}
               </span>
             </div>
@@ -231,8 +231,8 @@ export default function CategoryMatrix({ username, enabled }: Props) {
                   title={act === '' ? 'Use the segment’s own action' : `Always ${act}`}
                   className={`px-2 py-1 rounded text-[11px] border transition-colors ${
                     cat.action === act
-                      ? 'bg-plex-orange border-plex-orange text-white'
-                      : 'border-plex-border text-gray-500 hover:text-gray-300'
+                      ? 'bg-plex-orange border-plex-orange text-black'
+                      : 'border-plex-border text-gray-400 hover:text-gray-300'
                   }`}
                 >
                   {act === '' ? 'Auto' : act === 'skip' ? <SkipForward size={11} /> : <Volume2 size={11} />}

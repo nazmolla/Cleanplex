@@ -51,7 +51,7 @@ Every change — regardless of size — must follow these rules. No exceptions.
 | `plex_summary.py` | The Cleanplex block in a title's Plex summary: builds the description from the database (`db.get_summary_stats`) and refreshes it (debounced) after scans, deletes, false positives, relabels, imports and subtitle scans. Plex writes go through `PlexClient.update_cleanplex_summary` |
 | `segment_refine.py` | Dense sampling of a flagged window (`dense_hits`): the frames above threshold inside it, growing while the scene runs on. Shared by the scanner and the backfill, so both choose thumbnails and bounds the same way |
 | `thumbnail_backfill.py` | Background job (scan window, one segment at a time) that re-samples segments stored before dense sampling existed: better thumbnail, bounds that only grow, `refined_at` so each is processed once, hover preview reset when the window changes |
-| `segment_files.py` | Files that belong to segments (thumbnails, hover previews, feedback frames) plus the poster and preview-clip caches (pruned by age/size): deletes them with their segment (`delete_segment`, `delete_segments_for_guid`: use these, never `db.delete_segment*` directly) and sweeps orphans on a schedule |
+| `segment_files.py` | Files that belong to segments (thumbnails, hover previews, feedback frames) plus the poster and preview-clip caches (pruned by age/size): deletes them with their segment (`delete_segment`, `delete_segments_for_guid`: use these, never `db.delete_segment*` directly) and sweeps orphans on a schedule. Removed titles (#191): the sweep archives segments left without a scan job and, 30 days after removal, purges the rest of what is saved for the title; the segments (marks) are never deleted |
 | `db_backup.py` | Daily `VACUUM INTO` backup to `~/.cleanplex/backups/` (newest 7 kept) and pruning of deploy-time `cleanplex.db.bak-*` copies (newest 3 kept) |
 | `hover_previews.py` | Job rendering each active segment's hover preview (small silent MP4) inside its own window (default 00:00–07:00); separate from the scanner, never part of a scan |
 | `subtitle_scanner.py` | Subtitle parsing and profanity matching — emits muted language segments |
@@ -245,6 +245,8 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 - **Schema migrations are additive only.** Never drop or rename columns in a migration. Add new columns with defaults.
 - **Index every foreign-key-like column** (`plex_guid`, `file_hash`, `status`).
 
+- **A title Plex no longer reports is removed with `db.remove_titles_not_in`, never a bare `DELETE FROM scan_jobs`** (#191). Its segments move to `removed_segments` (the marks; every live query ignores that table) and the title is recorded in `removed_titles`. `db.purge_removed_titles` deletes everything else saved for it after `REMOVED_TITLE_RETENTION_DAYS`, except data a live title still uses (same rating key or file). `db.upsert_scan_jobs_batch` restores the marks of a title that returns. A new per-title table must be added to the purge.
+
 ### 5.3 HTTP & Plex Client
 
 - **One `AsyncClient` per `PlexClient` instance.** Never construct `httpx.AsyncClient` ad-hoc inside a loop or per-request.
@@ -283,6 +285,13 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 - **Polling intervals must cancel in-flight requests.** Use `AbortController` before each new poll tick.
 - **No polling loop may run unbounded.** Every `setInterval`/recursive `setTimeout` must have a terminal condition (success, error, or max-duration).
 - **Bulk actions must use bounded concurrency or a batch endpoint.** Never fire N sequential requests from a UI loop.
+- **The UI is a desktop tool.** Design and judge it at desktop width; a phone must not be broken (no clipped or unreachable control) but gets no layout of its own.
+- **Quiet text uses `text-muted`, never `text-gray-500/600/700`.** Those measure 2.8:1 and below on `plex-card`; `muted` is 4.7:1. `text-faint` (3.2:1) is for icons and separators only. A clickable icon rests at `text-gray-400`, so it is readable before hover (#204, found on the Segments and Library action rows).
+- **Never add `focus:outline-none`.** `index.css` draws one `:focus-visible` ring for every control (#204, found on every text input).
+- **Buttons with a label use `btn-primary`, `btn-outline` or `btn-danger`.** Text on `plex-orange` is black, never white (2.2:1) (#204, found on the Dashboard Skip button and the Edit labels dialog).
+- **Every overlay is a `components/Modal`** (focus trap, Escape, focus return). Never hand-write a `fixed inset-0` dialog (#205, found on Segments' three delete confirmations).
+- **Messages are `toast.error` / `toast.success` from `components/Toast`.** Never `alert()` or `confirm()` (#205, found in Library's scan and ignore handlers).
+- **Orange means active, selected or in progress.** Do not use it to decorate headings or icons. Page titles are a plain `text-2xl font-bold` `h1`; section labels use the small uppercase style of `CollapsibleSection` (#206, found on the Dashboard, Markers and Analytics headings).
 
 ### 5.7 Sync
 

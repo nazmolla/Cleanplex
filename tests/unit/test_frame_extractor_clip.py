@@ -177,3 +177,55 @@ async def test_window_stops_at_the_end_of_the_window_not_the_file(tmp_path):
     )
     frames = [t async for t, _ in frame_extractor.extract_frames_window(str(src), 2000, 2000, 500, 64)]
     assert frames == [2000, 2500, 3000, 3500]
+
+
+# ── Multi-part titles (issue #188) ────────────────────────────────────────────
+
+def test_locate_in_parts_maps_a_window_in_part_two_to_that_file():
+    parts, durations = ["cd1.avi", "cd2.avi"], [3_272_600, 3_000_000]
+
+    assert frame_extractor.locate_in_parts(parts, durations, 5_144_600, 5_184_600) == ("cd2.avi", 1_872_000, 40_000)
+
+
+def test_locate_in_parts_keeps_part_one_unshifted():
+    assert frame_extractor.locate_in_parts(["a", "b"], [10_000, 10_000], 2_000, 5_000) == ("a", 2_000, 3_000)
+
+
+def test_locate_in_parts_clamps_a_window_that_spans_the_join_to_its_start_part():
+    assert frame_extractor.locate_in_parts(["a", "b"], [10_000, 10_000], 8_000, 14_000) == ("a", 8_000, 2_000)
+
+
+def test_locate_in_parts_falls_back_to_the_first_file_past_the_last_part():
+    assert frame_extractor.locate_in_parts(["a", "b"], [10_000, 10_000], 50_000, 51_000) == ("a", 50_000, 1_000)
+
+
+async def test_resolve_window_is_a_no_op_for_a_single_file(monkeypatch):
+    async def boom(_path):
+        raise AssertionError("single-file titles must not be probed")
+
+    monkeypatch.setattr(frame_extractor, "get_duration_ms", boom)
+
+    assert await frame_extractor.resolve_window("movie.mkv", "", 1_000, 4_000) == ("movie.mkv", 1_000, 3_000)
+    assert await frame_extractor.resolve_window("movie.mkv", '["movie.mkv"]', 1_000, 4_000) == ("movie.mkv", 1_000, 3_000)
+
+
+async def test_resolve_window_falls_back_when_a_part_cannot_be_probed(monkeypatch):
+    async def no_duration(_path):
+        return None
+
+    monkeypatch.setattr(frame_extractor, "get_duration_ms", no_duration)
+
+    assert await frame_extractor.resolve_window("a", '["a", "b"]', 20_000, 25_000) == ("a", 20_000, 5_000)
+
+
+async def test_hover_clip_past_the_end_of_the_file_is_a_failure_not_an_empty_success(tmp_path):
+    src = tmp_path / "src.mkv"
+    subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10",
+         "-t", "3", "-c:v", "mpeg4", str(src)],
+        check=True,
+    )
+    out = tmp_path / "hover.mp4"
+
+    assert await frame_extractor.render_hover_clip(str(src), 60_000, 5_000, out) is False
+    assert not out.exists()

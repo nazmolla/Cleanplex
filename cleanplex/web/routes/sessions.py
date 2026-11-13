@@ -1,3 +1,4 @@
+import json
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException
@@ -5,11 +6,45 @@ from fastapi import APIRouter, HTTPException
 from ...logger import get_logger
 import cleanplex.plex_client as plex_mod
 from ...watcher import skip_events
+from ...filter_engine import _is_filtered
 from ... import database as db
-from ...scanner import get_current_scans, get_worker_pool_size, is_paused
+from ...scanner import get_current_scans, get_worker_pool_size, is_paused, rating_allowed
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+
+
+async def _filtering_state(session, enabled: bool, prefs_cache: dict[str, dict]) -> str:
+    """Say whether this viewer's stream is being cut, and if not, why (#192).
+
+    A stream is cut only when all three hold: the viewer's filter is on, the title is
+    scanned, and it has a segment that fires at the viewer's levels (active). Otherwise:
+    off (filter switched off); clear (scanned, nothing to cut); ignored / library_excluded /
+    rating_skipped (not scanned because of those settings); not_scanned (waiting for a scan).
+    """
+    if not enabled:
+        return "off"
+    # Same lookup order as the filter engine: session GUIDs can differ from scan GUIDs.
+    job = await db.get_scan_job_by_guid(session.plex_guid)
+    if job is None and session.rating_key:
+        job = await db.get_scan_job_by_rating_key(session.rating_key)
+    if job is None:
+        return "not_scanned"
+    if job["status"] != "done":
+        if job.get("ignored"):
+            return "ignored"
+        if job.get("library_id") in set(json.loads(await db.get_setting("excluded_library_ids", "[]"))):
+            return "library_excluded"
+        if not rating_allowed(job.get("content_rating"), json.loads(await db.get_setting("scan_ratings", "[]"))):
+            return "rating_skipped"
+        return "not_scanned"
+    segments = await db.get_segments_for_guid(session.plex_guid)
+    if not segments and session.rating_key:
+        segments = await db.get_segments_by_rating_key(session.rating_key)
+    if session.user not in prefs_cache:
+        prefs_cache[session.user] = await db.get_user_category_prefs(session.user)
+    prefs = prefs_cache[session.user]
+    return "active" if any(_is_filtered(seg, prefs) for seg in segments) else "clear"
 
 
 @router.get("")
@@ -23,6 +58,7 @@ async def get_sessions():
     # Load all user filters in one query and map by username to avoid N+1 DB calls.
     all_filters = {f["plex_username"]: f for f in await db.get_all_user_filters()}
     result = []
+    prefs_cache: dict[str, dict] = {}
     for s in sessions:
         user_filter = all_filters.get(s.user)
         filtering_enabled = user_filter is None or bool(user_filter["enabled"])
@@ -36,6 +72,7 @@ async def get_sessions():
             "client": s.client_title,
             "is_controllable": s.is_controllable,
             "filtering_enabled": filtering_enabled,
+            "filtering_state": await _filtering_state(s, filtering_enabled, prefs_cache),
             # Same-origin image proxy: the direct Plex URL carries the server token (#183).
             "thumb_url": f"/api/plex-image?path={quote(s.thumb, safe='')}" if s.thumb else "",
         })

@@ -91,6 +91,28 @@ describe('Library', () => {
     expect(syncCalls.length).toBe(0)
   })
 
+  it('explains a failed title with the reason the scan gave (#190)', async () => {
+    const failed = { ...titles[0], plex_guid: 'g3', title: 'Movie C', status: 'failed', progress: 0,
+      error_msg: 'Could not determine video duration for: /Users/Shared/Media/SSD/Movies/C/Movie.C.2014.mp4' }
+    mockApi.get.mockImplementation((path: string) => {
+      if (path.includes('scanner-status')) return Promise.resolve(scannerIdle)
+      if (path.includes('libraries') && !path.includes('titles')) return Promise.resolve({ libraries })
+      if (path.includes('titles')) return Promise.resolve({ titles: [titles[0], failed] })
+      return Promise.resolve({})
+    })
+    renderLibrary()
+    await waitFor(() => screen.getAllByText('Movies')[0])
+    await act(async () => {
+      fireEvent.change(screen.getByRole('combobox'), { target: { value: 'lib1' } })
+    })
+    await waitFor(() => screen.getByText('Movie C'))
+
+    const reason = screen.getByText('Could not determine video duration for: Movie.C.2014.mp4')
+    expect(reason).toHaveAttribute('title', expect.stringContaining('/Users/Shared/Media/SSD/Movies/C/'))
+    // A title that did not fail shows no reason.
+    expect(screen.getAllByText(/Could not determine/)).toHaveLength(1)
+  })
+
   it('has an explicit "Sync from Plex" button that triggers sync on click', async () => {
     renderLibrary()
     await waitFor(() => screen.getAllByText('Movies')[0])

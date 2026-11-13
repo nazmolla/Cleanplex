@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { parseDbTimestamp } from '../utils/dbTime'
 import { useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { useLiveRefresh } from '../api/events'
@@ -8,8 +9,11 @@ import RelabelButton from '../components/RelabelButton'
 import ThumbnailTime from '../components/ThumbnailTime'
 import SkipAnalytics from '../components/SkipAnalytics'
 import DetectionAccuracy from '../components/DetectionAccuracy'
-import { BarChart2, X, AlertTriangle, Trash2, Play, SkipForward, ChevronLeft, ChevronRight } from 'lucide-react'
+import { X, AlertTriangle, Trash2, Play, SkipForward, ChevronLeft, ChevronRight } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
+import SegmentPlayer from '../components/SegmentPlayer'
+import Modal from '../components/Modal'
+import { toast } from '../components/Toast'
 import CollapsibleSection from '../components/CollapsibleSection'
 
 interface LabelCount {
@@ -61,7 +65,7 @@ const TABS = [
 type TabId = typeof TABS[number]['id']
 
 function formatMarkedAt(v: string): string {
-  const d = new Date(v.replace(' ', 'T') + 'Z')
+  const d = parseDbTimestamp(v)
   return isNaN(d.getTime()) ? v : d.toLocaleDateString()
 }
 
@@ -98,32 +102,40 @@ function BarChart({
   onBarClick?: (key: string) => void
   colorClass?: string
 }) {
-  if (!data.length) return <p className="text-gray-600 text-sm">No data</p>
+  if (!data.length) return <p className="text-muted text-sm">No data</p>
 
   return (
     <div className="space-y-2">
       {data.map(({ key, count, label }) => {
         const pct = maxVal > 0 ? (count / maxVal) * 100 : 0
         const isSelected = selectedBar === key
+        // A clickable row is a real button so it can be reached and pressed from the keyboard.
+        const Row = onBarClick ? 'button' : 'div'
         return (
-          <div
+          <Row
             key={key}
-            className={`group flex items-center gap-3 rounded-lg px-3 py-2 transition-colors ${
-              onBarClick ? 'cursor-pointer hover:bg-white/5' : ''
+            {...(onBarClick ? {
+              type: 'button' as const,
+              'aria-pressed': isSelected,
+              'aria-label': `${label ?? shortLabel(key)}, ${count} segments: show by rating`,
+              onClick: () => onBarClick(key),
+            } : {})}
+            className={`w-full text-left flex items-center gap-3 rounded-lg px-3 py-1.5 transition-colors ${
+              onBarClick ? 'hover:bg-white/5' : ''
             } ${isSelected ? 'bg-plex-orange/10 ring-1 ring-plex-orange/30' : ''}`}
-            onClick={() => onBarClick?.(key)}
           >
-            <div className="w-44 flex-shrink-0 text-xs text-gray-300 truncate" title={label ?? key}>
+            {/* The label column gives way on a narrow screen so the bar keeps some width. */}
+            <div className="w-24 sm:w-44 flex-shrink-0 text-xs text-gray-300 truncate" title={label ?? key}>
               {label ?? shortLabel(key)}
             </div>
-            <div className="flex-1 h-5 bg-plex-border rounded-full overflow-hidden">
+            <div className="flex-1 h-2.5 bg-plex-border rounded-full overflow-hidden">
               <div
                 className={`h-full ${colorClass} rounded-full transition-all duration-300`}
                 style={{ width: `${pct}%` }}
               />
             </div>
             <div className="w-10 text-right text-xs text-gray-400 flex-shrink-0 tabular-nums">{count}</div>
-          </div>
+          </Row>
         )
       })}
     </div>
@@ -378,10 +390,10 @@ export default function Analytics() {
         `/api/segments/${seg.id}/jump`
       )
       if (d.ok) {
-        alert(`Jumped playback to ${msToTimecode(d.seek_to_ms)} on ${d.client} (${d.user})`)
+        toast.success(`Jumped to ${msToTimecode(d.seek_to_ms)} on ${d.client} (${d.user}).`)
       }
     } catch (err: any) {
-      alert(err?.message || 'Could not jump. Start this title in Plex first.')
+      toast.error(err?.message || 'Could not jump to this segment. Start the title in Plex first.')
     } finally {
       setJumpingSegs(j => ({ ...j, [seg.id]: false }))
     }
@@ -419,7 +431,7 @@ export default function Analytics() {
                         style={{ height: '100px' }}
                       />
                     ) : (
-                      <div className="w-full flex items-center justify-center text-gray-700" style={{ height: '100px' }}>
+                      <div className="w-full flex items-center justify-center text-muted" style={{ height: '100px' }}>
                         <AlertTriangle size={18} />
                       </div>
                     )}
@@ -439,12 +451,12 @@ export default function Analytics() {
                         <span className="font-mono text-xs text-plex-orange">
                           {msToTimecode(seg.start_ms)} → {msToTimecode(seg.end_ms)}
                         </span>
-                        <span className="text-xs text-gray-600">
+                        <span className="text-xs text-muted">
                           ({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)
                         </span>
                         {seg.false_positive && <FalsePositiveTag autoRejected={seg.auto_rejected} />}
                         {seg.content_rating && (
-                          <span className="text-xs text-gray-600 bg-white/5 px-1.5 py-0.5 rounded">
+                          <span className="text-xs text-gray-400 bg-white/5 px-1.5 py-0.5 rounded">
                             {seg.content_rating}
                           </span>
                         )}
@@ -479,7 +491,7 @@ export default function Analytics() {
                       <button
                         onClick={() => setPreviewSeg(seg)}
                         title="Preview segment"
-                        className="p-1.5 text-gray-600 hover:text-green-400 hover:bg-green-400/10 rounded transition-colors"
+                        className="p-1.5 text-gray-400 hover:text-green-400 hover:bg-green-400/10 rounded transition-colors"
                       >
                         <Play size={14} />
                       </button>
@@ -487,7 +499,7 @@ export default function Analytics() {
                         onClick={() => jumpSeg(seg)}
                         disabled={jumpingSegs[seg.id]}
                         title="Jump active Plex playback to this segment"
-                        className="p-1.5 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors disabled:opacity-40"
+                        className="p-1.5 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors disabled:opacity-40"
                       >
                         <SkipForward size={14} />
                       </button>
@@ -500,7 +512,7 @@ export default function Analytics() {
                         onClick={() => deleteSeg(seg)}
                         disabled={deletingSegs[seg.id]}
                         title="Delete this segment"
-                        className="p-1.5 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-40"
+                        className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-40"
                       >
                         <Trash2 size={14} />
                       </button>
@@ -515,10 +527,7 @@ export default function Analytics() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-gray-100 flex items-center gap-2">
-        <BarChart2 size={22} className="text-plex-orange" />
-        Analytics
-      </h1>
+      <h1 className="text-2xl font-bold text-gray-100">Analytics</h1>
 
       {/* Tabs (#117) */}
       <div role="tablist" aria-label="Analytics sections" className="flex gap-1 border-b border-plex-border overflow-x-auto">
@@ -543,7 +552,7 @@ export default function Analytics() {
         <>
           <CollapsibleSection id="analytics.labels" title="Segments by label" hint="click a bar to drill down or add to filter">
             {loadingLabels ? (
-              <p className="text-gray-500 text-sm">Loading…</p>
+              <p className="text-muted text-sm">Loading…</p>
             ) : (
               <BarChart
                 data={labelCounts.map(lc => ({ key: lc.label, count: lc.count }))}
@@ -560,17 +569,17 @@ export default function Analytics() {
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-sm font-semibold text-gray-300">
                   <span className="text-plex-orange">{shortLabel(drillLabel)}</span>
-                  <span className="text-gray-500 font-normal ml-2">— by content rating</span>
+                  <span className="text-muted font-normal ml-2">— by content rating</span>
                 </h2>
                 <button
                   onClick={() => setDrillLabel(null)}
-                  className="p-1 text-gray-500 hover:text-gray-300 rounded transition-colors"
+                  className="p-1 text-gray-400 hover:text-gray-300 rounded transition-colors"
                 >
                   <X size={14} />
                 </button>
               </div>
               {loadingRatings ? (
-                <p className="text-gray-500 text-sm">Loading…</p>
+                <p className="text-muted text-sm">Loading…</p>
               ) : (
                 <BarChart
                   data={ratingCounts.map(rc => ({ key: rc.content_rating, count: rc.count, label: rc.content_rating || 'Unrated' }))}
@@ -597,7 +606,7 @@ export default function Analytics() {
                     }`}
                   >
                     {shortLabel(lc.label)}
-                    <span className={`tabular-nums ${active ? 'text-plex-orange/70' : 'text-gray-600'}`}>
+                    <span className={`tabular-nums ${active ? 'text-plex-orange/70' : 'text-muted'}`}>
                       {lc.count}
                     </span>
                     {active && <X size={11} />}
@@ -608,7 +617,7 @@ export default function Analytics() {
             {selectedLabels.length > 0 && (
               <button
                 onClick={() => setSelectedLabels([])}
-                className="mt-2 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+                className="mt-2 text-xs text-gray-400 hover:text-gray-300 transition-colors"
               >
                 Clear all
               </button>
@@ -622,7 +631,7 @@ export default function Analytics() {
                 <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
                   Segments
                   {!loadingSegments && (
-                    <span className="ml-2 text-gray-600 normal-case font-normal">
+                    <span className="ml-2 text-muted normal-case font-normal">
                       {totalSegments} total
                     </span>
                   )}
@@ -634,9 +643,9 @@ export default function Analytics() {
               </div>
 
               {loadingSegments ? (
-                <p className="text-gray-500 text-sm">Loading…</p>
+                <p className="text-muted text-sm">Loading…</p>
               ) : segments.length === 0 ? (
-                <p className="text-gray-600 text-sm">No segments found for the selected labels.</p>
+                <p className="text-muted text-sm">No segments found for the selected labels.</p>
               ) : (
                 <div className="space-y-2">
                   {segments.map(seg => renderRow(seg))}
@@ -661,11 +670,11 @@ export default function Analytics() {
       {tab === 'false-positives' && (
           <section>
             <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-              <p className="text-xs text-gray-500 min-w-0 flex-1 basis-64">
+              <p className="text-xs text-muted min-w-0 flex-1 basis-64">
                 Segments marked as not containing what they claim, by you or by the verifier. They no longer skip or
                 mute and are left out of counts and sync; undo a mark, or restore a verifier rejection that was wrong,
                 to make the segment act again.
-                {!loadingFp && <span className="ml-2 text-gray-600">{fpTotal} total</span>}
+                {!loadingFp && <span className="ml-2 text-muted">{fpTotal} total</span>}
               </p>
               <div className="flex items-center gap-3 shrink-0">
                 <select
@@ -683,9 +692,9 @@ export default function Analytics() {
               </div>
             </div>
             {loadingFp ? (
-              <p className="text-gray-500 text-sm">Loading…</p>
+              <p className="text-muted text-sm">Loading…</p>
             ) : fpSegments.length === 0 ? (
-              <p className="text-gray-600 text-sm">No false positives marked yet.</p>
+              <p className="text-muted text-sm">No false positives marked yet.</p>
             ) : (
               <div className="space-y-2">
                 {fpSegments.map(seg => renderRow(seg))}
@@ -697,39 +706,14 @@ export default function Analytics() {
 
       {/* ── Segment preview modal ─────────────────────────────────────────── */}
       {previewSeg && (
-        <div
-          className="fixed inset-0 z-50 bg-black/90 flex items-end sm:items-center justify-center sm:p-4"
-          onClick={() => setPreviewSeg(null)}
+        <Modal
+          title={previewSeg.title}
+          subtitle={<>{msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)}</>}
+          size="xl"
+          onClose={() => setPreviewSeg(null)}
         >
-          <div
-            className="w-full sm:max-w-4xl bg-plex-card sm:border border-t border-plex-border sm:rounded-xl overflow-hidden"
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between px-4 py-3 border-b border-plex-border">
-              <div>
-                <h3 className="text-sm font-semibold text-gray-100 truncate">{previewSeg.title}</h3>
-                <p className="text-xs text-gray-500">
-                  {msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)}
-                </p>
-              </div>
-              <button
-                onClick={() => setPreviewSeg(null)}
-                className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors"
-              >
-                Close
-              </button>
-            </div>
-            <div className="p-3 sm:p-4">
-              <video
-                key={previewSeg.id}
-                controls
-                playsInline
-                className="w-full rounded-lg bg-black max-h-[50vh] sm:max-h-[70vh]"
-                src={`/api/segments/${previewSeg.id}/preview`}
-              />
-            </div>
-          </div>
-        </div>
+          <SegmentPlayer segmentId={previewSeg.id} className="max-h-[70vh]" />
+        </Modal>
       )}
     </div>
   )

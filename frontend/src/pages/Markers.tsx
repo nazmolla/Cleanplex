@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { api } from '../api/client'
+import Modal from '../components/Modal'
 import { useLiveRefresh } from '../api/events'
 import {
   Film, Tv, ChevronRight, ChevronDown, RefreshCw, Play, Save,
-  AlertCircle, CheckCircle, Bookmark, Loader2, Trash2, Plus, Tv2,
+  AlertCircle, CheckCircle, Loader2, Trash2, Plus, Tv2,
 } from 'lucide-react'
 
 interface Library {
@@ -196,6 +197,7 @@ function MarkerEditor({
   const [previewing, setPreviewing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'ok' | 'error'>('idle')
   const [saveError, setSaveError] = useState('')
 
@@ -293,7 +295,7 @@ function MarkerEditor({
   }
 
   const handleDelete = async () => {
-    if (!confirm(`Delete this ${marker.marker_type} marker from local DB? This does not modify Plex.`)) return
+    setConfirmingDelete(false)
     setDeleting(true)
     try {
       await api.delete(`/api/markers/${marker.id}`)
@@ -314,9 +316,9 @@ function MarkerEditor({
           <span className="text-xs bg-green-500/15 text-green-400 border border-green-500/25 px-1.5 py-0.5 rounded-full">Final</span>
         )}
         <span className="text-sm font-mono text-gray-300">
-          {msToTimecode(startMs)} <span className="text-gray-600">→</span> {msToTimecode(endMs)}
+          {msToTimecode(startMs)} <span className="text-muted">→</span> {msToTimecode(endMs)}
         </span>
-        <span className="text-xs text-gray-500 ml-auto">{msToTimecode(endMs - startMs)}</span>
+        <span className="text-xs text-muted ml-auto">{msToTimecode(endMs - startMs)}</span>
       </div>
 
       {/* Video */}
@@ -355,13 +357,13 @@ function MarkerEditor({
         {/* Window labels */}
         {duration > 0 && (
           <>
-            <span className="absolute left-1 top-1/2 -translate-y-1/2 text-[10px] text-gray-600 pointer-events-none select-none">{msToTimecode(winStart)}</span>
-            <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[10px] text-gray-600 pointer-events-none select-none">{msToTimecode(winEnd)}</span>
+            <span className="absolute left-1 top-1/2 -translate-y-1/2 text-[10px] text-muted pointer-events-none select-none">{msToTimecode(winStart)}</span>
+            <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[10px] text-muted pointer-events-none select-none">{msToTimecode(winEnd)}</span>
           </>
         )}
       </div>
       {duration > 0 && (
-        <p className="text-[10px] text-gray-600 -mt-1">
+        <p className="text-[10px] text-muted -mt-1">
           Showing {msToTimecode(winStart)} – {msToTimecode(winEnd)} (±60 s window)
         </p>
       )}
@@ -390,13 +392,29 @@ function MarkerEditor({
           {saving ? 'Saving…' : dirty ? 'Save to Plex' : 'Saved'}
         </button>
         <button
-          onClick={handleDelete}
+          onClick={() => setConfirmingDelete(true)}
           disabled={deleting}
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm text-red-400 border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 transition-colors disabled:opacity-40 ml-auto"
-          title="Remove from local DB (does not modify Plex)"
+          title="Remove from Cleanplex (Plex keeps its marker)"
+          aria-label="Delete marker"
         >
           {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
         </button>
+        {confirmingDelete && (
+          <Modal
+            title={`Delete this ${marker.marker_type} marker?`}
+            size="sm"
+            onClose={() => setConfirmingDelete(false)}
+            footer={
+              <>
+                <button data-autofocus onClick={() => setConfirmingDelete(false)} className="btn-outline">Cancel</button>
+                <button onClick={handleDelete} className="btn-danger">Delete</button>
+              </>
+            }
+          >
+            <p className="text-sm text-gray-300">It is removed from Cleanplex only. Plex keeps its own copy.</p>
+          </Modal>
+        )}
         {saveStatus === 'ok' && (
           <span className="flex items-center gap-1 text-green-400 text-xs">
             <CheckCircle size={12} /> Saved to Plex
@@ -471,30 +489,30 @@ function AddMarkerForm({
       <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">New Marker</p>
       <div className="flex flex-wrap gap-2 items-end">
         <div className="space-y-1">
-          <label className="text-xs text-gray-500">Type</label>
+          <label className="text-xs text-muted">Type</label>
           <select
             value={markerType}
             onChange={e => setMarkerType(e.target.value as 'intro' | 'credits')}
-            className="bg-plex-dark border border-plex-border rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-plex-orange"
+            className="bg-plex-dark border border-plex-border rounded px-2 py-1 text-sm text-gray-200 focus:border-plex-orange"
           >
             <option value="intro">Intro</option>
             <option value="credits">Credits</option>
           </select>
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-gray-500">Start (HH:MM:SS.ff)</label>
+          <label className="text-xs text-muted">Start (HH:MM:SS.ff)</label>
           <input
             value={startVal}
             onChange={e => setStartVal(e.target.value)}
-            className="bg-plex-dark border border-plex-border rounded px-2 py-1 text-sm font-mono text-gray-200 w-36 focus:outline-none focus:border-plex-orange"
+            className="bg-plex-dark border border-plex-border rounded px-2 py-1 text-sm font-mono text-gray-200 w-36 focus:border-plex-orange"
           />
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-gray-500">End (HH:MM:SS.ff)</label>
+          <label className="text-xs text-muted">End (HH:MM:SS.ff)</label>
           <input
             value={endVal}
             onChange={e => setEndVal(e.target.value)}
-            className="bg-plex-dark border border-plex-border rounded px-2 py-1 text-sm font-mono text-gray-200 w-36 focus:outline-none focus:border-plex-orange"
+            className="bg-plex-dark border border-plex-border rounded px-2 py-1 text-sm font-mono text-gray-200 w-36 focus:border-plex-orange"
           />
         </div>
         <button
@@ -505,7 +523,7 @@ function AddMarkerForm({
           {saving ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
           Create
         </button>
-        <button onClick={() => { setOpen(false); setErr('') }} className="text-xs text-gray-500 hover:text-gray-300 px-2">Cancel</button>
+        <button onClick={() => { setOpen(false); setErr('') }} className="text-xs text-gray-400 hover:text-gray-300 px-2">Cancel</button>
       </div>
       {err && <p className="text-xs text-amber-400 flex items-center gap-1"><AlertCircle size={11} />{err}</p>}
     </div>
@@ -610,8 +628,8 @@ function TitleMarkerPanel({
           Sync
         </button>
         {open
-          ? <ChevronDown size={15} className="text-gray-500 flex-shrink-0" />
-          : <ChevronRight size={15} className="text-gray-500 flex-shrink-0" />
+          ? <ChevronDown size={15} className="text-muted flex-shrink-0" />
+          : <ChevronRight size={15} className="text-muted flex-shrink-0" />
         }
       </button>
 
@@ -624,7 +642,7 @@ function TitleMarkerPanel({
       {open && (
         <div className="border-t border-plex-border p-4 space-y-4 bg-plex-darker">
           {markers.length === 0 ? (
-            <p className="text-sm text-gray-500 text-center py-6">
+            <p className="text-sm text-muted text-center py-6">
               No markers stored.{' '}
               <button onClick={e => handleSync(e as unknown as React.MouseEvent)} className="text-plex-orange hover:underline">Sync from Plex</button>
             </p>
@@ -670,7 +688,7 @@ function SeasonGroupSection({
       >
         <ChevronRight size={13} className={`text-gray-400 transition-transform ${open ? 'rotate-90' : ''}`} />
         <span className="text-xs font-medium text-gray-300">{season.season}</span>
-        <span className="text-xs text-gray-600 ml-auto flex items-center gap-2">
+        <span className="text-xs text-muted ml-auto flex items-center gap-2">
           {season.episodes.length} episode{season.episodes.length !== 1 ? 's' : ''}
           {season.total_markers > 0 && <MarkerCountBadge count={season.total_markers} />}
         </span>
@@ -727,7 +745,7 @@ function ShowGroupCard({
         </button>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-gray-100 truncate">{group.show_title}</p>
-          <p className="text-xs text-gray-500 mt-0.5">
+          <p className="text-xs text-muted mt-0.5">
             {group.seasons.length} season{group.seasons.length !== 1 ? 's' : ''} • {group.episodes.length} episode{group.episodes.length !== 1 ? 's' : ''}
             {group.total_markers > 0 && (
               <span className="ml-2 inline-flex items-center gap-1">
@@ -785,7 +803,7 @@ function SyncAllBanner({ progress, onDismiss }: { progress: SyncProgress; onDism
           </span>
         )}
         {progress.finished && (
-          <button onClick={onDismiss} className="ml-auto text-xs text-gray-500 hover:text-gray-300">Dismiss</button>
+          <button onClick={onDismiss} className="ml-auto text-xs text-gray-400 hover:text-gray-300">Dismiss</button>
         )}
       </div>
       {/* Progress bar */}
@@ -913,16 +931,13 @@ export default function Markers() {
   const totalTitles = isTv ? showGroups.length : filteredMovies.length
 
   return (
-    <div className="space-y-4 max-w-4xl mx-auto">
+    <div className="space-y-4 max-w-5xl">
       {/* Page header */}
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold text-gray-100 flex items-center gap-2">
-            <Bookmark size={22} className="text-plex-orange" />
-            Markers
-          </h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Adjust Plex intro &amp; credits markers. Drag handles on the timeline, then save to Plex.
+          <h1 className="text-2xl font-bold text-gray-100">Markers</h1>
+          <p className="text-sm text-muted mt-1">
+            Drag the handles to move an intro or credits marker, then save it to Plex.
           </p>
         </div>
       </div>
@@ -930,12 +945,12 @@ export default function Markers() {
       {/* Controls bar */}
       <div className="flex flex-wrap gap-2 items-center">
         {loadingLibraries ? (
-          <span className="text-sm text-gray-500 flex items-center gap-1"><Loader2 size={14} className="animate-spin" /> Loading…</span>
+          <span className="text-sm text-muted flex items-center gap-1"><Loader2 size={14} className="animate-spin" /> Loading…</span>
         ) : (
           <select
             value={selectedLibrary}
             onChange={e => setSelectedLibrary(e.target.value)}
-            className="bg-plex-dark border border-plex-border rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-plex-orange"
+            className="bg-plex-dark border border-plex-border rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:border-plex-orange"
           >
             {libraries.map(lib => (
               <option key={lib.id} value={lib.id}>{lib.title}</option>
@@ -948,7 +963,7 @@ export default function Markers() {
           placeholder="Filter titles…"
           value={search}
           onChange={e => setSearch(e.target.value)}
-          className="bg-plex-dark border border-plex-border rounded-lg px-3 py-1.5 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-plex-orange"
+          className="bg-plex-dark border border-plex-border rounded-lg px-3 py-1.5 text-sm text-gray-200 placeholder-muted focus:border-plex-orange"
         />
 
         <button
@@ -976,7 +991,7 @@ export default function Markers() {
         </button>
 
         {!loadingTitles && (
-          <span className="text-xs text-gray-600">
+          <span className="text-xs text-muted">
             {totalTitles} {isTv ? 'show' : 'title'}{totalTitles !== 1 ? 's' : ''}
           </span>
         )}
@@ -989,12 +1004,12 @@ export default function Markers() {
 
       {/* Title list */}
       {loadingTitles ? (
-        <div className="text-center py-16 text-gray-500 text-sm flex flex-col items-center gap-2">
+        <div className="text-center py-16 text-muted text-sm flex flex-col items-center gap-2">
           <Loader2 size={24} className="animate-spin" />
           Loading titles…
         </div>
       ) : notCached ? (
-        <div className="text-center py-16 text-gray-500 text-sm flex flex-col items-center gap-3">
+        <div className="text-center py-16 text-muted text-sm flex flex-col items-center gap-3">
           <p>Library not cached yet. Click <strong className="text-gray-300">Refresh Library</strong> to pull titles from Plex.</p>
           <button
             onClick={handleRefreshLibrary}
@@ -1007,7 +1022,7 @@ export default function Markers() {
       ) : isTv ? (
         /* TV: grouped by show */
         showGroups.length === 0 ? (
-          <div className="text-center py-16 text-gray-600 text-sm">No shows found.</div>
+          <div className="text-center py-16 text-muted text-sm">No shows found.</div>
         ) : (
           <div className="space-y-3">
             {showGroups.map(group => (
@@ -1023,7 +1038,7 @@ export default function Markers() {
       ) : (
         /* Movies: flat list with poster */
         filteredMovies.length === 0 ? (
-          <div className="text-center py-16 text-gray-600 text-sm">No titles found.</div>
+          <div className="text-center py-16 text-muted text-sm">No titles found.</div>
         ) : (
           <div className="space-y-2">
             {filteredMovies.map(title => (
@@ -1033,7 +1048,7 @@ export default function Markers() {
                   <div className="flex-1 min-w-0 space-y-2">
                     <div className="flex items-start gap-2 flex-wrap">
                       <span className="text-sm font-semibold text-gray-100 truncate flex-1">{title.title}</span>
-                      {title.year && <span className="text-xs text-gray-500">{title.year}</span>}
+                      {title.year && <span className="text-xs text-muted">{title.year}</span>}
                       <ContentRatingBadge rating={title.content_rating} />
                       <MarkerCountBadge count={title.marker_count} />
                     </div>

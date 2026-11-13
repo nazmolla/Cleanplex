@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { parseDbTimestamp } from '../utils/dbTime'
 import { api } from '../api/client'
 import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
 import SegmentOriginBadge from '../components/SegmentOriginBadge'
@@ -8,6 +9,9 @@ import ThumbnailTime from '../components/ThumbnailTime'
 import ScanContextMenu, { ScanTarget } from '../components/ScanContextMenu'
 import { Film, Tv, ChevronRight, ChevronDown, Trash2, AlertTriangle, SkipForward, Play, Tv2 } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
+import SegmentPlayer from '../components/SegmentPlayer'
+import Modal from '../components/Modal'
+import { toast } from '../components/Toast'
 
 interface Library {
   id: string
@@ -98,7 +102,7 @@ function msToTimecode(ms: number): string {
 
 function formatFinishedAt(value?: string | null): string {
   if (!value) return ''
-  const dt = new Date(value)
+  const dt = parseDbTimestamp(value)
   if (Number.isNaN(dt.getTime())) return ''
   return dt.toLocaleString()
 }
@@ -153,44 +157,45 @@ function SegmentCard({
   onRelabel: (id: number, labels: string) => void
 }) {
   return (
-    <div className={`bg-plex-card border border-plex-border rounded-xl overflow-hidden flex flex-col sm:flex-row ${seg.false_positive ? 'opacity-50' : ''}`}>
+    <div className={`bg-plex-card border border-plex-border rounded-xl overflow-hidden flex flex-col sm:flex-row ${seg.false_positive ? '[&_img]:opacity-40 [&_video]:opacity-40' : ''}`}>
       <HoverPreview src={seg.hover_url} className="w-full sm:w-40 flex-shrink-0 bg-black">
         {seg.has_thumbnail ? (
           <img src={seg.thumbnail_url} alt="Flagged frame" loading="lazy" className="w-full h-full object-cover" style={{ minHeight: '90px', maxHeight: '160px' }} />
         ) : (
-          <div className="w-full h-24 flex items-center justify-center text-gray-700"><AlertTriangle size={20} /></div>
+          <div className="w-full h-24 flex items-center justify-center text-faint"><AlertTriangle size={20} /></div>
         )}
         <div className="absolute bottom-1 left-1 bg-black/70 text-xs text-gray-300 px-1.5 py-0.5 rounded">
           {Math.round(seg.confidence * 100)}%
         </div>
         <ThumbnailTime ms={seg.thumbnail_ms} />
       </HoverPreview>
-      <div className="flex-1 p-3 sm:p-4 flex items-center justify-between gap-3">
+      <div className="flex-1 min-w-0 p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2 mb-1">
-            <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.start_ms)}</span>
-            <span className="text-gray-600">→</span>
-            <span className="font-mono text-sm text-plex-orange">{msToTimecode(seg.end_ms)}</span>
-            <span className="text-xs text-gray-600">({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)</span>
+            {/* A false positive recedes without losing legibility: the thumbnail dims, the times are struck through. */}
+            <span className={`font-mono text-sm ${seg.false_positive ? 'text-gray-400 line-through' : 'text-plex-orange'}`}>{msToTimecode(seg.start_ms)}</span>
+            <span className="text-muted text-sm">→</span>
+            <span className={`font-mono text-sm ${seg.false_positive ? 'text-gray-400 line-through' : 'text-plex-orange'}`}>{msToTimecode(seg.end_ms)}</span>
+            <span className="text-xs text-muted">({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)</span>
             <SegmentOriginBadge seg={seg} />
             {seg.false_positive && <FalsePositiveTag autoRejected={seg.auto_rejected} />}
           </div>
-          <p className="text-xs text-gray-500">Detected {new Date(seg.created_at).toLocaleDateString()}</p>
+          <p className="text-xs text-muted">Detected {parseDbTimestamp(seg.created_at).toLocaleDateString()}</p>
           {renderLabels(seg.labels)}
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <button onClick={() => onPreview(seg)} title="Preview this segment in-app" className="p-2 text-gray-600 hover:text-green-400 hover:bg-green-400/10 rounded-lg transition-colors">
+        <div className="flex flex-wrap items-center gap-2 sm:flex-shrink-0">
+          <button onClick={() => onPreview(seg)} title="Preview this segment in-app" className="p-2 text-gray-400 hover:text-green-400 hover:bg-green-400/10 rounded-lg transition-colors">
             <Play size={16} />
           </button>
-          <a href={`/api/segments/${seg.id}/vlc`} title="Open in VLC" className="p-2 text-gray-600 hover:text-blue-400 hover:bg-blue-400/10 rounded-lg transition-colors">
+          <a href={`/api/segments/${seg.id}/vlc`} title="Open in VLC" className="p-2 text-gray-400 hover:text-blue-400 hover:bg-blue-400/10 rounded-lg transition-colors">
             <Tv2 size={16} />
           </a>
-          <button onClick={() => onJump(seg.id)} disabled={jumping[seg.id]} title="Jump active Plex playback for this title to this segment" className="p-2 text-gray-600 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors disabled:opacity-40">
+          <button onClick={() => onJump(seg.id)} disabled={jumping[seg.id]} title="Jump active Plex playback for this title to this segment" className="p-2 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors disabled:opacity-40">
             <SkipForward size={16} />
           </button>
           <RelabelButton seg={seg} onChange={onRelabel} />
           <FalsePositiveButton seg={seg} onChange={onFalsePositive} />
-          <button onClick={() => onDelete(seg.id)} disabled={deleting[seg.id]} title="Delete this segment" className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-40">
+          <button onClick={() => onDelete(seg.id)} disabled={deleting[seg.id]} title="Delete this segment" className="p-2 text-gray-400 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-40">
             <Trash2 size={16} />
           </button>
         </div>
@@ -224,7 +229,6 @@ export default function Segments() {
   const [labelFilter, setLabelFilter] = useState<Set<string>>(new Set())
   // Set when a show or season node (not individual episode) is selected from the tree.
   const [selectedGroup, setSelectedGroup] = useState<{ label: string; type: 'show' | 'season'; titles: Title[] } | null>(null)
-  const previewVideoRef = useRef<HTMLVideoElement | null>(null)
   const [scanMenu, setScanMenu] = useState<ScanTarget | null>(null)
   const [scanNotice, setScanNotice] = useState('')
 
@@ -552,10 +556,10 @@ export default function Segments() {
     try {
       const d = await api.post<{ ok: boolean; client: string; user: string; seek_to_ms: number }>(`/api/segments/${id}/jump`)
       if (d.ok) {
-        alert(`Jumped playback to segment on ${d.client} (${d.user}) at ${msToTimecode(d.seek_to_ms)}.`)
+        toast.success(`Jumped to ${msToTimecode(d.seek_to_ms)} on ${d.client} (${d.user}).`)
       }
     } catch (err: any) {
-      alert(err?.message || 'Could not jump to segment. Start this title in Plex first.')
+      toast.error(err?.message || 'Could not jump to this segment. Start the title in Plex first.')
     } finally {
       setJumping(j => ({ ...j, [id]: false }))
     }
@@ -616,11 +620,38 @@ export default function Segments() {
         return segLabels.some(l => labelFilter.has(l))
       })
 
+  // The one delete confirmation (#205): a show or season, a single title, or everything on screen.
+  const pendingDelete = confirmDeleteGroup
+    ? {
+        name: confirmDeleteGroup.label,
+        count: null as number | null,
+        busy: deletingGroup,
+        cancel: () => setConfirmDeleteGroup(null),
+        run: () => deleteSegmentsForGroup(confirmDeleteGroup.label, confirmDeleteGroup.titles),
+      }
+    : confirmDeleteTitle
+      ? {
+          name: confirmDeleteTitle.title,
+          count: confirmDeleteTitle.segment_count as number | null,
+          busy: !!deletingTitle[confirmDeleteTitle.plex_guid],
+          cancel: () => setConfirmDeleteTitle(null),
+          run: () => deleteSegmentsForTitle(confirmDeleteTitle),
+        }
+      : confirmDeleteAll && (selectedTitle || selectedGroup)
+        ? {
+            name: selectedGroup?.label ?? selectedTitle?.title ?? '',
+            count: segments.length as number | null,
+            busy: deletingAll,
+            cancel: () => setConfirmDeleteAll(false),
+            run: () => deleteAllSegments(),
+          }
+        : null
+
   return (
     <div className="flex gap-4 h-full overflow-hidden">
       {/* Library tree - desktop: side panel; mobile: collapsed above content */}
       <div className="hidden md:flex w-52 flex-shrink-0 flex-col overflow-y-auto">
-        <h1 className="text-xl font-bold text-gray-100 mb-3">Segments</h1>
+        <h1 className="text-2xl font-bold text-gray-100 mb-4">Segments</h1>
         <div className="space-y-0.5 pr-2 flex-1 overflow-y-auto">
           {libraries.map(lib => (
             <div key={lib.id}>
@@ -640,9 +671,9 @@ export default function Segments() {
               {selectedLib?.id === lib.id && (
                 <div className="ml-2 mt-0.5 space-y-0.5">
                   {loadingTitles ? (
-                    <div className="text-xs text-gray-600 px-2 py-1">Loading...</div>
+                    <div className="text-xs text-muted px-2 py-1">Loading...</div>
                   ) : titles.length === 0 ? (
-                    <div className="text-xs text-gray-600 px-2 py-1">No scanned titles</div>
+                    <div className="text-xs text-muted px-2 py-1">No scanned titles</div>
                   ) : lib.type === 'show' ? (
                     // TV: Show → Season → Episode hierarchy
                     buildShowGroups().map(showGroup => (
@@ -661,7 +692,7 @@ export default function Segments() {
                         >
                           <button
                             onClick={() => toggleShow(showGroup.show)}
-                            className="p-1.5 text-gray-500 hover:text-gray-300 flex-shrink-0"
+                            className="p-1.5 text-gray-400 hover:text-gray-300 flex-shrink-0"
                             title="Expand/collapse"
                           >
                             <ChevronDown size={11} className={`transition-transform ${expandedShows.has(showGroup.show) ? '' : '-rotate-90'}`} />
@@ -671,12 +702,12 @@ export default function Segments() {
                             className="flex-1 flex items-center gap-1 px-1 py-1.5 text-left text-gray-300 hover:text-gray-100 truncate min-w-0"
                           >
                             <span className="truncate font-medium">{showGroup.show}</span>
-                            <span className="flex-shrink-0 text-gray-600 ml-auto">{showGroup.totalSegments}</span>
+                            <span className="flex-shrink-0 text-muted ml-auto">{showGroup.totalSegments}</span>
                           </button>
                           <button
                             onClick={() => { const ep = showGroup.seasons.flatMap(s => s.episodes); skipDeleteConfirm ? deleteSegmentsForGroup(showGroup.show, ep) : setConfirmDeleteGroup({ label: showGroup.show, titles: ep }) }}
                             title="Delete all segments for this show"
-                            className="px-1.5 py-1.5 text-gray-600 hover:text-red-400 flex-shrink-0 transition-colors"
+                            className="px-1.5 py-1.5 text-gray-400 hover:text-red-400 flex-shrink-0 transition-colors"
                           >
                             <Trash2 size={11} />
                           </button>
@@ -698,7 +729,7 @@ export default function Segments() {
                               >
                                 <button
                                   onClick={() => toggleSeason(seasonKey)}
-                                  className="p-1.5 text-gray-500 hover:text-gray-300 flex-shrink-0"
+                                  className="p-1.5 text-gray-400 hover:text-gray-300 flex-shrink-0"
                                   title="Expand/collapse"
                                 >
                                   <ChevronDown size={10} className={`transition-transform ${expandedSeasons.has(seasonKey) ? '' : '-rotate-90'}`} />
@@ -708,7 +739,7 @@ export default function Segments() {
                                   className="flex-1 flex items-center gap-1 px-1 py-1 text-left text-gray-400 hover:text-gray-200 truncate"
                                 >
                                   <span className="truncate">{seasonGroup.season}</span>
-                                  <span className="flex-shrink-0 text-gray-600 text-xs ml-auto">{seasonSegs}</span>
+                                  <span className="flex-shrink-0 text-muted text-xs ml-auto">{seasonSegs}</span>
                                 </button>
                               </div>
                               {expandedSeasons.has(seasonKey) && seasonGroup.episodes.map(t => (
@@ -718,7 +749,7 @@ export default function Segments() {
                                   className={`group flex items-center rounded text-xs ml-2 transition-colors ${
                                     selectedTitle?.plex_guid === t.plex_guid
                                       ? 'bg-white/10 text-gray-100'
-                                      : 'text-gray-500 hover:text-gray-200 hover:bg-white/5'
+                                      : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
                                   }`}
                                 >
                                   <button
@@ -726,13 +757,13 @@ export default function Segments() {
                                     className="flex-1 flex items-center gap-1.5 px-2 py-1 text-left min-w-0"
                                   >
                                     <span className="truncate flex-1">{parseShowInfo(t.title).episode}</span>
-                                    <span className="flex-shrink-0 text-gray-600">{t.segment_count}</span>
+                                    <span className="flex-shrink-0 text-muted">{t.segment_count}</span>
                                   </button>
                                   <button
                                     onClick={() => skipDeleteConfirm ? deleteSegmentsForTitle(t) : setConfirmDeleteTitle(t)}
                                     disabled={deletingTitle[t.plex_guid]}
                                     title="Delete all segments for this episode"
-                                    className="px-1.5 py-1 text-gray-600 hover:text-red-400 transition-colors flex-shrink-0 disabled:opacity-30"
+                                    className="px-1.5 py-1 text-gray-400 hover:text-red-400 transition-colors flex-shrink-0 disabled:opacity-30"
                                   >
                                     <Trash2 size={11} />
                                   </button>
@@ -752,7 +783,7 @@ export default function Segments() {
                         className={`group flex items-center rounded text-xs transition-colors ${
                           selectedTitle?.plex_guid === t.plex_guid
                             ? 'bg-white/10 text-gray-100'
-                            : 'text-gray-500 hover:text-gray-200 hover:bg-white/5'
+                            : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
                         }`}
                       >
                         <button
@@ -760,13 +791,13 @@ export default function Segments() {
                           className="flex-1 flex items-center gap-1.5 px-2 py-1.5 text-left min-w-0"
                         >
                           <span className="truncate flex-1">{t.title}</span>
-                          <span className="flex-shrink-0 text-gray-600">{t.segment_count}</span>
+                          <span className="flex-shrink-0 text-muted">{t.segment_count}</span>
                         </button>
                         <button
                           onClick={() => skipDeleteConfirm ? deleteSegmentsForTitle(t) : setConfirmDeleteTitle(t)}
                           disabled={deletingTitle[t.plex_guid]}
                           title="Delete all segments for this title"
-                          className="px-1.5 py-1.5 text-gray-600 hover:text-red-400 transition-colors flex-shrink-0 disabled:opacity-30"
+                          className="px-1.5 py-1.5 text-gray-400 hover:text-red-400 transition-colors flex-shrink-0 disabled:opacity-30"
                         >
                           <Trash2 size={11} />
                         </button>
@@ -785,7 +816,7 @@ export default function Segments() {
         {scanNotice && (
           <div className="mb-3 flex items-center justify-between bg-plex-card border border-plex-border rounded-lg px-3 py-2 text-xs text-gray-300">
             <span>{scanNotice}</span>
-            <button onClick={() => setScanNotice('')} className="text-gray-500 hover:text-gray-200">Dismiss</button>
+            <button onClick={() => setScanNotice('')} className="text-gray-400 hover:text-gray-200">Dismiss</button>
           </div>
         )}
         {/* Mobile library/title selectors */}
@@ -798,7 +829,7 @@ export default function Segments() {
                 const lib = libraries.find(l => l.id === e.target.value)
                 if (lib) selectLib(lib)
               }}
-              className="flex-1 px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200 focus:outline-none focus:border-plex-orange/60"
+              className="flex-1 px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200 focus:border-plex-orange/60"
             >
               <option value="">Select library…</option>
               {libraries.map(lib => (
@@ -812,7 +843,7 @@ export default function Segments() {
                   const t = titles.find(t => t.plex_guid === e.target.value)
                   if (t) selectTitle(t)
                 }}
-                className="flex-1 px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200 focus:outline-none focus:border-plex-orange/60"
+                className="flex-1 px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200 focus:border-plex-orange/60"
               >
                 <option value="">Select title…</option>
                 {selectedLib?.type === 'show' ? (
@@ -865,7 +896,7 @@ export default function Segments() {
         )}
 
         {!selectedTitle && !selectedGroup ? (
-          <div className="flex items-center justify-center h-64 text-gray-600 text-sm">
+          <div className="flex items-center justify-center h-64 text-muted text-sm">
             Select a title to review its segments
           </div>
         ) : (
@@ -885,13 +916,13 @@ export default function Segments() {
                   <h2 className="text-lg font-semibold text-gray-100">
                     {selectedGroup?.label ?? selectedTitle?.title}
                   </h2>
-                  <p className="text-sm text-gray-500">
+                  <p className="text-sm text-muted">
                     {labelFilter.size > 0
                       ? `${filteredSegments.length} of ${segments.length} segment${segments.length !== 1 ? 's' : ''}`
                       : `${segments.length} segment${segments.length !== 1 ? 's' : ''}`} detected
                   </p>
                   {selectedTitle?.finished_at && (
-                    <p className="text-xs text-gray-500 mt-0.5">Scan finished: {formatFinishedAt(selectedTitle.finished_at)}</p>
+                    <p className="text-xs text-muted mt-0.5">Scan finished: {formatFinishedAt(selectedTitle.finished_at)}</p>
                   )}
                 </div>
               </div>
@@ -908,7 +939,7 @@ export default function Segments() {
 
             {availableLabels.length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5 mb-3">
-                <span className="text-xs text-gray-500 mr-1">Filter:</span>
+                <span className="text-xs text-muted mr-1">Filter:</span>
                 {availableLabels.map(label => {
                   const active = labelFilter.has(label)
                   const short = label
@@ -945,13 +976,13 @@ export default function Segments() {
             )}
 
             {loadingSegs ? (
-              <div className="text-gray-500 text-sm">Loading segments...</div>
+              <div className="text-muted text-sm">Loading segments...</div>
             ) : segments.length === 0 ? (
-              <div className="bg-plex-card border border-plex-border rounded-xl p-8 text-center text-gray-500 text-sm">
+              <div className="bg-plex-card border border-plex-border rounded-xl p-8 text-center text-muted text-sm">
                 No segments found for this title
               </div>
             ) : filteredSegments.length === 0 ? (
-              <div className="bg-plex-card border border-plex-border rounded-xl p-8 text-center text-gray-500 text-sm">
+              <div className="bg-plex-card border border-plex-border rounded-xl p-8 text-center text-muted text-sm">
                 No segments match the selected label filter
               </div>
             ) : selectedGroup ? (
@@ -961,7 +992,7 @@ export default function Segments() {
                   <div key={group.title}>
                     <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-plex-card border border-plex-border mb-2">
                       <span className="text-sm font-semibold text-gray-200 truncate flex-1">{episodeLabel(group.title)}</span>
-                      <span className="text-xs text-gray-500 flex-shrink-0">{group.segments.length} segment{group.segments.length !== 1 ? 's' : ''}</span>
+                      <span className="text-xs text-muted flex-shrink-0">{group.segments.length} segment{group.segments.length !== 1 ? 's' : ''}</span>
                       {(() => {
                         const episodeTitle = selectedGroup?.titles.find(t => t.title === group.title)
                         return episodeTitle ? (
@@ -969,7 +1000,7 @@ export default function Segments() {
                             onClick={() => skipDeleteConfirm ? deleteSegmentsForTitle(episodeTitle) : setConfirmDeleteTitle(episodeTitle)}
                             disabled={deletingTitle[episodeTitle.plex_guid]}
                             title="Delete all segments for this episode"
-                            className="p-1 text-gray-600 hover:text-red-400 transition-colors flex-shrink-0 disabled:opacity-30"
+                            className="p-1 text-gray-400 hover:text-red-400 transition-colors flex-shrink-0 disabled:opacity-30"
                           >
                             <Trash2 size={14} />
                           </button>
@@ -986,7 +1017,7 @@ export default function Segments() {
               </div>
             ) : (
               // Single episode or movie — flat list, no grouping
-              <div className="grid gap-3">
+              <div className="grid gap-3 grid-cols-[minmax(0,1fr)]">
                 {filteredSegments.map(seg => (
                   <SegmentCard key={seg.id} seg={seg} jumping={jumping} deleting={deleting} onPreview={openPreview} onJump={jumpToSegment} onDelete={deleteSegment} onFalsePositive={setFalsePositive} onRelabel={relabelSegment} />
                 ))}
@@ -996,143 +1027,43 @@ export default function Segments() {
         )}
 
 
-        {confirmDeleteGroup && (
-          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="w-full max-w-sm bg-plex-card border border-plex-border rounded-xl overflow-hidden">
-              <div className="px-4 py-3 border-b border-plex-border">
-                <h3 className="text-sm font-semibold text-gray-100">Delete All Segments?</h3>
-              </div>
-              <div className="p-4">
-                <p className="text-sm text-gray-300 mb-4">
-                  Delete all segments for every episode of <strong>{confirmDeleteGroup.label}</strong>? This cannot be undone.
-                </p>
-                <label className="flex items-center gap-2 mb-4 cursor-pointer select-none">
-                  <input type="checkbox" checked={skipDeleteConfirm} onChange={e => toggleSkipConfirm(e.target.checked)} className="accent-plex-orange" />
-                  <span className="text-xs text-gray-400">Don't ask again</span>
-                </label>
-                <div className="flex gap-2 justify-end">
-                  <button
-                    onClick={() => setConfirmDeleteGroup(null)}
-                    disabled={deletingGroup}
-                    className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={() => deleteSegmentsForGroup(confirmDeleteGroup.label, confirmDeleteGroup.titles)}
-                    disabled={deletingGroup}
-                    className="px-3 py-1.5 text-xs bg-red-500/20 border border-red-500/30 rounded-lg text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-40"
-                  >
-                    {deletingGroup ? 'Deleting...' : 'Delete All'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {confirmDeleteTitle && (
-          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="w-full max-w-sm bg-plex-card border border-plex-border rounded-xl overflow-hidden">
-              <div className="px-4 py-3 border-b border-plex-border">
-                <h3 className="text-sm font-semibold text-gray-100">Delete All Segments?</h3>
-              </div>
-              <div className="p-4">
-                <p className="text-sm text-gray-300 mb-4">
-                  Delete all {confirmDeleteTitle.segment_count} segment{confirmDeleteTitle.segment_count !== 1 ? 's' : ''} for <strong>{confirmDeleteTitle.title}</strong>? This cannot be undone.
-                </p>
-                <label className="flex items-center gap-2 mb-4 cursor-pointer select-none">
-                  <input type="checkbox" checked={skipDeleteConfirm} onChange={e => toggleSkipConfirm(e.target.checked)} className="accent-plex-orange" />
-                  <span className="text-xs text-gray-400">Don't ask again</span>
-                </label>
-                <div className="flex gap-2 justify-end">
-                  <button
-                    onClick={() => setConfirmDeleteTitle(null)}
-                    disabled={deletingTitle[confirmDeleteTitle.plex_guid]}
-                    className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={() => deleteSegmentsForTitle(confirmDeleteTitle)}
-                    disabled={deletingTitle[confirmDeleteTitle.plex_guid]}
-                    className="px-3 py-1.5 text-xs bg-red-500/20 border border-red-500/30 rounded-lg text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-40"
-                  >
-                    {deletingTitle[confirmDeleteTitle.plex_guid] ? 'Deleting...' : 'Delete All'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {confirmDeleteAll && (selectedTitle || selectedGroup) && (
-          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="w-full max-w-sm bg-plex-card border border-plex-border rounded-xl overflow-hidden">
-              <div className="px-4 py-3 border-b border-plex-border">
-                <h3 className="text-sm font-semibold text-gray-100">Delete All Segments?</h3>
-              </div>
-              <div className="p-4">
-                <p className="text-sm text-gray-300 mb-4">
-                  Are you sure you want to delete all {segments.length} segment{segments.length !== 1 ? 's' : ''} for <strong>{selectedGroup?.label ?? selectedTitle?.title}</strong>? This cannot be undone.
-                </p>
-                <label className="flex items-center gap-2 mb-4 cursor-pointer select-none">
-                  <input type="checkbox" checked={skipDeleteConfirm} onChange={e => toggleSkipConfirm(e.target.checked)} className="accent-plex-orange" />
-                  <span className="text-xs text-gray-400">Don't ask again</span>
-                </label>
-                <div className="flex gap-2 justify-end">
-                  <button
-                    onClick={() => setConfirmDeleteAll(false)}
-                    disabled={deletingAll}
-                    className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={deleteAllSegments}
-                    disabled={deletingAll}
-                    className="px-3 py-1.5 text-xs bg-red-500/20 border border-red-500/30 rounded-lg text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-40"
-                  >
-                    {deletingAll ? 'Deleting...' : 'Delete All'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+        {pendingDelete && (
+          <Modal
+            title="Delete segments?"
+            size="sm"
+            onClose={pendingDelete.cancel}
+            dismissible={!pendingDelete.busy}
+            footer={
+              <>
+                <button data-autofocus onClick={pendingDelete.cancel} disabled={pendingDelete.busy} className="btn-outline">Cancel</button>
+                <button onClick={pendingDelete.run} disabled={pendingDelete.busy} className="btn-danger">
+                  {pendingDelete.busy ? 'Deleting…' : 'Delete'}
+                </button>
+              </>
+            }
+          >
+            <p className="text-sm text-gray-300 mb-4">
+              {pendingDelete.count != null
+                ? `All ${pendingDelete.count} segment${pendingDelete.count !== 1 ? 's' : ''} for `
+                : 'All segments for every episode of '}
+              <strong>{pendingDelete.name}</strong> will be deleted. This cannot be undone.
+            </p>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" checked={skipDeleteConfirm} onChange={e => toggleSkipConfirm(e.target.checked)} className="w-4 h-4 accent-plex-orange" />
+              <span className="text-xs text-gray-400">Don't ask again</span>
+            </label>
+          </Modal>
         )}
 
         {previewSeg && (
-          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="w-full max-w-4xl bg-plex-card border border-plex-border rounded-xl overflow-hidden">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-plex-border">
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-100">Segment Preview</h3>
-                  <p className="text-xs text-gray-500">
-                    {msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)}
-                  </p>
-                </div>
-                <button
-                  onClick={closePreview}
-                  className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors"
-                >
-                  Close
-                </button>
-              </div>
-
-              <div className="p-4">
-                <video
-                  ref={previewVideoRef}
-                  controls
-                  autoPlay
-                  className="w-full rounded-lg bg-black max-h-[70vh]"
-                  src={`/api/segments/${previewSeg.id}/preview`}
-                />
-                <p className="text-xs text-gray-500 mt-2">
-                  The server cuts this clip from the source with 5s either side, so it plays in any browser.
-                </p>
-              </div>
-            </div>
-          </div>
+          <Modal
+            title="Segment preview"
+            subtitle={<>{msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)} · clip includes 5s either side</>}
+            size="xl"
+            onClose={closePreview}
+          >
+            <SegmentPlayer segmentId={previewSeg.id} autoPlay className="max-h-[70vh]" />
+          </Modal>
         )}
       </div>
       {scanMenu && <ScanContextMenu target={scanMenu} onScan={rescan} onClose={() => setScanMenu(null)} />}

@@ -245,6 +245,41 @@ CREATE TABLE IF NOT EXISTS keyframe_index (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Titles Plex no longer reports (#191). Their segments (the marks) move to removed_segments, which
+-- every live query ignores; everything else saved for the title is purged after a retention period.
+CREATE TABLE IF NOT EXISTS removed_titles (
+    plex_guid  TEXT PRIMARY KEY,
+    title      TEXT,
+    rating_key TEXT,
+    file_path  TEXT,
+    part_files TEXT DEFAULT '',
+    removed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    purged_at  TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS removed_segments (
+    id            INTEGER PRIMARY KEY,
+    plex_guid     TEXT    NOT NULL,
+    title         TEXT,
+    start_ms      INTEGER NOT NULL,
+    end_ms        INTEGER NOT NULL,
+    confidence    REAL    DEFAULT 0,
+    thumbnail_path TEXT,
+    created_at    TIMESTAMP,
+    labels        TEXT DEFAULT '',
+    category      TEXT DEFAULT 'nudity',
+    severity      TEXT DEFAULT 'high',
+    action        TEXT DEFAULT 'skip',
+    channel       TEXT DEFAULT 'both',
+    source        TEXT DEFAULT 'scanner',
+    language      TEXT DEFAULT '',
+    detector      TEXT DEFAULT '',
+    false_positive INTEGER DEFAULT 0,
+    hover_status  TEXT DEFAULT '',
+    thumbnail_ms  INTEGER,
+    refined_at    TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_removed_segments_guid ON removed_segments(plex_guid);
+
 -- Plex part id -> rating key, so a direct file request can be tied to its title (#184).
 CREATE TABLE IF NOT EXISTS title_parts (
     part_id    INTEGER PRIMARY KEY,
@@ -919,9 +954,12 @@ async def get_segment_file_refs_for_guid(plex_guid: str) -> list[tuple[int, str]
 
 
 async def get_referenced_thumbnail_paths() -> set[str]:
-    """Return every thumbnail path some segment points at (the sweep keeps these files)."""
+    """Return every thumbnail path some segment points at, archived marks included (the sweep keeps these files)."""
     async with get_connection() as conn:
-        rows = await conn.execute_fetchall("SELECT thumbnail_path FROM segments WHERE COALESCE(thumbnail_path, '') != ''")
+        rows = await conn.execute_fetchall(
+            "SELECT thumbnail_path FROM segments WHERE COALESCE(thumbnail_path, '') != '' "
+            "UNION SELECT thumbnail_path FROM removed_segments WHERE COALESCE(thumbnail_path, '') != ''"
+        )
         return {r[0] for r in rows}
 
 
@@ -974,20 +1012,191 @@ async def get_verifier_training_rows(max_kept_per_group: int) -> list[dict]:
     return rows
 
 
-async def get_orphan_segment_refs(older_than_days: int) -> list[tuple[int, str]]:
-    """Return (id, thumbnail_path) of segments whose title has no scan job and that are older than the cutoff.
+# Columns shared by segments and removed_segments, in the order they are copied between them.
+_SEGMENT_COLS = (
+    "id, plex_guid, title, start_ms, end_ms, confidence, thumbnail_path, created_at, labels, category, severity, "
+    "action, channel, source, language, detector, false_positive, hover_status, thumbnail_ms, refined_at"
+)
 
-    Library sync deletes a removed title's scan job but not its segments; the age cutoff leaves
-    them a while in case the title comes back.
+
+def _in(values: list) -> str:
+    return ",".join("?" * len(values))
+
+
+async def archive_segments(conn, guids: list[str]) -> None:
+    """Move the segments of *guids* into removed_segments and note each title in removed_titles.
+
+    A move, not a delete: the rows (the marks) are kept, the files they point to stay until the
+    purge, and no live query sees them. Runs inside the caller's transaction. The titles named by
+    *guids* must still have their scan_jobs row, or have been recorded in removed_titles already.
+    """
+    for i in range(0, len(guids), 500):
+        chunk = guids[i:i + 500]
+        await conn.execute(
+            f"INSERT OR REPLACE INTO removed_segments({_SEGMENT_COLS}) SELECT {_SEGMENT_COLS} FROM segments WHERE plex_guid IN ({_in(chunk)})",
+            chunk,
+        )
+        await conn.execute(f"DELETE FROM segments WHERE plex_guid IN ({_in(chunk)})", chunk)
+
+
+async def remove_titles_not_in(library_id: str, keep_guids: list[str]) -> int:
+    """Remove a library's titles that Plex no longer reports; return how many.
+
+    Each title's job is deleted, its segments are archived (kept as marks, hidden everywhere) and
+    the title is recorded in removed_titles with the data needed to purge it later. An empty
+    *keep_guids* removes nothing, so a failed Plex listing cannot wipe a library.
+    """
+    if not keep_guids:
+        return 0
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            f"SELECT plex_guid, title, rating_key, file_path, part_files FROM scan_jobs "
+            f"WHERE library_id=? AND plex_guid NOT IN ({_in(keep_guids)})",
+            [library_id, *keep_guids],
+        )
+        if not rows:
+            return 0
+        await conn.executemany(
+            "INSERT OR REPLACE INTO removed_titles(plex_guid, title, rating_key, file_path, part_files) VALUES(?,?,?,?,?)",
+            [(r["plex_guid"], r["title"], r["rating_key"], r["file_path"], r["part_files"] or "") for r in rows],
+        )
+        guids = [r["plex_guid"] for r in rows]
+        await archive_segments(conn, guids)
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            await conn.execute(f"DELETE FROM scan_jobs WHERE plex_guid IN ({_in(chunk)})", chunk)
+        await conn.commit()
+        return len(guids)
+
+
+async def archive_orphan_segments(older_than_days: int = 1) -> int:
+    """Archive segments whose title has no scan job (left behind by older syncs); return how many.
+
+    The age cutoff keeps a segment written moments before its job exists out of the sweep.
     """
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            "SELECT s.id, COALESCE(s.thumbnail_path, '') FROM segments s "
+            "SELECT plex_guid, MIN(title) AS title, COUNT(*) AS n FROM segments s "
             "WHERE NOT EXISTS (SELECT 1 FROM scan_jobs j WHERE j.plex_guid = s.plex_guid) "
-            "AND s.created_at < datetime('now', ?)",
+            "AND s.created_at < datetime('now', ?) GROUP BY plex_guid",
             (f"-{int(older_than_days)} days",),
         )
-        return [(r[0], r[1]) for r in rows]
+        if not rows:
+            return 0
+        await conn.executemany(
+            "INSERT OR IGNORE INTO removed_titles(plex_guid, title) VALUES(?,?)", [(r["plex_guid"], r["title"]) for r in rows]
+        )
+        guids = [r["plex_guid"] for r in rows]
+        # Only the old rows move: a fresh segment of the same guid stays live until it, too, ages out.
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            await conn.execute(
+                f"INSERT OR REPLACE INTO removed_segments({_SEGMENT_COLS}) SELECT {_SEGMENT_COLS} FROM segments "
+                f"WHERE plex_guid IN ({_in(chunk)}) AND created_at < datetime('now', ?)",
+                [*chunk, f"-{int(older_than_days)} days"],
+            )
+            await conn.execute(
+                f"DELETE FROM segments WHERE plex_guid IN ({_in(chunk)}) AND created_at < datetime('now', ?)",
+                [*chunk, f"-{int(older_than_days)} days"],
+            )
+        await conn.commit()
+        return sum(r["n"] for r in rows)
+
+
+async def restore_removed_titles(guids: list[str]) -> int:
+    """Move the archived marks of titles that came back into segments; return how many were restored."""
+    total = 0
+    async with get_connection() as conn:
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            cursor = await conn.execute(
+                f"INSERT OR IGNORE INTO segments({_SEGMENT_COLS}) SELECT {_SEGMENT_COLS} FROM removed_segments WHERE plex_guid IN ({_in(chunk)})",
+                chunk,
+            )
+            total += cursor.rowcount
+            await conn.execute(f"DELETE FROM removed_segments WHERE plex_guid IN ({_in(chunk)})", chunk)
+            await conn.execute(f"DELETE FROM removed_titles WHERE plex_guid IN ({_in(chunk)})", chunk)
+        await conn.commit()
+    return total
+
+
+async def get_removed_segments(plex_guid: str) -> list[dict]:
+    """Return the archived marks of a removed title, by start time."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall("SELECT * FROM removed_segments WHERE plex_guid=? ORDER BY start_ms", (plex_guid,))
+        return [dict(r) for r in rows]
+
+
+async def get_removed_title(plex_guid: str) -> dict | None:
+    """Return a removed title's record, or None."""
+    async with get_connection() as conn:
+        row = await (await conn.execute("SELECT * FROM removed_titles WHERE plex_guid=?", (plex_guid,))).fetchone()
+        return dict(row) if row else None
+
+
+async def purge_removed_titles(older_than_days: int) -> list[tuple[int, str]]:
+    """Delete what is saved for titles removed longer ago than the cutoff, keeping their marks.
+
+    Deletes skip events, Plex markers and the cached title row by guid, and cast, parts, proxy
+    sessions and keyframe indexes by rating key / file path, but only where no live title still uses
+    that rating key or file (a re-matched title keeps both). The archived segments stay, with their
+    thumbnail path and hover state cleared. Returns (segment id, thumbnail path) of every archived
+    segment of the purged titles so the caller can delete the files. Each title is purged once.
+    """
+    async with get_connection() as conn:
+        titles = await conn.execute_fetchall(
+            "SELECT plex_guid, rating_key, file_path, part_files FROM removed_titles "
+            "WHERE purged_at IS NULL AND removed_at < datetime('now', ?)",
+            (f"-{int(older_than_days)} days",),
+        )
+        if not titles:
+            return []
+        guids = [t["plex_guid"] for t in titles]
+        live = await conn.execute_fetchall("SELECT rating_key, file_path, part_files FROM scan_jobs")
+        live_keys = {r["rating_key"] for r in live if r["rating_key"]}
+        live_files: set[str] = set()
+        for r in live:
+            live_files.add(r["file_path"] or "")
+            live_files.update(_json_list(r["part_files"]))
+        keys = sorted({t["rating_key"] for t in titles if t["rating_key"]} - live_keys)
+        files = sorted({f for t in titles for f in [t["file_path"] or "", *_json_list(t["part_files"])] if f} - live_files)
+
+        refs: list[tuple[int, str]] = []
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            rows = await conn.execute_fetchall(
+                f"SELECT id, COALESCE(thumbnail_path, '') AS t FROM removed_segments WHERE plex_guid IN ({_in(chunk)})", chunk
+            )
+            refs += [(r["id"], r["t"]) for r in rows]
+            await conn.execute(f"UPDATE removed_segments SET thumbnail_path='', hover_status='' WHERE plex_guid IN ({_in(chunk)})", chunk)
+            await conn.execute(f"DELETE FROM skip_events WHERE plex_guid IN ({_in(chunk)})", chunk)
+            await conn.execute(f"DELETE FROM plex_markers WHERE plex_guid IN ({_in(chunk)})", chunk)
+            await conn.execute(
+                f"DELETE FROM plex_title_cache WHERE plex_guid IN ({_in(chunk)}) "
+                "AND NOT EXISTS (SELECT 1 FROM scan_jobs j WHERE j.plex_guid = plex_title_cache.plex_guid)",
+                chunk,
+            )
+        for i in range(0, len(keys), 500):
+            chunk = keys[i:i + 500]
+            for table in ("title_cast", "cast_synced", "title_parts", "proxy_sessions"):
+                await conn.execute(f"DELETE FROM {table} WHERE rating_key IN ({_in(chunk)})", chunk)
+        for i in range(0, len(files), 500):
+            chunk = files[i:i + 500]
+            await conn.execute(f"DELETE FROM keyframe_index WHERE file_path IN ({_in(chunk)})", chunk)
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            await conn.execute(f"UPDATE removed_titles SET purged_at=CURRENT_TIMESTAMP WHERE plex_guid IN ({_in(chunk)})", chunk)
+        await conn.commit()
+        return refs
+
+
+def _json_list(raw: str | None) -> list[str]:
+    """Parse a JSON list column, tolerating blanks and bad data."""
+    try:
+        value = json.loads(raw) if raw else []
+    except ValueError:
+        return []
+    return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
 
 
 async def delete_segments_by_ids(segment_ids: list[int]) -> int:
@@ -1358,13 +1567,13 @@ async def apply_segment_refinement(
 async def get_hover_preview_candidates(limit: int) -> list[dict]:
     """Return up to *limit* active segments without a hover preview, oldest first.
 
-    Each row: id, start_ms, end_ms and the title's file_path. False positives are
+    Each row: id, start_ms, end_ms and the title's file_path and part_files. False positives are
     left out; they are not worth the render time.
     """
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
             f"""
-            SELECT s.id, s.start_ms, s.end_ms, j.file_path
+            SELECT s.id, s.start_ms, s.end_ms, j.file_path, j.part_files
             FROM segments s
             JOIN scan_jobs j ON j.plex_guid = s.plex_guid
             WHERE COALESCE(s.hover_status, '') = '' AND {_ACTIVE_S}
@@ -1392,9 +1601,9 @@ async def reset_missing_hover_previews() -> int:
 
 
 async def get_segment_ids() -> set[int]:
-    """Return the id of every segment, false positives included."""
+    """Return the id of every segment, false positives and archived marks included."""
     async with get_connection() as conn:
-        rows = await conn.execute_fetchall("SELECT id FROM segments")
+        rows = await conn.execute_fetchall("SELECT id FROM segments UNION SELECT id FROM removed_segments")
         return {row["id"] for row in rows}
 
 
@@ -1604,6 +1813,15 @@ async def upsert_scan_job(
         await conn.commit()
 
 
+async def get_failed_jobs_for_library(library_id: str) -> list[dict]:
+    """Return a library's failed, non-ignored scan jobs (all columns)."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT * FROM scan_jobs WHERE library_id=? AND status='failed' AND COALESCE(ignored, 0)=0", (library_id,)
+        )
+        return [dict(r) for r in rows]
+
+
 async def upsert_scan_jobs_batch(jobs: list[dict]) -> int:
     """Insert scan jobs that do not exist yet, in one transaction; return how many were inserted.
 
@@ -1628,7 +1846,10 @@ async def upsert_scan_jobs_batch(jobs: list[dict]) -> int:
             rows,
         )
         await conn.commit()
-        return conn.total_changes - before
+        inserted = conn.total_changes - before
+    # A title that returns gets its archived marks back (#191).
+    await restore_removed_titles([j["plex_guid"] for j in jobs])
+    return inserted
 
 
 async def get_existing_guids(guids: list[str]) -> set[str]:
@@ -1667,20 +1888,6 @@ async def refresh_scan_job_metadata_batch(
         await conn.commit()
 
 
-async def delete_scan_jobs_not_in(library_id: str, keep_guids: list[str]) -> int:
-    """Delete scan jobs for a library whose plex_guid is not in keep_guids. Returns deleted count."""
-    if not keep_guids:
-        return 0
-    placeholders = ",".join("?" * len(keep_guids))
-    async with get_connection() as conn:
-        cursor = await conn.execute(
-            f"DELETE FROM scan_jobs WHERE library_id=? AND plex_guid NOT IN ({placeholders})",
-            [library_id, *keep_guids],
-        )
-        await conn.commit()
-        return cursor.rowcount
-
-
 async def get_scan_jobs(status: str | None = None) -> list[dict]:
     """Return every scan job (optionally one status), newest first. Prefer the paged and counting variants for UI/API use."""
     async with get_connection() as conn:
@@ -1716,6 +1923,13 @@ async def count_scan_jobs_by_status() -> dict[str, int]:
 async def get_scan_job_by_guid(plex_guid: str) -> dict | None:
     async with get_connection() as conn:
         row = await (await conn.execute("SELECT * FROM scan_jobs WHERE plex_guid=?", (plex_guid,))).fetchone()
+        return dict(row) if row else None
+
+
+async def get_scan_job_by_rating_key(rating_key: str) -> dict | None:
+    """Return the scan job with this Plex rating key, or None (fallback when a session's GUID differs)."""
+    async with get_connection() as conn:
+        row = await (await conn.execute("SELECT * FROM scan_jobs WHERE rating_key=? LIMIT 1", (rating_key,))).fetchone()
         return dict(row) if row else None
 
 

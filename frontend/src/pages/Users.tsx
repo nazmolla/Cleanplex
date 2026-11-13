@@ -43,15 +43,15 @@ export function UsersPanel() {
   return (
     <div>
       <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Users</h2>
-      <p className="text-sm text-gray-500 mb-6">
+      <p className="text-sm text-muted mb-6">
         Toggle content filtering per Plex account, and set how strict each content category should be.
         Accounts with filtering enabled will have flagged scenes skipped or muted automatically.
       </p>
 
       {loading ? (
-        <div className="text-gray-500 text-sm">Loading users...</div>
+        <div className="text-muted text-sm">Loading users...</div>
       ) : users.length === 0 ? (
-        <div className="bg-plex-darker border border-plex-border rounded-xl p-8 text-center text-gray-500 text-sm">
+        <div className="bg-plex-darker border border-plex-border rounded-xl p-8 text-center text-muted text-sm">
           No users found. Make sure Plex is configured in Settings.
         </div>
       ) : (
@@ -68,13 +68,13 @@ export function UsersPanel() {
                 />
               ) : (
                 <div className="w-10 h-10 rounded-full bg-plex-border flex items-center justify-center flex-shrink-0">
-                  <UserCircle2 size={22} className="text-gray-500" />
+                  <UserCircle2 size={22} className="text-muted" />
                 </div>
               )}
 
               <button
                 onClick={() => setExpanded(e => (e === user.username ? null : user.username))}
-                className="text-gray-500 hover:text-gray-300"
+                className="text-gray-400 hover:text-gray-300"
                 aria-label={expanded === user.username ? 'Hide categories' : 'Show categories'}
               >
                 {expanded === user.username ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -82,10 +82,10 @@ export function UsersPanel() {
 
               <div className="flex-1 min-w-0">
                 <p className="font-medium text-gray-100">{user.username}</p>
-                <p className="text-xs text-gray-500 mt-0.5 flex items-center gap-1">
+                <p className="text-xs text-muted mt-0.5 flex items-center gap-1">
                   {user.enabled
                     ? <><ShieldCheck size={11} className="text-green-400" /> Filtering active</>
-                    : <><ShieldOff size={11} className="text-gray-600" /> Filtering off</>
+                    : <><ShieldOff size={11} className="text-faint" /> Filtering off</>
                   }
                 </p>
               </div>
@@ -94,7 +94,7 @@ export function UsersPanel() {
               <button
                 onClick={() => toggle(user.username, !user.enabled)}
                 disabled={saving[user.username]}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none disabled:opacity-50 ${
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50 ${
                   user.enabled ? 'bg-plex-orange' : 'bg-plex-border'
                 }`}
               >

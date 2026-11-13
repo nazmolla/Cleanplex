@@ -77,7 +77,7 @@ export default function VerifierPanel({ value, onChange }: { value: string; onCh
   return (
     <div className="lg:col-span-2 border border-gray-800 rounded-lg p-4">
       <p className="text-sm font-medium text-gray-300 mb-1">False-positive verifier</p>
-      <p className="text-xs text-gray-600 mb-3">
+      <p className="text-xs text-muted mb-3">
         Learns from the segments you marked as false positives and drops new detections whose frame looks like
         them. Train it after marking some, then pick how many good segments you accept losing. Rescan to apply it
         to titles already scanned.
@@ -104,7 +104,7 @@ export default function VerifierPanel({ value, onChange }: { value: string; onCh
       </div>
       {(error || status?.error) && <p className="text-xs text-red-400 mt-2">{error || status?.error}</p>}
       {trained && (
-        <p className="text-xs text-gray-500 mt-2">
+        <p className="text-xs text-muted mt-2">
           Trained {new Date((status!.trained_at as number) * 1000).toLocaleString()}.{' '}
           {groups.map(([g, s]) => `${g}: ${s.false_positives} false of ${s.n} frames, accuracy ${s.auc.toFixed(2)}`).join(' · ')}
         </p>
