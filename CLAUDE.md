@@ -1,7 +1,7 @@
 # Cleanplex — Mandatory Development Practices
 
 This file is the authoritative source for how all work on this repository must be done.
-Every change — regardless of size — must follow these rules. No exceptions.
+Every change, whatever its size, follows these rules; the only exceptions are the ones a rule states.
 
 ---
 
@@ -267,7 +267,7 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 ### 5.5 Scanner
 
 - **One NudeNet detector per thread.** Use `threading.local()` — never instantiate inside a tight frame loop.
-- **Scanner global state (`_queued_guids`, `_current_scan_guids`, `_paused`) is guarded by a lock** before mutation.
+- **`scanner._current_guids` is mutated only under `_state_lock`.** It records what this process's workers are scanning, for skip requests; queue membership and order live in the database (§5.5a).
 - **Bump `scanner.SCAN_VERSION` when a change means existing scan results are worth redoing** (thresholds, prompts, severity, thumbnails, bounds). It is stored per finished job so "rescan outdated titles" can find what an older scanner produced.
 - **Flagged windows are re-sampled densely before insert** (`_refine_cluster`): the thumbnail is the peak frame, bounds only grow, and a failure leaves the coarse result. A segment's kept-or-dropped decision stays with the coarse pass.
 - **Segments are clustered before DB insert.** Never insert a raw frame-level row; always cluster via `_cluster_frames` / `_flush_cluster`.
@@ -286,12 +286,12 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 - **No polling loop may run unbounded.** Every `setInterval`/recursive `setTimeout` must have a terminal condition (success, error, or max-duration).
 - **Bulk actions must use bounded concurrency or a batch endpoint.** Never fire N sequential requests from a UI loop.
 - **The UI is a desktop tool.** Design and judge it at desktop width; a phone must not be broken (no clipped or unreachable control) but gets no layout of its own.
-- **Quiet text uses `text-muted`, never `text-gray-500/600/700`.** Those measure 2.8:1 and below on `plex-card`; `muted` is 4.7:1. `text-faint` (3.2:1) is for icons and separators only. A clickable icon rests at `text-gray-400`, so it is readable before hover (#204, found on the Segments and Library action rows).
-- **Never add `focus:outline-none`.** `index.css` draws one `:focus-visible` ring for every control (#204, found on every text input).
-- **Buttons with a label use `btn-primary`, `btn-outline` or `btn-danger`.** Text on `plex-orange` is black, never white (2.2:1) (#204, found on the Dashboard Skip button and the Edit labels dialog).
-- **Every overlay is a `components/Modal`** (focus trap, Escape, focus return). Never hand-write a `fixed inset-0` dialog (#205, found on Segments' three delete confirmations).
-- **Messages are `toast.error` / `toast.success` from `components/Toast`.** Never `alert()` or `confirm()` (#205, found in Library's scan and ignore handlers).
-- **Orange means active, selected or in progress.** Do not use it to decorate headings or icons. Page titles are a plain `text-2xl font-bold` `h1`; section labels use the small uppercase style of `CollapsibleSection` (#206, found on the Dashboard, Markers and Analytics headings).
+- **Quiet text uses `text-muted`, never `text-gray-500/600/700`.** Those measure 2.8:1 and below on `plex-card`; `muted` is 4.7:1. `text-faint` (3.2:1) is for icons and separators only. A clickable icon rests at `text-gray-400`, so it is readable before hover (#204).
+- **Never add `focus:outline-none`.** `index.css` draws one `:focus-visible` ring for every control (#204).
+- **Buttons with a label use `btn-primary`, `btn-outline` or `btn-danger`.** Text on `plex-orange` is black, never white (2.2:1) (#204).
+- **Every overlay is a `components/Modal`** (focus trap, Escape, focus return). Never hand-write a `fixed inset-0` dialog (#205).
+- **Messages are `toast.error` / `toast.success` from `components/Toast`.** Never `alert()` or `confirm()` (#205).
+- **Orange means active, selected or in progress.** Do not use it to decorate headings or icons. Page titles are a plain `text-2xl font-bold` `h1`; section labels use the small uppercase style of `CollapsibleSection` (#206).
 
 ### 5.7 Sync
 
@@ -353,7 +353,7 @@ tests/
 - **Mock `plexapi`** at the boundary (`asyncio.to_thread` call site) — never import `plexapi` in test files.
 - **Test names describe the scenario**: `test_get_segments_returns_empty_for_unknown_guid`, not `test_get_segments`.
 - **Each test is independent** — no shared mutable state between tests; use fixtures.
-- **`pytest-asyncio` mode: `asyncio_mode = "auto"`** (set in `pyproject.toml` or `pytest.ini`).
+- **`pytest-asyncio` mode: `asyncio_mode = "auto"`** (set in `pyproject.toml`).
 
 ### 6.4 Running Tests
 
