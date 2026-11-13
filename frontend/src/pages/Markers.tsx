@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { api } from '../api/client'
+import Modal from '../components/Modal'
 import { useLiveRefresh } from '../api/events'
 import {
   Film, Tv, ChevronRight, ChevronDown, RefreshCw, Play, Save,
@@ -196,6 +197,7 @@ function MarkerEditor({
   const [previewing, setPreviewing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'ok' | 'error'>('idle')
   const [saveError, setSaveError] = useState('')
 
@@ -293,7 +295,7 @@ function MarkerEditor({
   }
 
   const handleDelete = async () => {
-    if (!confirm(`Delete this ${marker.marker_type} marker from local DB? This does not modify Plex.`)) return
+    setConfirmingDelete(false)
     setDeleting(true)
     try {
       await api.delete(`/api/markers/${marker.id}`)
@@ -390,13 +392,29 @@ function MarkerEditor({
           {saving ? 'Saving…' : dirty ? 'Save to Plex' : 'Saved'}
         </button>
         <button
-          onClick={handleDelete}
+          onClick={() => setConfirmingDelete(true)}
           disabled={deleting}
           className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm text-red-400 border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 transition-colors disabled:opacity-40 ml-auto"
-          title="Remove from local DB (does not modify Plex)"
+          title="Remove from Cleanplex (Plex keeps its marker)"
+          aria-label="Delete marker"
         >
           {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
         </button>
+        {confirmingDelete && (
+          <Modal
+            title={`Delete this ${marker.marker_type} marker?`}
+            size="sm"
+            onClose={() => setConfirmingDelete(false)}
+            footer={
+              <>
+                <button data-autofocus onClick={() => setConfirmingDelete(false)} className="btn-outline">Cancel</button>
+                <button onClick={handleDelete} className="btn-danger">Delete</button>
+              </>
+            }
+          >
+            <p className="text-sm text-gray-300">It is removed from Cleanplex only. Plex keeps its own copy.</p>
+          </Modal>
+        )}
         {saveStatus === 'ok' && (
           <span className="flex items-center gap-1 text-green-400 text-xs">
             <CheckCircle size={12} /> Saved to Plex

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
+import { toast } from '../components/Toast'
 import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
 import RecentSkips from '../components/RecentSkips'
 import { Monitor, Clock, Wifi, WifiOff, ChevronDown, ChevronRight, Film, Tv, Zap } from 'lucide-react'
@@ -129,7 +130,7 @@ export default function Dashboard() {
       await api.post(`/api/sessions/${sessionKey}/skip`)
       await refresh()
     } catch (err: any) {
-      alert(`Skip failed: ${err.message || 'Unknown error'}`)
+      toast.error(`Could not skip: ${err.message || 'Unknown error'}`)
     } finally {
       setSkipLoadingKey(null)
     }
@@ -143,7 +144,7 @@ export default function Dashboard() {
       await api.post('/api/scan/skip-current', { plex_guid: target })
       await refresh()
     } catch (err: any) {
-      alert(`Skip scan failed: ${err.message || 'Unknown error'}`)
+      toast.error(`Could not skip this scan: ${err.message || 'Unknown error'}`)
     } finally {
       setSkipScanLoadingGuid(null)
     }

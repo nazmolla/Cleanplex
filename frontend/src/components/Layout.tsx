@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { LayoutDashboard, Film, Scissors, BarChart2, Settings, Bookmark } from 'lucide-react'
+import { Toaster } from './Toast'
 
 const nav = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -53,8 +54,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             to={to}
             end={to === '/'}
             className={({ isActive }) =>
-              `flex-1 min-w-0 flex flex-col items-center justify-center gap-1 py-2 text-[11px] font-medium transition-colors ${
-                isActive ? 'text-plex-orange' : 'text-gray-400'
+              `flex-1 flex flex-col items-center justify-center gap-1 py-2 text-xs font-medium transition-colors ${
+                isActive ? 'text-plex-orange' : 'text-muted'
               }`
             }
           >
@@ -63,6 +64,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </NavLink>
         ))}
       </nav>
+      <Toaster />
     </div>
   )
 }

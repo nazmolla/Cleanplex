@@ -10,6 +10,8 @@ import ScanContextMenu, { ScanTarget } from '../components/ScanContextMenu'
 import { Film, Tv, ChevronRight, ChevronDown, Trash2, AlertTriangle, SkipForward, Play, Tv2 } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
 import SegmentPlayer from '../components/SegmentPlayer'
+import Modal from '../components/Modal'
+import { toast } from '../components/Toast'
 
 interface Library {
   id: string
@@ -553,10 +555,10 @@ export default function Segments() {
     try {
       const d = await api.post<{ ok: boolean; client: string; user: string; seek_to_ms: number }>(`/api/segments/${id}/jump`)
       if (d.ok) {
-        alert(`Jumped playback to segment on ${d.client} (${d.user}) at ${msToTimecode(d.seek_to_ms)}.`)
+        toast.success(`Jumped to ${msToTimecode(d.seek_to_ms)} on ${d.client} (${d.user}).`)
       }
     } catch (err: any) {
-      alert(err?.message || 'Could not jump to segment. Start this title in Plex first.')
+      toast.error(err?.message || 'Could not jump to this segment. Start the title in Plex first.')
     } finally {
       setJumping(j => ({ ...j, [id]: false }))
     }
@@ -616,6 +618,33 @@ export default function Segments() {
         const segLabels = s.labels.split(',').map(l => l.trim())
         return segLabels.some(l => labelFilter.has(l))
       })
+
+  // The one delete confirmation (#205): a show or season, a single title, or everything on screen.
+  const pendingDelete = confirmDeleteGroup
+    ? {
+        name: confirmDeleteGroup.label,
+        count: null as number | null,
+        busy: deletingGroup,
+        cancel: () => setConfirmDeleteGroup(null),
+        run: () => deleteSegmentsForGroup(confirmDeleteGroup.label, confirmDeleteGroup.titles),
+      }
+    : confirmDeleteTitle
+      ? {
+          name: confirmDeleteTitle.title,
+          count: confirmDeleteTitle.segment_count as number | null,
+          busy: !!deletingTitle[confirmDeleteTitle.plex_guid],
+          cancel: () => setConfirmDeleteTitle(null),
+          run: () => deleteSegmentsForTitle(confirmDeleteTitle),
+        }
+      : confirmDeleteAll && (selectedTitle || selectedGroup)
+        ? {
+            name: selectedGroup?.label ?? selectedTitle?.title ?? '',
+            count: segments.length as number | null,
+            busy: deletingAll,
+            cancel: () => setConfirmDeleteAll(false),
+            run: () => deleteAllSegments(),
+          }
+        : null
 
   return (
     <div className="flex gap-4 h-full overflow-hidden">
@@ -997,137 +1026,43 @@ export default function Segments() {
         )}
 
 
-        {confirmDeleteGroup && (
-          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="w-full max-w-sm bg-plex-card border border-plex-border rounded-xl overflow-hidden">
-              <div className="px-4 py-3 border-b border-plex-border">
-                <h3 className="text-sm font-semibold text-gray-100">Delete All Segments?</h3>
-              </div>
-              <div className="p-4">
-                <p className="text-sm text-gray-300 mb-4">
-                  Delete all segments for every episode of <strong>{confirmDeleteGroup.label}</strong>? This cannot be undone.
-                </p>
-                <label className="flex items-center gap-2 mb-4 cursor-pointer select-none">
-                  <input type="checkbox" checked={skipDeleteConfirm} onChange={e => toggleSkipConfirm(e.target.checked)} className="accent-plex-orange" />
-                  <span className="text-xs text-gray-400">Don't ask again</span>
-                </label>
-                <div className="flex gap-2 justify-end">
-                  <button
-                    onClick={() => setConfirmDeleteGroup(null)}
-                    disabled={deletingGroup}
-                    className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={() => deleteSegmentsForGroup(confirmDeleteGroup.label, confirmDeleteGroup.titles)}
-                    disabled={deletingGroup}
-                    className="px-3 py-1.5 text-xs bg-red-500/20 border border-red-500/30 rounded-lg text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-40"
-                  >
-                    {deletingGroup ? 'Deleting...' : 'Delete All'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {confirmDeleteTitle && (
-          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="w-full max-w-sm bg-plex-card border border-plex-border rounded-xl overflow-hidden">
-              <div className="px-4 py-3 border-b border-plex-border">
-                <h3 className="text-sm font-semibold text-gray-100">Delete All Segments?</h3>
-              </div>
-              <div className="p-4">
-                <p className="text-sm text-gray-300 mb-4">
-                  Delete all {confirmDeleteTitle.segment_count} segment{confirmDeleteTitle.segment_count !== 1 ? 's' : ''} for <strong>{confirmDeleteTitle.title}</strong>? This cannot be undone.
-                </p>
-                <label className="flex items-center gap-2 mb-4 cursor-pointer select-none">
-                  <input type="checkbox" checked={skipDeleteConfirm} onChange={e => toggleSkipConfirm(e.target.checked)} className="accent-plex-orange" />
-                  <span className="text-xs text-gray-400">Don't ask again</span>
-                </label>
-                <div className="flex gap-2 justify-end">
-                  <button
-                    onClick={() => setConfirmDeleteTitle(null)}
-                    disabled={deletingTitle[confirmDeleteTitle.plex_guid]}
-                    className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={() => deleteSegmentsForTitle(confirmDeleteTitle)}
-                    disabled={deletingTitle[confirmDeleteTitle.plex_guid]}
-                    className="px-3 py-1.5 text-xs bg-red-500/20 border border-red-500/30 rounded-lg text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-40"
-                  >
-                    {deletingTitle[confirmDeleteTitle.plex_guid] ? 'Deleting...' : 'Delete All'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {confirmDeleteAll && (selectedTitle || selectedGroup) && (
-          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="w-full max-w-sm bg-plex-card border border-plex-border rounded-xl overflow-hidden">
-              <div className="px-4 py-3 border-b border-plex-border">
-                <h3 className="text-sm font-semibold text-gray-100">Delete All Segments?</h3>
-              </div>
-              <div className="p-4">
-                <p className="text-sm text-gray-300 mb-4">
-                  Are you sure you want to delete all {segments.length} segment{segments.length !== 1 ? 's' : ''} for <strong>{selectedGroup?.label ?? selectedTitle?.title}</strong>? This cannot be undone.
-                </p>
-                <label className="flex items-center gap-2 mb-4 cursor-pointer select-none">
-                  <input type="checkbox" checked={skipDeleteConfirm} onChange={e => toggleSkipConfirm(e.target.checked)} className="accent-plex-orange" />
-                  <span className="text-xs text-gray-400">Don't ask again</span>
-                </label>
-                <div className="flex gap-2 justify-end">
-                  <button
-                    onClick={() => setConfirmDeleteAll(false)}
-                    disabled={deletingAll}
-                    className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-40"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={deleteAllSegments}
-                    disabled={deletingAll}
-                    className="px-3 py-1.5 text-xs bg-red-500/20 border border-red-500/30 rounded-lg text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-40"
-                  >
-                    {deletingAll ? 'Deleting...' : 'Delete All'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+        {pendingDelete && (
+          <Modal
+            title="Delete segments?"
+            size="sm"
+            onClose={pendingDelete.cancel}
+            dismissible={!pendingDelete.busy}
+            footer={
+              <>
+                <button data-autofocus onClick={pendingDelete.cancel} disabled={pendingDelete.busy} className="btn-outline">Cancel</button>
+                <button onClick={pendingDelete.run} disabled={pendingDelete.busy} className="btn-danger">
+                  {pendingDelete.busy ? 'Deleting…' : 'Delete'}
+                </button>
+              </>
+            }
+          >
+            <p className="text-sm text-gray-300 mb-4">
+              {pendingDelete.count != null
+                ? `All ${pendingDelete.count} segment${pendingDelete.count !== 1 ? 's' : ''} for `
+                : 'All segments for every episode of '}
+              <strong>{pendingDelete.name}</strong> will be deleted. This cannot be undone.
+            </p>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" checked={skipDeleteConfirm} onChange={e => toggleSkipConfirm(e.target.checked)} className="w-4 h-4 accent-plex-orange" />
+              <span className="text-xs text-gray-400">Don't ask again</span>
+            </label>
+          </Modal>
         )}
 
         {previewSeg && (
-          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="w-full max-w-4xl bg-plex-card border border-plex-border rounded-xl overflow-hidden">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-plex-border">
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-100">Segment Preview</h3>
-                  <p className="text-xs text-muted">
-                    {msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)}
-                  </p>
-                </div>
-                <button
-                  onClick={closePreview}
-                  className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors"
-                >
-                  Close
-                </button>
-              </div>
-
-              <div className="p-4">
-                <SegmentPlayer segmentId={previewSeg.id} autoPlay className="max-h-[70vh]" />
-                <p className="text-xs text-muted mt-2">
-                  The server cuts this clip from the source with 5s either side, so it plays in any browser.
-                </p>
-              </div>
-            </div>
-          </div>
+          <Modal
+            title="Segment preview"
+            subtitle={<>{msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)} · clip includes 5s either side</>}
+            size="xl"
+            onClose={closePreview}
+          >
+            <SegmentPlayer segmentId={previewSeg.id} autoPlay className="max-h-[70vh]" />
+          </Modal>
         )}
       </div>
       {scanMenu && <ScanContextMenu target={scanMenu} onScan={rescan} onClose={() => setScanMenu(null)} />}

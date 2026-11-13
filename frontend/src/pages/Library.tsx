@@ -10,6 +10,8 @@ import SkipFileImport from '../components/SkipFileImport'
 import { Film, Tv, ChevronRight, ChevronDown, RotateCcw, Zap, Moon, RefreshCw, ExternalLink, AlertTriangle, Trash2, SkipForward, Play, Tv2, Eye, EyeOff, X, ThumbsDown, Search, Users, ArrowDown, ArrowUp } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
 import SegmentPlayer from '../components/SegmentPlayer'
+import Modal from '../components/Modal'
+import { toast } from '../components/Toast'
 import { parseDbTimestamp } from '../utils/dbTime'
 
 interface Library {
@@ -456,10 +458,10 @@ export default function Library() {
     try {
       const d = await api.post<{ ok: boolean; client: string; user: string; seek_to_ms: number }>(`/api/segments/${segId}/jump`)
       if (d.ok) {
-        alert(`Jumped playback to segment on ${d.client} (${d.user}) at ${msToTimecode(d.seek_to_ms)}.`)
+        toast.success(`Jumped to ${msToTimecode(d.seek_to_ms)} on ${d.client} (${d.user}).`)
       }
     } catch (err: any) {
-      alert(err?.message || 'Could not jump to segment. Start this title in Plex first.')
+      toast.error(err?.message || 'Could not jump to this segment. Start the title in Plex first.')
     } finally {
       setJumpingSegs(j => ({ ...j, [segId]: false }))
     }
@@ -611,7 +613,7 @@ export default function Library() {
       await api.post('/api/scan/title', { plex_guid: guid, now, library_id: selected?.id || null })
       setTitles(await loadTitles(selected!.id))
     } catch (err: any) {
-      alert(`Failed to scan: ${err.message || 'Unknown error'}`)
+      toast.error(`Could not queue the scan: ${err.message || 'Unknown error'}`)
     } finally {
       setScanning(s => ({ ...s, [guid]: false }))
     }
@@ -657,7 +659,7 @@ export default function Library() {
       await api.post(`/api/scan/library/${libId}`, { now })
       setTitles(await loadTitles(libId))
     } catch (err: any) {
-      alert(`Failed to scan library: ${err.message || 'Unknown error'}`)
+      toast.error(`Could not queue the library: ${err.message || 'Unknown error'}`)
     }
   }
 
@@ -688,7 +690,7 @@ export default function Library() {
     setSelectedGuids([])
     setTitles(await loadTitles(selected.id))
     if (errors.length > 0) {
-      alert(`${errors.length} title(s) failed to enqueue:\n${errors.slice(0, 5).join('\n')}`)
+      toast.error(`${errors.length} title${errors.length === 1 ? '' : 's'} could not be queued:\n${errors.slice(0, 5).join('\n')}`)
     }
   }
 
@@ -701,7 +703,7 @@ export default function Library() {
       setTitles(await loadTitles(selected!.id))
     } catch (err: any) {
       setTitles(prev => prev.map(t => (t.plex_guid === guid ? { ...t, ignored: currentIgnored } : t)))
-      alert(`Failed to update ignore status${label ? ` for ${label}` : ''}: ${err.message || 'Unknown error'}`)
+      toast.error(`Could not change ignore${label ? ` for ${label}` : ''}: ${err.message || 'Unknown error'}`)
     }
   }
 
@@ -728,7 +730,7 @@ export default function Library() {
         const previousIgnored = prevIgnoredByGuid.get(t.plex_guid)
         return typeof previousIgnored === 'boolean' ? { ...t, ignored: previousIgnored } : t
       }))
-      alert(`Failed to update ignore status${label ? ` for ${label}` : ''}: ${err.message || 'Unknown error'}`)
+      toast.error(`Could not change ignore${label ? ` for ${label}` : ''}: ${err.message || 'Unknown error'}`)
     }
   }
 
@@ -1482,30 +1484,14 @@ export default function Library() {
       </div>
 
       {previewSeg && (
-        <div className="fixed inset-0 z-50 bg-black/90 flex items-end sm:items-center justify-center sm:p-4" onClick={() => setPreviewSeg(null)}>
-          <div className="w-full sm:max-w-4xl bg-plex-card sm:border border-t border-plex-border sm:rounded-xl overflow-hidden" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-4 py-3 border-b border-plex-border">
-              <div>
-                <h3 className="text-sm font-semibold text-gray-100">Segment Preview</h3>
-                <p className="text-xs text-muted">
-                  {msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)}
-                </p>
-              </div>
-              <button
-                onClick={() => setPreviewSeg(null)}
-                className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors"
-              >
-                Close
-              </button>
-            </div>
-            <div className="p-3 sm:p-4">
-              <SegmentPlayer segmentId={previewSeg.id} className="max-h-[50vh] sm:max-h-[70vh]" />
-              <p className="text-xs text-muted mt-2">
-                The server cuts this clip from the source with 5s either side, so it plays in any browser.
-              </p>
-            </div>
-          </div>
-        </div>
+        <Modal
+          title="Segment preview"
+          subtitle={<>{msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)} · clip includes 5s either side</>}
+          size="xl"
+          onClose={() => setPreviewSeg(null)}
+        >
+          <SegmentPlayer segmentId={previewSeg.id} className="max-h-[70vh]" />
+        </Modal>
       )}
     </div>
   )

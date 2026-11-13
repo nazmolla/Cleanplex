@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Tag } from 'lucide-react'
 import { api } from '../api/client'
+import Modal from './Modal'
 
 interface Props {
   seg: { id: number; labels?: string }
@@ -83,58 +84,44 @@ export default function RelabelButton({ seg, onChange }: Props) {
         <Tag size={16} />
       </button>
       {open && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Edit labels"
-          onClick={() => !busy && setOpen(false)}
+        <Modal
+          title="Edit labels"
+          onClose={() => setOpen(false)}
+          dismissible={!busy}
+          footer={
+            <>
+              <button onClick={() => setOpen(false)} disabled={busy} className="btn-outline">Cancel</button>
+              <button onClick={save} disabled={busy || picked.length === 0} className="btn-primary">Save</button>
+            </>
+          }
         >
-          <div
-            className="bg-plex-card border border-plex-border rounded-xl p-5 w-full max-w-lg max-h-[85vh] overflow-y-auto"
-            onClick={e => e.stopPropagation()}
-          >
-            <h3 className="text-sm font-semibold text-gray-100 mb-1">Edit labels</h3>
-            <p className="text-xs text-muted mb-4">
-              Pick what this segment actually shows. Viewers' levels decide what to skip from these labels:
-              exposed genitalia and anus are the most severe, exposed breast and buttocks next, covered parts the least.
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5">
-              {all.map(label => (
-                <label key={label} className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={picked.includes(label)}
-                    onChange={() => toggle(label)}
-                    className="w-4 h-4 accent-plex-orange"
-                  />
-                  {pretty(label)}
-                </label>
-              ))}
-            </div>
-            {all.length === 0 && !error && <p className="text-xs text-muted">Loading labels…</p>}
-            {error && (
-              <p className="text-xs text-red-400 mt-3">
-                {error}{' '}
-                {all.length === 0 && (
-                  <button onClick={() => { setError(''); setAttempt(n => n + 1) }} className="underline hover:text-red-300">Retry</button>
-                )}
-              </p>
-            )}
-            <div className="flex justify-end gap-2 mt-5">
-              <button onClick={() => setOpen(false)} disabled={busy} className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200">
-                Cancel
-              </button>
-              <button
-                onClick={save}
-                disabled={busy || picked.length === 0}
-                className="px-3 py-1.5 text-sm rounded bg-plex-orange text-black font-medium disabled:opacity-40"
-              >
-                Save
-              </button>
-            </div>
+          <p className="text-xs text-gray-400 mb-4">
+            Tick what this segment shows. Exposed genitalia and anus rank highest, exposed breast and buttocks
+            next, covered parts lowest; each viewer's level decides what gets skipped.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5">
+            {all.map(label => (
+              <label key={label} className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={picked.includes(label)}
+                  onChange={() => toggle(label)}
+                  className="w-4 h-4 accent-plex-orange"
+                />
+                {pretty(label)}
+              </label>
+            ))}
           </div>
-        </div>
+          {all.length === 0 && !error && <p className="text-xs text-muted">Loading labels…</p>}
+          {error && (
+            <p className="text-xs text-red-400 mt-3" role="alert">
+              {error}{' '}
+              {all.length === 0 && (
+                <button onClick={() => { setError(''); setAttempt(n => n + 1) }} className="underline hover:text-red-300">Retry</button>
+              )}
+            </p>
+          )}
+        </Modal>
       )}
     </>
   )

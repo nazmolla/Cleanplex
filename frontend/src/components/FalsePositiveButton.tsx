@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ThumbsDown, Undo2 } from 'lucide-react'
 import { api } from '../api/client'
+import { toast } from './Toast'
 
 interface Props {
   seg: { id: number; false_positive?: boolean; auto_rejected?: boolean }
@@ -24,7 +25,7 @@ export default function FalsePositiveButton({ seg, onChange }: Props) {
       await api.post(`/api/segments/${seg.id}/false-positive`, { false_positive: !marked })
       onChange(seg.id, !marked)
     } catch (err: any) {
-      alert(`Could not update this segment: ${err.message || 'Unknown error'}`)
+      toast.error(`Could not update this segment: ${err.message || 'Unknown error'}`)
     } finally {
       setBusy(false)
     }

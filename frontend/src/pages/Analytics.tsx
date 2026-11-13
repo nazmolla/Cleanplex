@@ -12,6 +12,8 @@ import DetectionAccuracy from '../components/DetectionAccuracy'
 import { X, AlertTriangle, Trash2, Play, SkipForward, ChevronLeft, ChevronRight } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
 import SegmentPlayer from '../components/SegmentPlayer'
+import Modal from '../components/Modal'
+import { toast } from '../components/Toast'
 import CollapsibleSection from '../components/CollapsibleSection'
 
 interface LabelCount {
@@ -388,10 +390,10 @@ export default function Analytics() {
         `/api/segments/${seg.id}/jump`
       )
       if (d.ok) {
-        alert(`Jumped playback to ${msToTimecode(d.seek_to_ms)} on ${d.client} (${d.user})`)
+        toast.success(`Jumped to ${msToTimecode(d.seek_to_ms)} on ${d.client} (${d.user}).`)
       }
     } catch (err: any) {
-      alert(err?.message || 'Could not jump. Start this title in Plex first.')
+      toast.error(err?.message || 'Could not jump to this segment. Start the title in Plex first.')
     } finally {
       setJumpingSegs(j => ({ ...j, [seg.id]: false }))
     }
@@ -704,33 +706,14 @@ export default function Analytics() {
 
       {/* ── Segment preview modal ─────────────────────────────────────────── */}
       {previewSeg && (
-        <div
-          className="fixed inset-0 z-50 bg-black/90 flex items-end sm:items-center justify-center sm:p-4"
-          onClick={() => setPreviewSeg(null)}
+        <Modal
+          title={previewSeg.title}
+          subtitle={<>{msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)}</>}
+          size="xl"
+          onClose={() => setPreviewSeg(null)}
         >
-          <div
-            className="w-full sm:max-w-4xl bg-plex-card sm:border border-t border-plex-border sm:rounded-xl overflow-hidden"
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between px-4 py-3 border-b border-plex-border">
-              <div>
-                <h3 className="text-sm font-semibold text-gray-100 truncate">{previewSeg.title}</h3>
-                <p className="text-xs text-muted">
-                  {msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)}
-                </p>
-              </div>
-              <button
-                onClick={() => setPreviewSeg(null)}
-                className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 transition-colors"
-              >
-                Close
-              </button>
-            </div>
-            <div className="p-3 sm:p-4">
-              <SegmentPlayer segmentId={previewSeg.id} className="max-h-[50vh] sm:max-h-[70vh]" />
-            </div>
-          </div>
-        </div>
+          <SegmentPlayer segmentId={previewSeg.id} className="max-h-[70vh]" />
+        </Modal>
       )}
     </div>
   )

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import FalsePositiveButton from '../../components/FalsePositiveButton'
+import { Toaster } from '../../components/Toast'
 
 vi.mock('../../api/client', () => ({ api: { post: vi.fn() } }))
 
@@ -34,13 +35,13 @@ describe('FalsePositiveButton (#101)', () => {
 
   it('leaves the list alone when the server refuses', async () => {
     mockPost.mockRejectedValue(new Error('500'))
-    const alert = vi.spyOn(window, 'alert').mockImplementation(() => {})
     const onChange = vi.fn()
-    render(<FalsePositiveButton seg={{ id: 7 }} onChange={onChange} />)
+    render(<><FalsePositiveButton seg={{ id: 7 }} onChange={onChange} /><Toaster /></>)
 
     fireEvent.click(screen.getByLabelText('Mark as false positive'))
 
-    await waitFor(() => expect(alert).toHaveBeenCalled())
+    // The failure is a toast (#205), not a blocking alert().
+    expect(await screen.findByText(/Could not update this segment: 500/)).toBeInTheDocument()
     expect(onChange).not.toHaveBeenCalled()
   })
 })
