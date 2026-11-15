@@ -1,12 +1,10 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Film, Scissors, BarChart2, Settings, Bookmark } from 'lucide-react'
+import { LayoutDashboard, Film, BarChart2, Settings } from 'lucide-react'
 import { Toaster } from './Toast'
 
 const nav = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/library', icon: Film, label: 'Library' },
-  { to: '/segments', icon: Scissors, label: 'Segments' },
-  { to: '/markers', icon: Bookmark, label: 'Markers' },
+  { to: '/browse', icon: Film, label: 'Browse' },
   { to: '/analytics', icon: BarChart2, label: 'Analytics' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ]

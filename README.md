@@ -238,7 +238,7 @@ Two ways in:
 
 - **Sidecar** — drop `movie.skp` (or `.edl` / `.mcf`) next to `movie.mkv`. It is imported when the
   title is first discovered and the scan is skipped entirely.
-- **Library page** — expand a title and use the import box to upload a file or paste a list.
+- **Browse** — open a title's *Segments* view and use the import box to upload a file or paste a list.
 
 Imported timings are authored against a specific cut of a film. Cleanplex checks them against the
 title's runtime and warns when they do not line up, since an extended edition will throw every
@@ -277,31 +277,35 @@ Once saved, the token is never sent back to the browser: Settings shows "Saved. 
 - **Scanner status** — Number of workers active, queue size, and which titles are currently being scanned
 - **Recent skips** — Every recorded skip and mute (paged, with a total), with optional from/to date filters; failed actions are flagged. History is kept for `skip_event_retention_days`
 
-#### Library
+#### Browse
+Titles, segments and Plex markers share one page. A tree on the left picks the level (all libraries, a library, a show, a season; open a movie or episode from the list), the filter bar narrows it, and *Titles / Segments / Markers* choose what is listed for that level. The level and view are part of the address, so a level can be bookmarked; the old `/library`, `/segments` and `/markers` addresses open Browse.
+
+- **Filters that combine at every level** — name, **actor** (the cast is copied from Plex in the background; type a name or pick a suggestion), rating, release-year range, scan-date range, scan status and ignored titles. The numbers in the tree count the titles that pass them
+- **Sort** — date added, scan date, name, release year or segments, with the direction spelled out (*Newest first / Oldest first*); defaults to date added, newest first
+- **Segments at any level** — the Segments view lists every segment of the matching titles, with its own filters: state (active, marked false positive, rejected by the verifier), what found it, and label
+- **Bulk actions** — tick titles, shows or seasons (or *select all filtered*) to scan, ignore, un-ignore or delete the segments of the selection; deleting segments of a whole title, show or selection asks first
 - **Import skip files** — Upload `.skp` / `.edl` / `.mcf`, paste a timestamp list, or export segments as EDL/MCF
 - **Browse all titles** with scan status icons
 - **Trigger scans** per title or entire library
 - **"Scan Now"** to prioritize a title — moves it to the front of the scanning queue for immediate processing
-- **Sort & filter** — filters by ratings, by **actor** (the cast is copied from Plex in the background; type a name or pick a suggestion), and by a **From/To range** that follows the sort: scan dates for *Scanned Date*, release years for *Release Year*;  defaults to hiding ignored titles and sorting by date added (newest first)
 - **Scan completion timestamps** — shows when each title finished scanning
 
-#### Segments
-- **Three-panel browser**: Library tree → Select title → Browse its segments
+#### Browse: segments
 - **Live scanner banner** — shows which titles are currently being scanned with progress bars
 - **Segment details** — Timestamp range, confidence score, a thumbnail from the detected scene, and what found it (e.g. *NudeNet 640m*, *SigLIP*, *Subtitles*, *VideoSkip (.skp)*)
 - **Delete false positives** — Remove incorrectly flagged segments
 - **File cleanup** — Deleting a segment (or a title's segments, a rescan, or an import that replaces them) removes its thumbnail and hover preview. A sweep at startup and every 6 hours removes thumbnails, hover previews and feedback frames nothing references (older than an hour), and the saved data of removed titles (see *Removed titles*). The preview clip and poster caches are pruned by age and size (see *Data, Backups & Maintenance*). Feedback frames kept for false-positive and relabel verdicts are never removed
-- **Right-click to rescan** — On a movie, episode, season or show: *Rescan now* or *Rescan tonight* (queued for the scan window). The Segments page lists only titles that have segments, so on a show the first pair rescans those listed episodes; *Rescan whole show now / tonight* and *whole season now / tonight* queue every non-ignored episode, including ones with no segments; right-clicking a library offers *Rescan whole library tonight* (finished and failed titles, scheduled only, never jumped to the front)
-- **Failed scans** — On the Library page, the *Failed* tab has *Retry failed*: every failed title of the library is queued again (inside your rating filter), except titles whose media file is still missing, which stay on the list and are counted; ignored titles are taken off the Failed list. The same choice is in Settings → *Rescan Titles*. A failed title shows the reason its scan failed. *Sync from Plex* also queues a failed title again when Plex reports a different file for it, when its file changed after the failure, or when the failure is more than a day old (a missing file stays failed)
+- **Right-click to rescan** — On a movie, episode, season or show: *Rescan now* or *Rescan tonight* (queued for the scan window). On a show, season or library the first pair covers only its listed titles that have segments, so it rescans those listed episodes; *Rescan whole show now / tonight* and *whole season now / tonight* queue every non-ignored episode, including ones with no segments; right-clicking a library offers *Rescan whole library tonight* (finished and failed titles, scheduled only, never jumped to the front)
+- **Failed scans** — At library level in Browse, *Retry failed* (the round-arrow button): every failed title of the library is queued again (inside your rating filter), except titles whose media file is still missing, which stay on the list and are counted; ignored titles are taken off the Failed list. The same choice is in Settings → *Rescan Titles*. A failed title shows the reason its scan failed. *Sync from Plex* also queues a failed title again when Plex reports a different file for it, when its file changed after the failure, or when the failure is more than a day old (a missing file stays failed)
 - **Removed titles** — *Sync from Plex* drops titles Plex no longer reports. Their segments disappear from every list and count but are kept as marks; 30 days after removal everything else saved for the title (segment thumbnails and hover previews, cast, Plex markers, skip history, keyframe index) is deleted. A title that returns gets its marks back
 - **Rescan many titles** — Settings → Scan Scope & Schedule → *Rescan Titles*: pick titles scanned by an older scanner (the right choice after an update), titles with segments, every scanned title, or titles scanned before a date, optionally for one library. A live count shows what will be queued and how many your rating filters skip; they go through the normal scan queue (scan window, usual order) and keep their current segments until the new scan replaces them
 - **Live updates** — The open title's segments and the tree counts refresh as a rescan runs and when it finishes
-- **Hover preview** — Hovering a segment's thumbnail plays a 5 s silent loop of it (sped up for long segments), in Library, Segments and Analytics. Rendered overnight by the hover-preview job, so new segments get one the next night
+- **Hover preview** — Hovering a segment's thumbnail plays a 5 s silent loop of it (sped up for long segments), in Browse and Analytics. Rendered overnight by the hover-preview job, so new segments get one the next night
 - **Preview video** — In-app player; the server cuts a short H.264/AAC clip (5 s either side) so it plays in any browser, reading the file as the service account. *Open in VLC* starts and stops at the segment
 - **Jump to segment** — Send Plex seek command to that spot in the video
 - **Scan completion info** — Timestamp when the title finished scanning
 
-#### Markers
+#### Browse: markers
 - Lists the titles of a library with their **Plex intro and credits markers**, and lets you create, edit and delete them (and refresh them from Plex). A title's credits marker is what stops SigLIP from reading end credits as nudity
 
 #### Analytics
@@ -403,7 +407,7 @@ The Dashboard shows a **Controllable** badge per stream so you can see which cli
 
 ## Scanner Queue & Priority
 
-The queue is stored in the database, so the Dashboard, the Library page and the scan workers all see the same list, and it survives restarts. Each worker claims the next title from the database in one step, so a title is never scanned twice and a title being scanned is never picked up again.
+The queue is stored in the database, so the Dashboard, the Browse page and the scan workers all see the same list, and it survives restarts. Each worker claims the next title from the database in one step, so a title is never scanned twice and a title being scanned is never picked up again.
 
 - **Order** — Movies newest first, then TV shows grouped so a show's episodes run together
 - **Force priority** — Titles you "Scan Now" always run before everything else, and may run outside the scan window
