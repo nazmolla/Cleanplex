@@ -1,0 +1,160 @@
+// Types and pure helpers shared by the Browse page and its parts (#207).
+import { parseDbTimestamp } from '../../utils/dbTime'
+
+export interface Library {
+  id: string
+  title: string
+  type: string
+}
+
+export interface Title {
+  plex_guid: string
+  rating_key: string
+  title: string
+  status: string
+  progress: number
+  finished_at?: string | null
+  thumb_url: string
+  poster_url?: string
+  show_guid?: string
+  show_title?: string
+  show_rating_key?: string
+  season_rating_key?: string
+  segment_count: number
+  /** Segments marked as false positives; not in segment_count (#112). */
+  false_positive_count?: number
+  content_rating: string
+  media_type: string
+  year?: number | null
+  /** Actors Plex lists for the title (a show's for its episodes), for the cast filter (#180). */
+  cast?: string[]
+  ignored: boolean
+  /** Why the last scan failed; empty unless status is 'failed' (#190). */
+  error_msg?: string
+  /** Set by Browse: the library the title was loaded from. */
+  library_id: string
+}
+
+export interface Segment {
+  id: number
+  plex_guid: string
+  title: string
+  start_ms: number
+  end_ms: number
+  confidence: number
+  has_thumbnail: boolean
+  thumbnail_url: string
+  /** Film time the thumbnail frame was taken at (#133). */
+  thumbnail_ms?: number | null
+  /** Short silent loop played on hover; empty until rendered (#114). */
+  hover_url?: string
+  created_at: string
+  labels?: string
+  source?: string
+  detector?: string
+  false_positive?: boolean
+  /** Inactive because the verifier rejected it (not a mark by you); restore it if it was real. */
+  auto_rejected?: boolean
+}
+
+export interface ScannerStatus {
+  queue_size: number
+  current_scan: string | null
+  current_title: string | null
+  current_progress: number
+  current_scans: string[]
+  active_scans: { guid: string; title: string; progress: number; status: string }[]
+  workers_configured: number
+  workers_active: number
+  workers_idle: number
+  paused: boolean
+}
+
+/**
+ * The level Browse is looking at. Each field narrows the one before it:
+ * no lib = all libraries; lib; lib + show; lib + show + season; guid = one title.
+ */
+export interface Scope {
+  lib?: string
+  show?: string
+  season?: string
+  guid?: string
+}
+
+export type ScopeLevel = 'all' | 'library' | 'show' | 'season' | 'title'
+
+export function scopeLevel(s: Scope): ScopeLevel {
+  if (s.guid) return 'title'
+  if (s.season) return 'season'
+  if (s.show) return 'show'
+  if (s.lib) return 'library'
+  return 'all'
+}
+
+/** Episode titles are stored as "<show> – <season> – <episode>". */
+export function parseEpisodeTitle(title: string): { show: string; season: string; episode: string } {
+  const parts = title.split(' – ')
+  if (parts.length >= 3) {
+    return { show: parts[0].trim(), season: parts[1].trim(), episode: parts.slice(2).join(' – ').trim() }
+  }
+  return { show: 'Unknown Show', season: 'Unknown Season', episode: title }
+}
+
+/** Groups episodes by show: the Plex show guid, or the parsed name for rows synced before it was stored. */
+export function showKeyOf(t: Title): string {
+  return t.show_guid || parseEpisodeTitle(t.title).show
+}
+
+export function showNameOf(t: Title): string {
+  return t.show_title || parseEpisodeTitle(t.title).show
+}
+
+export function inScope(t: Title, s: Scope): boolean {
+  if (s.guid) return t.plex_guid === s.guid
+  if (s.lib && t.library_id !== s.lib) return false
+  if (s.show) {
+    if (t.media_type !== 'episode' || showKeyOf(t) !== s.show) return false
+    if (s.season && parseEpisodeTitle(t.title).season !== s.season) return false
+  }
+  return true
+}
+
+/** "Series 10" sorts after "Series 9"; a season without a number sorts first. */
+export function seasonSortKey(season: string): number {
+  const m = season.match(/\d+/)
+  return m ? parseInt(m[0], 10) : 0
+}
+
+export function msToTimecode(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = s % 60
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
+}
+
+export function formatFinishedAt(value?: string | null): string {
+  if (!value) return ''
+  const dt = parseDbTimestamp(value)
+  if (Number.isNaN(dt.getTime())) return ''
+  return dt.toLocaleString()
+}
+
+/** Shortens "Could not determine video duration for: /long/path/file.mp4" to the file name. */
+export function failureText(message: string): string {
+  return message.replace(/(: )(?:\/|[A-Za-z]:\\)\S.*?([^\/\\]+)$/, '$1$2')
+}
+
+export function segmentLabels(seg: Segment): string[] {
+  return seg.labels ? seg.labels.split(',').map(l => l.trim()).filter(Boolean) : []
+}
+
+/** "FEMALE_BREAST_EXPOSED" -> "F Breast"; free-text labels of imported segments pass through. */
+export function shortLabel(label: string): string {
+  return label.replace('_EXPOSED', '').replace('FEMALE_', 'F ').replace('MALE_', 'M ').replace('GENITALIA', 'Gen.').replace('BREAST', 'Breast').replace('_', ' ')
+}
+
+/** What found a segment, for the "Found by" filter: the detector for scanner results, else the source. */
+export function segmentOrigin(seg: Segment): string {
+  return seg.detector || seg.source || 'scanner'
+}

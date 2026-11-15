@@ -821,27 +821,28 @@ function SyncAllBanner({ progress, onDismiss }: { progress: SyncProgress; onDism
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export default function Markers() {
-  const [libraries, setLibraries] = useState<Library[]>([])
-  const [selectedLibrary, setSelectedLibrary] = useState<string>('')
-  const [titles, setTitles] = useState<TitleRow[]>([])
-  const [loadingLibraries, setLoadingLibraries] = useState(true)
+/**
+ * The markers of one library, embedded in Browse's Markers view (#207). `allowed` holds the Plex
+ * rating keys and guids of the titles Browse's scope and filters currently match, and limits the list
+ * (and Sync All) to them. Both ids: the marker cache and the scan jobs can disagree on either one.
+ */
+export default function Markers({ libraryId, libraryType, libraryTitle, allowed }: {
+  libraryId: string
+  libraryType: string
+  libraryTitle?: string
+  allowed?: Set<string>
+}) {
+  const selectedLibrary = libraryId
+  const [allTitles, setTitles] = useState<TitleRow[]>([])
   const [loadingTitles, setLoadingTitles] = useState(false)
   const [notCached, setNotCached] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
-  const [search, setSearch] = useState('')
+  const search = ''
   const [syncingAll, setSyncingAll] = useState(false)
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null)
 
-  const selectedLib = libraries.find(l => l.id === selectedLibrary)
-  const isTv = selectedLib?.type === 'show'
-
-  useEffect(() => {
-    api.get<{ libraries: Library[] }>('/api/markers/libraries').then(data => {
-      setLibraries(data.libraries || [])
-      if (data.libraries?.length) setSelectedLibrary(data.libraries[0].id)
-    }).finally(() => setLoadingLibraries(false))
-  }, [])
+  const isTv = libraryType === 'show'
+  const titles = allowed ? allTitles.filter(t => (allowed.has(t.rating_key) || allowed.has(t.plex_guid))) : allTitles
 
   useEffect(() => {
     if (!selectedLibrary) return
@@ -931,40 +932,10 @@ export default function Markers() {
   const totalTitles = isTv ? showGroups.length : filteredMovies.length
 
   return (
-    <div className="space-y-4 max-w-5xl">
-      {/* Page header */}
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-100">Markers</h1>
-          <p className="text-sm text-muted mt-1">
-            Drag the handles to move an intro or credits marker, then save it to Plex.
-          </p>
-        </div>
-      </div>
-
+    <div className="space-y-3">
       {/* Controls bar */}
       <div className="flex flex-wrap gap-2 items-center">
-        {loadingLibraries ? (
-          <span className="text-sm text-muted flex items-center gap-1"><Loader2 size={14} className="animate-spin" /> Loading…</span>
-        ) : (
-          <select
-            value={selectedLibrary}
-            onChange={e => setSelectedLibrary(e.target.value)}
-            className="bg-plex-dark border border-plex-border rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:border-plex-orange"
-          >
-            {libraries.map(lib => (
-              <option key={lib.id} value={lib.id}>{lib.title}</option>
-            ))}
-          </select>
-        )}
-
-        <input
-          type="text"
-          placeholder="Filter titles…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          className="bg-plex-dark border border-plex-border rounded-lg px-3 py-1.5 text-sm text-gray-200 placeholder-muted focus:border-plex-orange"
-        />
+        {libraryTitle && <h2 className="text-sm font-semibold text-gray-200">{libraryTitle}</h2>}
 
         <button
           onClick={handleRefreshLibrary}
