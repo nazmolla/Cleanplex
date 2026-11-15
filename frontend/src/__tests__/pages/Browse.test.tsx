@@ -73,7 +73,8 @@ beforeEach(() => {
     if (path === '/api/libraries/lib1/titles') return Promise.resolve({ titles: movieList })
     if (path === '/api/libraries/lib2/titles') return Promise.resolve({ titles: episodes })
     if (path === '/api/settings') return Promise.resolve(settings)
-    if (path.includes('/api/markers/')) return Promise.resolve({ titles: [], cached: true })
+    if (path.startsWith('/api/markers/libraries/')) return Promise.resolve({ titles: [{ ...movies[0], marker_count: 2 }], cached: true })
+    if (path.startsWith('/api/markers/titles/')) return Promise.resolve({ markers: [] })
     return Promise.resolve({})
   })
   mockApi.post.mockImplementation((path: string, body: any) => {
@@ -92,11 +93,15 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-describe('Browse levels (#207)', () => {
+const openFilters = () => fireEvent.click(screen.getByRole('button', { name: /^Filters/ }))
+const rowNames = () => screen.getAllByTitle(/^Open /).map(b => b.textContent)
+
+describe('Browse levels (#207, #208)', () => {
   it('lists the libraries at the top level without syncing any of them', async () => {
     renderAt()
-    await waitFor(() => expect(screen.getAllByText('Movies').length).toBeGreaterThan(1))
-    expect(screen.getAllByText('TV Shows')[0]).toBeInTheDocument()
+    const sidebar = await screen.findByRole('navigation', { name: 'Libraries' })
+    await waitFor(() => expect(within(sidebar).getByRole('button', { name: /^Movies/ })).toHaveTextContent('3'))
+    expect(rowNames()).toEqual(['Movies', 'TV Shows'])
     expect(mockApi.post.mock.calls.some(([p]: [string]) => p.includes('/sync'))).toBe(false)
   })
 
@@ -107,60 +112,81 @@ describe('Browse levels (#207)', () => {
     expect(screen.getByText('Could not determine video duration for: c.mp4')).toBeInTheDocument()
   })
 
-  it('lists shows in a TV library, then seasons, then episodes', async () => {
+  it('opens shows, then seasons, then episodes with the same rows', async () => {
     renderAt('/browse?lib=lib2')
-    const main = () => screen.getByRole('heading', { level: 2 }).closest('div')!.parentElement!
-    await screen.findAllByText('The Show')
-    fireEvent.click(within(main()).getAllByRole('button', { name: /The Show/ })[0])
+    fireEvent.click(await screen.findByTitle('Open The Show'))
     await waitFor(() => expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('The Show'))
-    fireEvent.click(within(main()).getAllByRole('button', { name: /Season 2/ })[0])
-    await screen.findByText('Return')
-    expect(screen.getByText('Finale')).toBeInTheDocument()
-    expect(screen.queryByText('Pilot')).not.toBeInTheDocument()
+    expect(rowNames()).toEqual(['Season 1', 'Season 2'])
+    fireEvent.click(screen.getByTitle('Open Season 2'))
+    await waitFor(() => expect(rowNames()).toEqual(['Finale', 'Return']))
   })
 
-  it('opens the old page addresses on the matching level and view', async () => {
-    renderAt('/browse?title=g1&view=segments')
+  it('opens a movie on its own page, on its segments', async () => {
+    renderAt('/browse?lib=lib1')
+    fireEvent.click(await screen.findByTitle('Open Movie A'))
     await waitFor(() => expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('Movie A'))
+    expect(screen.getByRole('tab', { name: 'Segments' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('tab', { name: 'Titles' })).not.toBeInTheDocument()
     await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/titles/segments/batch', { guids: ['g1'] }))
+  })
+
+  it('keeps the view when opening a row', async () => {
+    renderAt('/browse?lib=lib2&view=markers')
+    fireEvent.click(await screen.findByTitle('Open The Show'))
+    await waitFor(() => expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('The Show'))
+    expect(screen.getByRole('tab', { name: 'Markers' })).toHaveAttribute('aria-selected', 'true')
   })
 })
 
-describe('Browse filters (#207)', () => {
+describe('Browse search and filters (#207, #208)', () => {
+  it('finds a show by its name as one row, and an episode by its name with its show as context', async () => {
+    renderAt('/browse?lib=lib2')
+    await screen.findByTitle('Open The Show')
+    fireEvent.change(screen.getByLabelText('Filter by name'), { target: { value: 'the show' } })
+    expect(rowNames()).toEqual(['The Show'])
+
+    fireEvent.change(screen.getByLabelText('Filter by name'), { target: { value: 'pilot' } })
+    expect(rowNames()).toEqual(['Pilot'])
+    expect(screen.getByText('The Show · Season 1 · R')).toBeInTheDocument()
+  })
+
   it('combines the name, scan date and year filters', async () => {
     renderAt('/browse?lib=lib1')
     await screen.findByText('Movie A')
-
+    openFilters()
     fireEvent.change(screen.getByLabelText('Scanned from'), { target: { value: '2026-10-01' } })
-    expect(screen.getByText('Movie A')).toBeInTheDocument()
-    expect(screen.queryByText('Movie C')).not.toBeInTheDocument()
-    expect(screen.queryByText('Movie B')).not.toBeInTheDocument()
+    expect(rowNames()).toEqual(['Movie A'])
 
     fireEvent.change(screen.getByLabelText('Released to year'), { target: { value: '2010' } })
     expect(screen.queryByText('Movie A')).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByText('Clear filters'))
+    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }))
+    fireEvent.click(screen.getByText('Clear all'))
     fireEvent.change(screen.getByLabelText('Filter by name'), { target: { value: 'movie b' } })
-    expect(screen.getByText('Movie B')).toBeInTheDocument()
-    expect(screen.queryByText('Movie A')).not.toBeInTheDocument()
+    expect(rowNames()).toEqual(['Movie B'])
   })
 
-  it('filters by actor', async () => {
+  it('filters by actor and shows the filter as a removable chip', async () => {
     renderAt('/browse?lib=lib1')
     await screen.findByText('Movie A')
+    openFilters()
     fireEvent.change(screen.getByLabelText('Filter by actor'), { target: { value: 'ann' } })
-    expect(screen.getByText('Movie A')).toBeInTheDocument()
-    expect(screen.queryByText('Movie B')).not.toBeInTheDocument()
+    expect(rowNames()).toEqual(['Movie A'])
+    expect(screen.getByRole('button', { name: /^Filters/ })).toHaveTextContent('1')
+
+    openFilters()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove filter Actor: ann' }))
+    expect(rowNames()).toHaveLength(3)
   })
 
   it('counts each status and lists only the chosen one (#84, #85)', async () => {
     renderAt('/browse?lib=lib1')
     await screen.findByText('Movie A')
+    openFilters()
     const failed = screen.getByRole('button', { name: /^Failed/ })
     expect(failed).toHaveTextContent('1')
     fireEvent.click(failed)
-    expect(screen.getByText('Movie C')).toBeInTheDocument()
-    expect(screen.queryByText('Movie A')).not.toBeInTheDocument()
+    expect(rowNames()).toEqual(['Movie C'])
   })
 
   it('hides pending titles whose rating the scanner excludes (#149)', async () => {
@@ -168,27 +194,27 @@ describe('Browse filters (#207)', () => {
     renderAt('/browse?lib=lib1')
     await screen.findByText('Movie A')
     await waitFor(() => expect(screen.queryByText('Movie B')).not.toBeInTheDocument())
+    openFilters()
     expect(screen.getByRole('button', { name: /^All/, pressed: true })).toHaveTextContent('2')
   })
 
   it('names the sort direction and reverses the order', async () => {
     renderAt('/browse?lib=lib1')
     await screen.findByText('Movie A')
-    const order = () => screen.getAllByTitle("Open this title's segments").map(b => b.textContent)
-    expect(order()).toEqual(['Movie C', 'Movie B', 'Movie A'])
+    expect(rowNames()).toEqual(['Movie C', 'Movie B', 'Movie A'])
     fireEvent.click(screen.getByRole('button', { name: 'Sort direction: Newest first' }))
     expect(screen.getByRole('button', { name: 'Sort direction: Oldest first' })).toBeInTheDocument()
-    expect(order()).toEqual(['Movie A', 'Movie B', 'Movie C'])
+    expect(rowNames()).toEqual(['Movie A', 'Movie B', 'Movie C'])
   })
 
-  it('counts in the tree only the titles that pass the filters', async () => {
+  it('counts in the sidebar only the titles that pass the filters', async () => {
     renderAt('/browse?lib=lib1')
     await screen.findByText('Movie A')
-    const tree = screen.getByRole('navigation', { name: 'Level' })
-    expect(within(tree).getByRole('button', { name: /^Movies/ })).toHaveTextContent('3')
+    const sidebar = screen.getByRole('navigation', { name: 'Libraries' })
+    expect(within(sidebar).getByRole('button', { name: /^Movies/ })).toHaveTextContent('3')
     fireEvent.change(screen.getByLabelText('Filter by name'), { target: { value: 'Movie A' } })
-    expect(within(tree).getByRole('button', { name: /^Movies/ })).toHaveTextContent('1')
-    expect(within(tree).getByRole('button', { name: /^TV Shows/ })).toHaveTextContent('0')
+    expect(within(sidebar).getByRole('button', { name: /^Movies/ })).toHaveTextContent('1')
+    expect(within(sidebar).getByRole('button', { name: /^TV Shows/ })).toHaveTextContent('0')
   })
 })
 
@@ -200,6 +226,13 @@ describe('Browse actions (#207)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Scan selected now' }))
     await waitFor(() => expect(mockApi.post.mock.calls.filter(([p]: [string]) => p === '/api/scan/title')).toHaveLength(3))
     expect(mockApi.post).toHaveBeenCalledWith('/api/scan/title', { plex_guid: 'g1', now: true, library_id: 'lib1' })
+  })
+
+  it('selects every episode of a show from its row', async () => {
+    renderAt('/browse?lib=lib2')
+    await screen.findByTitle('Open The Show')
+    fireEvent.click(screen.getByLabelText('Select The Show'))
+    expect(screen.getByText('3 titles selected')).toBeInTheDocument()
   })
 
   it('syncs a library from Plex only on request', async () => {
@@ -217,15 +250,15 @@ describe('Browse actions (#207)', () => {
     expect(await screen.findByText(/2 failed titles queued for another try · 1 ignored cleared/)).toBeInTheDocument()
   })
 
-  it('queues a whole show and one season (#187)', async () => {
+  it('queues a whole show from its row (#187)', async () => {
     renderAt('/browse?lib=lib2')
-    await screen.findAllByText('The Show')
+    await screen.findByTitle('Open The Show')
     fireEvent.click(screen.getByRole('button', { name: 'Scan whole show tonight' }))
     await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/scan/show', {
       show_guid: 'show-1', show_title: 'The Show', season: '', library_id: 'lib2', now: false }))
   })
 
-  it('queues one season now from the season level (#187)', async () => {
+  it('queues one season now from the season page (#187)', async () => {
     renderAt('/browse?lib=lib2&show=show-1&season=Season%202')
     await screen.findByText('Return')
     fireEvent.click(screen.getByRole('button', { name: 'Scan Season 2 now' }))
@@ -235,14 +268,12 @@ describe('Browse actions (#207)', () => {
 
   it('offers the listed episodes or the whole show on right-click (#137)', async () => {
     renderAt('/browse?lib=lib2')
-    const tree = await screen.findByRole('navigation', { name: 'Level' })
-    await within(tree).findByText('The Show')
-
-    fireEvent.contextMenu(within(tree).getByText('The Show'))
+    fireEvent.contextMenu(await screen.findByTitle('Open The Show'))
     fireEvent.click(await screen.findByText('Rescan tonight'))
     await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/scan/titles', { plex_guids: ['e1', 'e2'], now: false }))
 
-    fireEvent.contextMenu(within(tree).getByText('TV Shows'))
+    const sidebar = screen.getByRole('navigation', { name: 'Libraries' })
+    fireEvent.contextMenu(within(sidebar).getByRole('button', { name: /^TV Shows/ }))
     fireEvent.click(await screen.findByText('Rescan whole library tonight'))
     await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/scan/rescan', { scope: 'whole_library', library_id: 'lib2' }))
   })
@@ -257,28 +288,53 @@ describe('Browse actions (#207)', () => {
   })
 })
 
-describe('Browse segments view (#207)', () => {
-  it('lists the segments of the matching titles at library level', async () => {
+describe('Browse segments view (#207, #208)', () => {
+  it('lists the segments of the matching titles at library level as rows', async () => {
     renderAt('/browse?lib=lib1&view=segments')
     await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/titles/segments/batch', { guids: ['g1'] }))
     expect(await screen.findByText('2 segments in 1 title')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: 'Preview segment video' })).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: /^Play segment/ })).toHaveLength(2)
 
     fireEvent.change(screen.getByLabelText('Filter by name'), { target: { value: 'Movie B' } })
     expect(await screen.findByText('No segments here.')).toBeInTheDocument()
   })
 
-  it('filters the listed segments by label', async () => {
+  it('filters the listed segments by label from the filter panel', async () => {
     renderAt('/browse?lib=lib1&view=segments')
     await screen.findByText('2 segments in 1 title')
+    openFilters()
     fireEvent.click(screen.getByRole('button', { name: 'BUTTOCKS', pressed: false }))
-    expect(screen.getByText('1 of 2 segments')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: 'Preview segment video' })).toHaveLength(1)
+    expect(screen.getByText('1 of 2 segments match')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /^Play segment/ })).toHaveLength(1)
   })
 
   it('lists segments across libraries at the top level', async () => {
     renderAt('/browse?view=segments')
     expect(await screen.findByText('4 segments in 3 titles')).toBeInTheDocument()
+  })
+
+  it('keeps import and export folded away on a title page until asked for', async () => {
+    renderAt('/browse?title=g1')
+    await screen.findByText('2 segments')
+    expect(screen.queryByText('Paste list')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Import or export skip files' }))
+    expect(screen.getByText('Paste list')).toBeInTheDocument()
+  })
+})
+
+describe('Browse markers view (#207, #208)', () => {
+  it('shows marker counts in the same rows', async () => {
+    renderAt('/browse?lib=lib1&view=markers')
+    await screen.findByText('Movie A')
+    await waitFor(() => expect(mockApi.get).toHaveBeenCalledWith('/api/markers/libraries/lib1/titles'))
+    expect(screen.getByRole('tab', { name: 'Markers' })).toHaveAttribute('aria-selected', 'true')
+    const row = screen.getByTitle('Open Movie A').closest('.group') as HTMLElement
+    await waitFor(() => expect(within(row).getByText('2')).toBeInTheDocument())
+  })
+
+  it('opens the marker editor on a title page', async () => {
+    renderAt('/browse?title=g1&view=markers')
+    await waitFor(() => expect(mockApi.get).toHaveBeenCalledWith('/api/markers/titles/1'))
   })
 })
 

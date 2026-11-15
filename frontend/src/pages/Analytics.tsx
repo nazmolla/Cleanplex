@@ -9,12 +9,14 @@ import RelabelButton from '../components/RelabelButton'
 import ThumbnailTime from '../components/ThumbnailTime'
 import SkipAnalytics from '../components/SkipAnalytics'
 import DetectionAccuracy from '../components/DetectionAccuracy'
-import { X, AlertTriangle, Trash2, Play, SkipForward, ChevronLeft, ChevronRight } from 'lucide-react'
+import { X, AlertTriangle, Trash2, Play, SkipForward, ChevronLeft, ChevronRight, LayoutGrid, List } from 'lucide-react'
 import HoverPreview from '../components/HoverPreview'
 import SegmentPlayer from '../components/SegmentPlayer'
 import Modal from '../components/Modal'
 import { toast } from '../components/Toast'
 import CollapsibleSection from '../components/CollapsibleSection'
+import SegmentCard from '../components/browse/SegmentCard'
+import type { Segment as CardSegment } from '../components/browse/model'
 
 interface LabelCount {
   label: string
@@ -148,6 +150,30 @@ interface SortSpec { sort: SortKey; order: 'asc' | 'desc' }
 const SORT_LABELS: Record<SortKey, string> = { score: 'Score', added: 'Date added', marked: 'Date marked' }
 
 // Sort picker for a segment list: the key, plus a button flipping ascending/descending.
+type Layout = 'list' | 'gallery'
+
+/** List or gallery (large frames, #208) for the segment lists; the choice is remembered per browser. */
+function LayoutToggle({ value, onChange }: { value: Layout; onChange: (next: Layout) => void }) {
+  const btn = (id: Layout, label: string, Icon: typeof List) => (
+    <button
+      type="button"
+      onClick={() => onChange(id)}
+      aria-pressed={value === id}
+      title={label}
+      aria-label={label}
+      className={`p-1.5 rounded-md transition-colors ${value === id ? 'bg-plex-orange text-black' : 'text-gray-400 hover:text-gray-100'}`}
+    >
+      <Icon size={14} />
+    </button>
+  )
+  return (
+    <div className="flex p-0.5 gap-0.5 rounded-lg bg-black/25 border border-plex-border">
+      {btn('list', 'Show as a list', List)}
+      {btn('gallery', 'Show as a gallery', LayoutGrid)}
+    </div>
+  )
+}
+
 function SortControl({ value, options, onChange }: {
   value: SortSpec
   options: SortKey[]
@@ -227,6 +253,14 @@ export default function Analytics() {
   const [deletingSegs, setDeletingSegs] = useState<Record<number, boolean>>({})
   const [jumpingSegs, setJumpingSegs] = useState<Record<number, boolean>>({})
   const [previewSeg, setPreviewSeg] = useState<Segment | null>(null)
+  const [layout, setLayoutState] = useState<Layout>(() => {
+    // Storage can be unavailable (#117); the list is the default then.
+    try { return localStorage.getItem('analytics.segmentLayout') === 'gallery' ? 'gallery' : 'list' } catch { return 'list' }
+  })
+  const setLayout = (next: Layout) => {
+    setLayoutState(next)
+    try { localStorage.setItem('analytics.segmentLayout', next) } catch { /* not remembered */ }
+  }
 
   const loadLabels = useCallback(() => {
     api.get<{ labels: LabelCount[] }>('/api/analytics/labels')
@@ -346,7 +380,7 @@ export default function Analytics() {
   }
 
   // This list shows active detections only, so a marked segment leaves it, as on
-  // delete; the mark can be undone from the Segments or Library page.
+  // delete; the mark can be undone from Browse or the False positives tab.
   // Swap in the corrected labels without a refetch; the live refresh that follows
   // drops the row if it no longer matches the selected labels.
   const relabelInPlace = (id: number, labels: string) => {
@@ -398,6 +432,38 @@ export default function Analytics() {
       setJumpingSegs(j => ({ ...j, [seg.id]: false }))
     }
   }
+
+  const onCardChange = (seg: Segment, next: CardSegment) => {
+    if ((next.labels ?? '') !== (seg.labels ?? '')) relabelInPlace(seg.id, next.labels ?? '')
+    if (!!next.false_positive !== !!seg.false_positive) {
+      // Marking drops it from the detections list; undoing drops it from the false-positives list.
+      if (seg.false_positive) dropFromFalsePositives(seg)
+      else dropFromList(seg)
+    }
+  }
+  const onCardDeleted = (seg: Segment) => {
+    if (seg.false_positive) dropFromFalsePositives(seg)
+    else dropFromList(seg)
+  }
+  const renderGallery = (list: Segment[]) => (
+    <div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(300px,1fr))]">
+      {list.map(seg => (
+        <SegmentCard
+          key={seg.id}
+          seg={{ ...seg, created_at: '' } as CardSegment}
+          caption={
+            <span title={seg.title}>
+              {seg.title}
+              {seg.marked_at && <span className="ml-2 text-xs text-amber-300/80">Marked {formatMarkedAt(seg.marked_at)}</span>}
+            </span>
+          }
+          onPreview={() => setPreviewSeg(seg)}
+          onChange={next => onCardChange(seg, next)}
+          onDeleted={() => onCardDeleted(seg)}
+        />
+      ))}
+    </div>
+  )
 
   const renderRow = (seg: Segment) => (
                 <div
@@ -637,6 +703,7 @@ export default function Analytics() {
                   )}
                 </h2>
                 <div className="flex items-center gap-3">
+                  <LayoutToggle value={layout} onChange={setLayout} />
                   <SortControl value={segSort} options={['score', 'added']} onChange={next => { setSegSort(next); setPage(0) }} />
                   <Pager page={page} totalPages={totalPages} onPage={setPage} compact />
                 </div>
@@ -647,9 +714,11 @@ export default function Analytics() {
               ) : segments.length === 0 ? (
                 <p className="text-muted text-sm">No segments found for the selected labels.</p>
               ) : (
-                <div className="space-y-2">
-                  {segments.map(seg => renderRow(seg))}
-                </div>
+                layout === 'gallery' ? renderGallery(segments) : (
+                  <div className="space-y-2">
+                    {segments.map(seg => renderRow(seg))}
+                  </div>
+                )
               )}
 
               <Pager page={page} totalPages={totalPages} onPage={setPage} />
@@ -687,6 +756,7 @@ export default function Analytics() {
                   <option value="marked">Flagged by you ({fpCounts.marked})</option>
                   <option value="verifier">Rejected by the verifier ({fpCounts.verifier})</option>
                 </select>
+                <LayoutToggle value={layout} onChange={setLayout} />
                 <SortControl value={fpSort} options={['marked', 'score', 'added']} onChange={next => { setFpSort(next); setFpPage(0) }} />
                 <Pager page={fpPage} totalPages={Math.ceil(fpTotal / PAGE_SIZE)} onPage={setFpPage} compact />
               </div>
@@ -696,9 +766,11 @@ export default function Analytics() {
             ) : fpSegments.length === 0 ? (
               <p className="text-muted text-sm">No false positives marked yet.</p>
             ) : (
-              <div className="space-y-2">
-                {fpSegments.map(seg => renderRow(seg))}
-              </div>
+              layout === 'gallery' ? renderGallery(fpSegments) : (
+                <div className="space-y-2">
+                  {fpSegments.map(seg => renderRow(seg))}
+                </div>
+              )
             )}
             <Pager page={fpPage} totalPages={Math.ceil(fpTotal / PAGE_SIZE)} onPage={setFpPage} />
           </section>

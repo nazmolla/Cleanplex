@@ -4,14 +4,12 @@ import Modal from '../Modal'
 import SegmentPlayer from '../SegmentPlayer'
 import SkipFileImport from '../SkipFileImport'
 import SegmentRow from './SegmentRow'
-import { Segment, Title, msToTimecode, segmentLabels, segmentOrigin, shortLabel } from './model'
-
-type StateFilter = 'all' | 'active' | 'fp_user' | 'fp_verifier'
+import { Segment, SegmentFilters, Title, msToTimecode, segmentLabels, segmentOrigin, segmentPasses } from './model'
 
 // Guids per batch request: keeps one request's SQL parameter list and reply size bounded.
 const BATCH_GUIDS = 300
-// Segment rows rendered at first and added per "Show more": each row holds a thumbnail.
-const PAGE = 100
+// Segment rows rendered at first and added per "Show more": each row holds a frame.
+const PAGE = 80
 
 const countKey = (t: Title) => `${t.segment_count}:${t.false_positive_count ?? 0}`
 
@@ -20,30 +18,31 @@ interface Props {
   titles: Title[]
   /** One title is in scope: show its import / export box and no per-title headings. */
   single: boolean
-  /** Name shown above a title's segments, relative to the current level. */
-  titleLabel: (t: Title) => string
+  /** How a title is named in a heading, relative to the current level. */
+  nameOf: (t: Title) => { name: string; context: string }
   onOpenTitle: (t: Title) => void
   /** Segments were imported for a title: its counts in Browse are out of date. */
   onImported: (t: Title) => void
+  filters: SegmentFilters
+  /** The labels and detectors present in scope, for the filter panel's choices. */
+  onOptions: (labels: string[], origins: string[]) => void
 }
 
 /**
- * Every segment of the titles in scope (#207), with the segment-level filters. Lists are
- * fetched through the batch endpoint and cached per title against the counts they were
+ * Every segment of the titles in scope (#207), one row each, grouped by title (#208).
+ * Lists are fetched through the batch endpoint and cached per title against the counts they were
  * fetched at, so a scan, import or delete elsewhere refetches only the titles it touched.
  */
-export default function SegmentsView({ titles, single, titleLabel, onOpenTitle, onImported }: Props) {
+export default function SegmentsView({ titles, single, nameOf, onOpenTitle, onImported, filters, onOptions }: Props) {
   const [segs, setSegs] = useState<Record<string, Segment[]>>({})
   // The title's counts when its list was fetched. Compared with later counts rather than
   // the list length, because the list hides disabled labels and the count does not.
   const fetchedAt = useRef<Record<string, string>>({})
   const [loading, setLoading] = useState(false)
   const [failed, setFailed] = useState(false)
-  const [labelFilter, setLabelFilter] = useState<Set<string>>(new Set())
-  const [originFilter, setOriginFilter] = useState('')
-  const [stateFilter, setStateFilter] = useState<StateFilter>('all')
   const [limit, setLimit] = useState(PAGE)
   const [previewSeg, setPreviewSeg] = useState<Segment | null>(null)
+  const [showImport, setShowImport] = useState(false)
 
   const withSegments = useMemo(
     () => titles.filter(t => t.segment_count > 0 || (t.false_positive_count ?? 0) > 0),
@@ -52,8 +51,8 @@ export default function SegmentsView({ titles, single, titleLabel, onOpenTitle, 
   // Changes only when a title enters the scope or its counts move, not on every re-render.
   const wanted = withSegments.map(t => `${t.plex_guid}=${countKey(t)}`).join('|')
 
-  // Fetch the lists that are missing or stale. An earlier run still in flight is aborted
-  // by flag: its replies are dropped so they cannot overwrite a newer scope's state.
+  // Fetch the lists that are missing or stale. An earlier run still in flight is dropped by
+  // flag: its replies are ignored so they cannot overwrite a newer scope's state.
   useEffect(() => {
     const need = withSegments.filter(t => fetchedAt.current[t.plex_guid] !== countKey(t))
     if (need.length === 0) return
@@ -80,26 +79,21 @@ export default function SegmentsView({ titles, single, titleLabel, onOpenTitle, 
     return () => { cancelled = true }
   }, [wanted])
 
-  // A new scope starts from the first page again.
+  // A new scope or new filters start from the first page again.
   const scopeKey = withSegments.map(t => t.plex_guid).join('|')
-  useEffect(() => { setLimit(PAGE) }, [scopeKey])
+  useEffect(() => { setLimit(PAGE) }, [scopeKey, filters])
 
   const inScope = useMemo(() => withSegments.flatMap(t => segs[t.plex_guid] ?? []), [withSegments, segs])
-  const labelOptions = useMemo(() => Array.from(new Set(inScope.flatMap(segmentLabels))).sort(), [inScope])
-  const originOptions = useMemo(() => Array.from(new Set(inScope.map(segmentOrigin))).sort(), [inScope])
 
-  const passes = (s: Segment) => {
-    if (stateFilter === 'active' && s.false_positive) return false
-    if (stateFilter === 'fp_user' && !(s.false_positive && !s.auto_rejected)) return false
-    if (stateFilter === 'fp_verifier' && !s.auto_rejected) return false
-    if (originFilter && segmentOrigin(s) !== originFilter) return false
-    // A label filter keeps segments that carry at least one selected label.
-    if (labelFilter.size > 0 && !segmentLabels(s).some(l => labelFilter.has(l))) return false
-    return true
-  }
+  // Report the choices for the filter panel when they change.
+  const labelKey = useMemo(() => Array.from(new Set(inScope.flatMap(segmentLabels))).sort().join('\n'), [inScope])
+  const originKey = useMemo(() => Array.from(new Set(inScope.map(segmentOrigin))).sort().join('\n'), [inScope])
+  useEffect(() => {
+    onOptions(labelKey ? labelKey.split('\n') : [], originKey ? originKey.split('\n') : [])
+  }, [labelKey, originKey])
 
   const groups = withSegments
-    .map(t => ({ title: t, segments: (segs[t.plex_guid] ?? []).filter(passes) }))
+    .map(t => ({ title: t, segments: (segs[t.plex_guid] ?? []).filter(s => segmentPasses(s, filters)) }))
     .filter(g => g.segments.length > 0)
   const total = groups.reduce((n, g) => n + g.segments.length, 0)
 
@@ -109,7 +103,7 @@ export default function SegmentsView({ titles, single, titleLabel, onOpenTitle, 
     .map(g => {
       const take = g.segments.slice(0, Math.max(0, budget))
       budget -= take.length
-      return { title: g.title, segments: take }
+      return { title: g.title, count: g.segments.length, segments: take }
     })
     .filter(g => g.segments.length > 0)
 
@@ -118,19 +112,11 @@ export default function SegmentsView({ titles, single, titleLabel, onOpenTitle, 
   const drop = (seg: Segment) =>
     setSegs(prev => ({ ...prev, [seg.plex_guid]: (prev[seg.plex_guid] ?? []).filter(x => x.id !== seg.id) }))
 
-  const toggleLabel = (label: string) =>
-    setLabelFilter(prev => {
-      const next = new Set(prev)
-      next.has(label) ? next.delete(label) : next.add(label)
-      return next
-    })
-
-  const filtering = labelFilter.size > 0 || originFilter !== '' || stateFilter !== 'all'
-  const selectCls = 'px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-300 focus:border-plex-orange/50'
+  const filtered = total !== inScope.length
 
   return (
-    <div className="space-y-3">
-      {single && titles[0] && (
+    <div className="space-y-5">
+      {single && titles[0] && showImport && (
         <SkipFileImport
           plexGuid={titles[0].plex_guid}
           onImported={() => {
@@ -142,67 +128,48 @@ export default function SegmentsView({ titles, single, titleLabel, onOpenTitle, 
         />
       )}
 
-      <div className="flex flex-wrap items-center gap-2">
-        <select value={stateFilter} onChange={e => setStateFilter(e.target.value as StateFilter)} aria-label="Segment state" className={selectCls}>
-          <option value="all">All segments</option>
-          <option value="active">Active only</option>
-          <option value="fp_user">False positives (marked by you)</option>
-          <option value="fp_verifier">Rejected by the verifier</option>
-        </select>
-        {originOptions.length > 1 && (
-          <select value={originFilter} onChange={e => setOriginFilter(e.target.value)} aria-label="Found by" className={selectCls}>
-            <option value="">Found by anything</option>
-            {originOptions.map(o => <option key={o} value={o}>{o}</option>)}
-          </select>
-        )}
-        {labelOptions.map(label => {
-          const active = labelFilter.has(label)
-          return (
-            <button
-              key={label}
-              onClick={() => toggleLabel(label)}
-              aria-pressed={active}
-              title={label}
-              className={`text-xs px-2 py-1 rounded-full border transition-colors ${
-                active ? 'bg-plex-orange/20 text-plex-orange border-plex-orange/50' : 'text-gray-400 border-plex-border hover:text-gray-200'
-              }`}
-            >
-              {shortLabel(label)}
-            </button>
-          )
-        })}
-        {filtering && (
-          <button onClick={() => { setLabelFilter(new Set()); setOriginFilter(''); setStateFilter('all') }} className="text-xs text-gray-400 hover:text-white px-1">
-            Clear
+      <div className="flex items-center gap-3">
+        <p className="text-xs text-muted tabular-nums" role="status">
+          {loading ? 'Loading segments…'
+            : filtered ? `${total} of ${inScope.length} segments match`
+            : `${total} segment${total === 1 ? '' : 's'}${single ? '' : ` in ${groups.length} title${groups.length === 1 ? '' : 's'}`}`}
+        </p>
+        {/* Import and export are occasional, so they stay folded away until asked for. */}
+        {single && (
+          <button onClick={() => setShowImport(v => !v)} aria-expanded={showImport} className="ml-auto btn-outline text-xs">
+            {showImport ? 'Close import and export' : 'Import or export skip files'}
           </button>
         )}
-        <span className="ml-auto text-xs text-muted tabular-nums whitespace-nowrap" role="status">
-          {loading ? 'Loading segments…' : filtering ? `${total} of ${inScope.length} segments` : `${total} segment${total === 1 ? '' : 's'} in ${groups.length} title${groups.length === 1 ? '' : 's'}`}
-        </span>
       </div>
 
       {failed && <p className="text-sm text-red-400">Could not load segments. Change the level or reload the page to retry.</p>}
       {!loading && !failed && total === 0 && (
-        <p className="text-sm text-muted py-6 text-center">
+        <p className="text-sm text-muted py-8 text-center">
           {inScope.length > 0 ? 'No segments match the segment filters.' : 'No segments here.'}
         </p>
       )}
 
-      {shown.map(g => (
-        <section key={g.title.plex_guid} className="space-y-2">
-          {!single && (
-            <h3 className="flex items-baseline gap-2 text-sm">
-              <button onClick={() => onOpenTitle(g.title)} className="text-gray-200 font-medium hover:text-plex-orange truncate text-left">
-                {titleLabel(g.title)}
-              </button>
-              <span className="text-xs text-muted flex-shrink-0">{(segs[g.title.plex_guid] ?? []).filter(passes).length}</span>
-            </h3>
-          )}
-          {g.segments.map(seg => (
-            <SegmentRow key={seg.id} seg={seg} onPreview={setPreviewSeg} onChange={patch} onDeleted={drop} />
-          ))}
-        </section>
-      ))}
+      {shown.map(g => {
+        const { name, context } = nameOf(g.title)
+        return (
+          <section key={g.title.plex_guid} className="space-y-2">
+            {!single && (
+              <h3 className="flex items-baseline gap-2 min-w-0">
+                <button onClick={() => onOpenTitle(g.title)} className="text-sm font-semibold text-gray-100 hover:text-plex-orange truncate text-left">
+                  {name}
+                </button>
+                {context && <span className="text-xs text-muted truncate">{context}</span>}
+                <span className="ml-auto text-xs text-muted flex-shrink-0 tabular-nums">{g.count}</span>
+              </h3>
+            )}
+            <div className="space-y-2">
+              {g.segments.map(seg => (
+                <SegmentRow key={seg.id} seg={seg} onPreview={setPreviewSeg} onChange={patch} onDeleted={drop} />
+              ))}
+            </div>
+          </section>
+        )
+      })}
 
       {total > limit && (
         <div className="text-center">

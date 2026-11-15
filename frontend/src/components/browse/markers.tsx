@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { api } from '../api/client'
-import Modal from '../components/Modal'
-import { useLiveRefresh } from '../api/events'
+import { api } from '../../api/client'
+import Modal from '../Modal'
+import { useLiveRefresh } from '../../api/events'
 import {
   Film, Tv, ChevronRight, ChevronDown, RefreshCw, Play, Save,
   AlertCircle, CheckCircle, Loader2, Trash2, Plus, Tv2,
@@ -13,7 +13,7 @@ interface Library {
   type: string
 }
 
-interface TitleRow {
+export interface TitleRow {
   plex_guid: string
   title: string
   rating_key: string
@@ -531,16 +531,20 @@ function AddMarkerForm({
 }
 
 // ── Title marker panel (expand row) ──────────────────────────────────────────
+// Marker editing for Browse (#207, #208): one title's markers, and the sync-all progress banner.
 
-function TitleMarkerPanel({
+export function TitleMarkerPanel({
   title,
   episodeLabel,
   thumbSrc,
+  defaultOpen = false,
   onMarkerCountChange,
 }: {
   title: TitleRow
   episodeLabel?: string
   thumbSrc?: string
+  /** Open (and load) at once: Browse shows one title's markers on its own page (#208). */
+  defaultOpen?: boolean
   onMarkerCountChange: (guid: string, count: number) => void
 }) {
   const [open, setOpen] = useState(false)
@@ -580,6 +584,11 @@ function TitleMarkerPanel({
     if (!open && !loaded) await load()
     setOpen(v => !v)
   }
+
+  // Runs once per title shown: a title page opens its editor without a click.
+  useEffect(() => {
+    if (defaultOpen) handleToggle()
+  }, [title.rating_key])
 
   const handleSync = async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -662,120 +671,9 @@ function TitleMarkerPanel({
   )
 }
 
-// ── Season group (inside a show) ──────────────────────────────────────────────
-
-function SeasonGroupSection({
-  season,
-  search,
-  onMarkerCountChange,
-}: {
-  season: SeasonGroup
-  search: string
-  onMarkerCountChange: (guid: string, count: number) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const filtered = season.episodes.filter(e =>
-    e.title.toLowerCase().includes(search.toLowerCase()) ||
-    parseEpisodeTitle(e.title).episode.toLowerCase().includes(search.toLowerCase()),
-  )
-  if (filtered.length === 0) return null
-
-  return (
-    <div className="border border-plex-border rounded-lg">
-      <button
-        onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/5 transition-colors rounded-lg"
-      >
-        <ChevronRight size={13} className={`text-gray-400 transition-transform ${open ? 'rotate-90' : ''}`} />
-        <span className="text-xs font-medium text-gray-300">{season.season}</span>
-        <span className="text-xs text-muted ml-auto flex items-center gap-2">
-          {season.episodes.length} episode{season.episodes.length !== 1 ? 's' : ''}
-          {season.total_markers > 0 && <MarkerCountBadge count={season.total_markers} />}
-        </span>
-      </button>
-      {open && (
-        <div className="border-t border-plex-border p-2 space-y-2">
-          {filtered.map(ep => {
-            const parsed = parseEpisodeTitle(ep.title)
-            return (
-              <TitleMarkerPanel
-                key={ep.plex_guid}
-                title={ep}
-                episodeLabel={parsed.episode}
-                thumbSrc={ep.thumb_url}
-                onMarkerCountChange={onMarkerCountChange}
-              />
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── Show group card ───────────────────────────────────────────────────────────
-
-function ShowGroupCard({
-  group,
-  search,
-  onMarkerCountChange,
-}: {
-  group: ShowGroup
-  search: string
-  onMarkerCountChange: (guid: string, count: number) => void
-}) {
-  const [open, setOpen] = useState(false)
-
-  const hasMatch = group.episodes.some(e =>
-    e.title.toLowerCase().includes(search.toLowerCase()) ||
-    group.show_title.toLowerCase().includes(search.toLowerCase()),
-  )
-  if (!hasMatch) return null
-
-  return (
-    <div className="bg-plex-card border border-plex-border rounded-xl p-3">
-      {/* Show header */}
-      <div className="flex items-center gap-3">
-        <Poster src={group.poster_url} alt={`${group.show_title} poster`} className="w-14 h-20" />
-        <button
-          onClick={() => setOpen(v => !v)}
-          className="p-1 text-gray-400 hover:text-white flex-shrink-0"
-        >
-          <ChevronRight size={14} className={open ? 'rotate-90 transition-transform' : 'transition-transform'} />
-        </button>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-gray-100 truncate">{group.show_title}</p>
-          <p className="text-xs text-muted mt-0.5">
-            {group.seasons.length} season{group.seasons.length !== 1 ? 's' : ''} • {group.episodes.length} episode{group.episodes.length !== 1 ? 's' : ''}
-            {group.total_markers > 0 && (
-              <span className="ml-2 inline-flex items-center gap-1">
-                <MarkerCountBadge count={group.total_markers} />
-              </span>
-            )}
-          </p>
-        </div>
-      </div>
-
-      {/* Seasons → episodes */}
-      {open && (
-        <div className="mt-3 space-y-2">
-          {group.seasons.map(season => (
-            <SeasonGroupSection
-              key={season.season}
-              season={season}
-              search={search}
-              onMarkerCountChange={onMarkerCountChange}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
 // ── Sync-all progress banner ──────────────────────────────────────────────────
 
-interface SyncProgress {
+export interface SyncProgress {
   done: number
   total: number
   failed: number
@@ -783,7 +681,7 @@ interface SyncProgress {
   finished: boolean
 }
 
-function SyncAllBanner({ progress, onDismiss }: { progress: SyncProgress; onDismiss: () => void }) {
+export function SyncAllBanner({ progress, onDismiss }: { progress: SyncProgress; onDismiss: () => void }) {
   const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0
   return (
     <div className="bg-plex-card border border-plex-border rounded-xl p-4 space-y-2">
@@ -814,225 +712,6 @@ function SyncAllBanner({ progress, onDismiss }: { progress: SyncProgress; onDism
             style={{ width: `${pct}%` }}
           />
         </div>
-      )}
-    </div>
-  )
-}
-
-// ── Main page ─────────────────────────────────────────────────────────────────
-
-/**
- * The markers of one library, embedded in Browse's Markers view (#207). `allowed` holds the Plex
- * rating keys and guids of the titles Browse's scope and filters currently match, and limits the list
- * (and Sync All) to them. Both ids: the marker cache and the scan jobs can disagree on either one.
- */
-export default function Markers({ libraryId, libraryType, libraryTitle, allowed }: {
-  libraryId: string
-  libraryType: string
-  libraryTitle?: string
-  allowed?: Set<string>
-}) {
-  const selectedLibrary = libraryId
-  const [allTitles, setTitles] = useState<TitleRow[]>([])
-  const [loadingTitles, setLoadingTitles] = useState(false)
-  const [notCached, setNotCached] = useState(false)
-  const [refreshing, setRefreshing] = useState(false)
-  const search = ''
-  const [syncingAll, setSyncingAll] = useState(false)
-  const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null)
-
-  const isTv = libraryType === 'show'
-  const titles = allowed ? allTitles.filter(t => (allowed.has(t.rating_key) || allowed.has(t.plex_guid))) : allTitles
-
-  useEffect(() => {
-    if (!selectedLibrary) return
-    setLoadingTitles(true)
-    setNotCached(false)
-    setSyncProgress(null)
-    api.get<{ titles: TitleRow[]; cached: boolean }>(`/api/markers/libraries/${selectedLibrary}/titles`)
-      .then(data => {
-        setTitles(data.titles || [])
-        setNotCached(data.cached === false)
-      })
-      .finally(() => setLoadingTitles(false))
-  }, [selectedLibrary])
-
-  // Live (#89): marker edits and syncs (here or in another tab) reload the list
-  // quietly, without resetting the loading or sync-progress state.
-  const selectedLibraryRef = useRef(selectedLibrary)
-  selectedLibraryRef.current = selectedLibrary
-  useLiveRefresh(['markers_changed'], () => {
-    const lib = selectedLibraryRef.current
-    if (!lib) return
-    api.get<{ titles: TitleRow[]; cached: boolean }>(`/api/markers/libraries/${lib}/titles`)
-      .then(data => { if (selectedLibraryRef.current === lib) setTitles(data.titles || []) })
-      .catch(() => {})
-  }, { debounceMs: 1000 })
-
-  const handleRefreshLibrary = async () => {
-    if (!selectedLibrary) return
-    setRefreshing(true)
-    try {
-      await api.post(`/api/markers/libraries/${selectedLibrary}/refresh`)
-      const data = await api.get<{ titles: TitleRow[]; cached: boolean }>(`/api/markers/libraries/${selectedLibrary}/titles`)
-      setTitles(data.titles || [])
-      setNotCached(false)
-    } finally {
-      setRefreshing(false)
-    }
-  }
-
-  const handleSyncAll = async () => {
-    if (!selectedLibrary || titles.length === 0) return
-    setSyncingAll(true)
-    const total = titles.length
-    let done = 0, failed = 0, totalMarkers = 0
-    setSyncProgress({ done: 0, total, failed: 0, totalMarkers: 0, finished: false })
-
-    // Fan out in batches of 5 — gives live progress and avoids one giant timed-out request.
-    const BATCH = 5
-    for (let i = 0; i < titles.length; i += BATCH) {
-      const batch = titles.slice(i, i + BATCH)
-      await Promise.all(batch.map(async t => {
-        try {
-          const res = await api.post<{ count: number }>(`/api/markers/titles/${t.rating_key}/sync`, { plex_guid: t.plex_guid })
-          totalMarkers += res.count ?? 0
-        } catch {
-          failed++
-        } finally {
-          done++
-          setSyncProgress({ done, total, failed, totalMarkers, finished: false })
-        }
-      }))
-    }
-
-    // Refresh title list to pick up updated marker counts
-    try {
-      const data = await api.get<{ titles: TitleRow[]; cached: boolean }>(`/api/markers/libraries/${selectedLibrary}/titles`)
-      setTitles(data.titles || [])
-    } catch {}
-
-    setSyncProgress({ done, total, failed, totalMarkers, finished: true })
-    setSyncingAll(false)
-  }
-
-  const handleMarkerCountChange = useCallback((ratingKey: string, count: number) => {
-    setTitles(prev => prev.map(t => t.rating_key === ratingKey ? { ...t, marker_count: count } : t))
-  }, [])
-
-  const filteredMovies = titles.filter(
-    t => t.media_type !== 'episode' && t.title.toLowerCase().includes(search.toLowerCase()),
-  )
-  const filteredEpisodes = titles.filter(t => t.media_type === 'episode')
-  const showGroups = groupByShow(filteredEpisodes).filter(g =>
-    g.episodes.some(e => e.title.toLowerCase().includes(search.toLowerCase())) ||
-    g.show_title.toLowerCase().includes(search.toLowerCase()),
-  )
-
-  const totalTitles = isTv ? showGroups.length : filteredMovies.length
-
-  return (
-    <div className="space-y-3">
-      {/* Controls bar */}
-      <div className="flex flex-wrap gap-2 items-center">
-        {libraryTitle && <h2 className="text-sm font-semibold text-gray-200">{libraryTitle}</h2>}
-
-        <button
-          onClick={handleRefreshLibrary}
-          disabled={refreshing || !selectedLibrary || loadingTitles}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-gray-300 border border-plex-border bg-plex-dark hover:bg-white/5 transition-colors disabled:opacity-50 ml-auto"
-          title="Reload title list from Plex and update cache"
-        >
-          {refreshing
-            ? <><Loader2 size={14} className="animate-spin" /> Refreshing…</>
-            : <><RefreshCw size={14} /> Refresh Library</>
-          }
-        </button>
-
-        <button
-          onClick={handleSyncAll}
-          disabled={syncingAll || !selectedLibrary || loadingTitles || titles.length === 0}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-white border border-plex-orange/40 bg-plex-orange/20 hover:bg-plex-orange/30 transition-colors disabled:opacity-50"
-          title="Pull markers for every title in this library from Plex"
-        >
-          {syncingAll
-            ? <><Loader2 size={14} className="animate-spin" /> Syncing all…</>
-            : <><RefreshCw size={14} /> Sync All</>
-          }
-        </button>
-
-        {!loadingTitles && (
-          <span className="text-xs text-muted">
-            {totalTitles} {isTv ? 'show' : 'title'}{totalTitles !== 1 ? 's' : ''}
-          </span>
-        )}
-      </div>
-
-      {/* Sync-all progress banner */}
-      {syncProgress && (
-        <SyncAllBanner progress={syncProgress} onDismiss={() => setSyncProgress(null)} />
-      )}
-
-      {/* Title list */}
-      {loadingTitles ? (
-        <div className="text-center py-16 text-muted text-sm flex flex-col items-center gap-2">
-          <Loader2 size={24} className="animate-spin" />
-          Loading titles…
-        </div>
-      ) : notCached ? (
-        <div className="text-center py-16 text-muted text-sm flex flex-col items-center gap-3">
-          <p>Library not cached yet. Click <strong className="text-gray-300">Refresh Library</strong> to pull titles from Plex.</p>
-          <button
-            onClick={handleRefreshLibrary}
-            disabled={refreshing}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium text-white border border-plex-orange/40 bg-plex-orange/20 hover:bg-plex-orange/30 transition-colors disabled:opacity-50"
-          >
-            {refreshing ? <><Loader2 size={14} className="animate-spin" /> Refreshing…</> : <><RefreshCw size={14} /> Refresh Library</>}
-          </button>
-        </div>
-      ) : isTv ? (
-        /* TV: grouped by show */
-        showGroups.length === 0 ? (
-          <div className="text-center py-16 text-muted text-sm">No shows found.</div>
-        ) : (
-          <div className="space-y-3">
-            {showGroups.map(group => (
-              <ShowGroupCard
-                key={group.show_key}
-                group={group}
-                search={search}
-                onMarkerCountChange={handleMarkerCountChange}
-              />
-            ))}
-          </div>
-        )
-      ) : (
-        /* Movies: flat list with poster */
-        filteredMovies.length === 0 ? (
-          <div className="text-center py-16 text-muted text-sm">No titles found.</div>
-        ) : (
-          <div className="space-y-2">
-            {filteredMovies.map(title => (
-              <div key={title.plex_guid} className="bg-plex-card border border-plex-border rounded-xl p-3">
-                <div className="flex gap-3">
-                  <Poster src={title.poster_url} alt={title.title} className="w-14 h-20" />
-                  <div className="flex-1 min-w-0 space-y-2">
-                    <div className="flex items-start gap-2 flex-wrap">
-                      <span className="text-sm font-semibold text-gray-100 truncate flex-1">{title.title}</span>
-                      {title.year && <span className="text-xs text-muted">{title.year}</span>}
-                      <ContentRatingBadge rating={title.content_rating} />
-                      <MarkerCountBadge count={title.marker_count} />
-                    </div>
-                    <TitleMarkerPanel
-                      title={title}
-                      onMarkerCountChange={handleMarkerCountChange}
-                    />
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )
       )}
     </div>
   )
