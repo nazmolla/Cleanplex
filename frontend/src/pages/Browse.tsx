@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
-  Zap, Moon, RefreshCw, ExternalLink, Trash2, Eye, EyeOff, X, ThumbsDown, Search, Users, ChevronRight, RotateCcw,
+  Zap, Moon, RefreshCw, ExternalLink, Trash2, Eye, EyeOff, X, Search, ChevronRight, RotateCcw, SlidersHorizontal,
+  Film, Tv, Layers, ArrowDown, ArrowUp, DownloadCloud,
 } from 'lucide-react'
 import { api } from '../api/client'
 import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
@@ -10,16 +11,16 @@ import { parseDbTimestamp } from '../utils/dbTime'
 import Modal from '../components/Modal'
 import { toast } from '../components/Toast'
 import ScanContextMenu, { ScanTarget } from '../components/ScanContextMenu'
-import ScopeTree, { TreeLibrary } from '../components/browse/ScopeTree'
 import SegmentsView from '../components/browse/SegmentsView'
-import Markers from './Markers'
+import BrowseRow, { COL, CountCell, GroupStatus, IgnoredBadge, RowImage, StatusBadge, scannedCell } from '../components/browse/BrowseRow'
+import { FilterChips, FilterPanel, NO_TITLE_FILTERS, TitleFilters, titleFiltersActive } from '../components/browse/FilterPanel'
+import SafeImg from '../components/browse/SafeImg'
+import { SyncAllBanner, SyncProgress, TitleMarkerPanel, TitleRow } from '../components/browse/markers'
 import {
   Library, Title, ScannerStatus, Scope, scopeLevel, inScope, parseEpisodeTitle, showKeyOf, showNameOf,
-  seasonSortKey, formatFinishedAt, failureText,
+  seasonSortKey, failureText, SegmentFilters, NO_SEGMENT_FILTERS, titleNameParts, plexThumb,
 } from '../components/browse/model'
 
-const STATUS_TABS = ['all', 'pending', 'scanning', 'done', 'failed'] as const
-type StatusTab = typeof STATUS_TABS[number]
 type SortOption = 'date-added' | 'scanned' | 'title' | 'year' | 'segments'
 type View = 'titles' | 'segments' | 'markers'
 const VIEWS: { id: View; label: string }[] = [
@@ -28,12 +29,12 @@ const VIEWS: { id: View; label: string }[] = [
   { id: 'markers', label: 'Markers' },
 ]
 
-// Title rows rendered at first and added per "Show more": each row holds a poster.
+// Rows rendered at first and added per "Show more": each row holds a picture.
 const PAGE = 100
-// Parallel requests for an action over many titles (scan, ignore, delete segments).
+// Parallel requests for an action over many titles (scan, ignore, delete segments, marker sync).
 const CONCURRENCY = 5
 
-/** A show or season as one row or one level: the matching episodes under it. */
+/** A show or season: the titles under it that pass the filters. */
 interface Group {
   kind: 'show' | 'season'
   libId: string
@@ -48,6 +49,11 @@ interface Group {
   posterUrl: string
   plexKey: string
 }
+
+type Row =
+  | { kind: 'library'; lib: Library; titles: Title[] }
+  | { kind: 'group'; group: Group }
+  | { kind: 'title'; title: Title }
 
 async function pool<T>(items: T[], run: (item: T) => Promise<unknown>): Promise<string[]> {
   const errors: string[] = []
@@ -81,31 +87,9 @@ function ActionIcon({ label, onClick, disabled, tone, children }: {
   )
 }
 
-function StatusBadge({ status, progress }: { status: string; progress: number }) {
-  switch (status) {
-    case 'done':
-      return <span className="text-xs bg-green-500/15 text-green-400 px-2 py-0.5 rounded-full">Done</span>
-    case 'failed':
-      return <span className="text-xs bg-red-500/15 text-red-400 px-2 py-0.5 rounded-full">Failed</span>
-    case 'scanning':
-      return (
-        <span className="text-xs bg-plex-orange/15 text-plex-orange px-2 py-0.5 rounded-full flex items-center gap-1">
-          <span className="animate-pulse">●</span> {Math.round(progress * 100)}%
-        </span>
-      )
-    default:
-      return <span className="text-xs bg-gray-700/50 text-gray-400 px-2 py-0.5 rounded-full">Pending</span>
-  }
-}
-
-function IgnoredBadge({ titles }: { titles: Title[] }) {
-  if (titles.length === 0 || !titles.some(t => t.ignored)) return null
-  const all = titles.every(t => t.ignored)
-  return <span className={`text-xs text-yellow-300 px-2 py-0.5 rounded-full ${all ? 'bg-yellow-500/20' : 'bg-yellow-500/10'}`}>{all ? 'Ignored' : 'Partly ignored'}</span>
-}
-
 const sum = (titles: Title[], f: (t: Title) => number) => titles.reduce((n, t) => n + f(t), 0)
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+const fpOf = (t: Title) => t.false_positive_count ?? 0
 
 export default function Browse() {
   const [params, setParams] = useSearchParams()
@@ -118,16 +102,12 @@ export default function Browse() {
   // Ratings the scanner accepts; empty means every rating is scanned.
   const [scanRatings, setScanRatings] = useState<string[]>([])
 
-  const [filter, setFilter] = useState('')
-  const [castFilter, setCastFilter] = useState('')
-  const [ratingFilter, setRatingFilter] = useState('all')
-  const [statusFilter, setStatusFilter] = useState<StatusTab>('all')
-  const [yearFrom, setYearFrom] = useState('')
-  const [yearTo, setYearTo] = useState('')
-  // Inclusive YYYY-MM-DD bounds on the scan date.
-  const [scanFrom, setScanFrom] = useState('')
-  const [scanTo, setScanTo] = useState('')
-  const [showIgnored, setShowIgnored] = useState(false)
+  const [tf, setTf] = useState<TitleFilters>(NO_TITLE_FILTERS)
+  const patchTf = useCallback((patch: Partial<TitleFilters>) => setTf(prev => ({ ...prev, ...patch })), [])
+  const [sf, setSf] = useState<SegmentFilters>(NO_SEGMENT_FILTERS)
+  const [segOptions, setSegOptions] = useState<{ labels: string[]; origins: string[] }>({ labels: [], origins: [] })
+  const onSegOptions = useCallback((labels: string[], origins: string[]) => setSegOptions({ labels, origins }), [])
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const [sortBy, setSortBy] = useState<SortOption>('date-added')
   const [sortDesc, setSortDesc] = useState(true)
 
@@ -149,8 +129,10 @@ export default function Browse() {
     season: params.get('season') || undefined,
     guid: params.get('title') || undefined,
   }), [params])
-  const view = (VIEWS.find(v => v.id === params.get('view'))?.id ?? 'titles') as View
   const level = scopeLevel(scope)
+  const requestedView = (VIEWS.find(v => v.id === params.get('view'))?.id ?? 'titles') as View
+  // A single title has no titles under it: its page opens on its segments.
+  const view: View = level === 'title' && requestedView === 'titles' ? 'segments' : requestedView
 
   const go = useCallback((next: Scope, nextView?: View) => {
     const p: Record<string, string> = {}
@@ -158,12 +140,12 @@ export default function Browse() {
     if (next.show) p.show = next.show
     if (next.season) p.season = next.season
     if (next.guid) p.title = next.guid
-    const v = nextView ?? view
+    const v = nextView ?? requestedView
     if (v !== 'titles') p.view = v
     setParams(p)
     setSelected(new Set())
     setLimit(PAGE)
-  }, [setParams, view])
+  }, [setParams, requestedView])
 
   // ── Loading ───────────────────────────────────────────────────────────────────
   const fetchLibrary = useCallback(async (libId: string, signal?: AbortSignal): Promise<Title[]> => {
@@ -273,36 +255,43 @@ export default function Browse() {
 
   // ── Filtering ─────────────────────────────────────────────────────────────────
   const libById = useMemo(() => new Map(libraries.map(l => [l.id, l])), [libraries])
+  const query = tf.name.trim().toLowerCase()
 
-  // Every filter except the level and the status tab, so each tab's count matches what it lists.
+  // Every filter except the status, so each status choice's count matches what it lists.
   const passes = useCallback((t: Title) => {
     // A pending title whose rating the scanner excludes will never be scanned, so it is
     // not listed at all; already-scanned ones keep their results visible.
     if (t.status === 'pending' && !ratingAllowed(t.content_rating, scanRatings)) return false
-    if (filter && !t.title.toLowerCase().includes(filter.toLowerCase())) return false
-    if (castFilter && !(t.cast ?? []).some(a => a.toLowerCase().includes(castFilter.toLowerCase()))) return false
-    if (ratingFilter !== 'all' && t.content_rating !== ratingFilter) return false
-    if (yearFrom || yearTo) {
+    // The full title is "<show> – <season> – <episode>" for an episode, so a show or season name matches too.
+    if (query && !t.title.toLowerCase().includes(query)) return false
+    if (tf.actor && !(t.cast ?? []).some(a => a.toLowerCase().includes(tf.actor.toLowerCase()))) return false
+    if (tf.rating !== 'all' && t.content_rating !== tf.rating) return false
+    if (tf.yearFrom || tf.yearTo) {
       // Titles Plex has no year for cannot be inside a range.
-      if (!t.year || (yearFrom && t.year < Number(yearFrom)) || (yearTo && t.year > Number(yearTo))) return false
+      if (!t.year || (tf.yearFrom && t.year < Number(tf.yearFrom)) || (tf.yearTo && t.year > Number(tf.yearTo))) return false
     }
-    if (scanFrom || scanTo) {
+    if (tf.scanFrom || tf.scanTo) {
       // finished_at is "YYYY-MM-DD HH:MM:SS"; a never-scanned title has no scan date.
       const d = (t.finished_at ?? '').slice(0, 10)
-      if (!d || (scanFrom && d < scanFrom) || (scanTo && d > scanTo)) return false
+      if (!d || (tf.scanFrom && d < tf.scanFrom) || (tf.scanTo && d > tf.scanTo)) return false
     }
     // An ignored title is hidden unless asked for, or it is the title being looked at.
-    if (t.ignored && !showIgnored && scope.guid !== t.plex_guid) return false
+    if (t.ignored && !tf.showIgnored && scope.guid !== t.plex_guid) return false
     return true
-  }, [scanRatings, filter, castFilter, ratingFilter, yearFrom, yearTo, scanFrom, scanTo, showIgnored, scope.guid])
+  }, [scanRatings, query, tf, scope.guid])
 
   const visible = useMemo(() => titles.filter(passes), [titles, passes])
-  const matchedAll = useMemo(() => visible.filter(t => statusFilter === 'all' || t.status === statusFilter), [visible, statusFilter])
-  const inScopeVisible = useMemo(() => visible.filter(t => inScope(t, scope)), [visible, scope])
+  const matchedAll = useMemo(() => visible.filter(t => tf.status === 'all' || t.status === tf.status), [visible, tf.status])
   const matched = useMemo(() => matchedAll.filter(t => inScope(t, scope)), [matchedAll, scope])
-
-  const counts: Record<string, number> = { all: inScopeVisible.length }
-  for (const t of inScopeVisible) counts[t.status] = (counts[t.status] ?? 0) + 1
+  const statusCounts = useMemo(() => {
+    const c: Record<string, number> = { all: 0 }
+    for (const t of visible) {
+      if (!inScope(t, scope)) continue
+      c.all++
+      c[t.status] = (c[t.status] ?? 0) + 1
+    }
+    return c
+  }, [visible, scope])
 
   const scopeTitles = useMemo(() => titles.filter(t => inScope(t, scope)), [titles, scope])
   const availableRatings = useMemo(() => Array.from(new Set(scopeTitles.map(t => t.content_rating).filter(Boolean))).sort(), [scopeTitles])
@@ -313,48 +302,11 @@ export default function Browse() {
     return [...n].filter(([, c]) => c >= 2).sort((a, b) => b[1] - a[1]).slice(0, 2000).map(([a]) => a)
   }, [scopeTitles])
 
-  const filtersActive = !!(filter || castFilter || ratingFilter !== 'all' || statusFilter !== 'all' || yearFrom || yearTo || scanFrom || scanTo)
-  const clearFilters = () => {
-    setFilter(''); setCastFilter(''); setRatingFilter('all'); setStatusFilter('all')
-    setYearFrom(''); setYearTo(''); setScanFrom(''); setScanTo('')
-  }
-
-  // ── Tree: structure from every title, counts from the ones that pass the filters ──
-  const tree: TreeLibrary[] = useMemo(() => {
-    const count = new Map<string, number>()
-    const bump = (k: string) => count.set(k, (count.get(k) ?? 0) + 1)
-    for (const t of matchedAll) {
-      bump(`l:${t.library_id}`)
-      if (t.media_type === 'episode') {
-        const sk = showKeyOf(t)
-        bump(`s:${t.library_id}:${sk}`)
-        bump(`n:${t.library_id}:${sk}:${parseEpisodeTitle(t.title).season}`)
-      }
-    }
-    const shows = new Map<string, Map<string, { name: string; seasons: Set<string> }>>()
-    for (const t of titles) {
-      if (t.media_type !== 'episode') continue
-      if (!shows.has(t.library_id)) shows.set(t.library_id, new Map())
-      const byShow = shows.get(t.library_id)!
-      const sk = showKeyOf(t)
-      if (!byShow.has(sk)) byShow.set(sk, { name: showNameOf(t), seasons: new Set() })
-      byShow.get(sk)!.seasons.add(parseEpisodeTitle(t.title).season)
-    }
-    return libraries.map(lib => ({
-      lib,
-      count: count.get(`l:${lib.id}`) ?? 0,
-      shows: Array.from(shows.get(lib.id) ?? [])
-        .map(([key, s]) => ({
-          key,
-          name: s.name,
-          count: count.get(`s:${lib.id}:${key}`) ?? 0,
-          seasons: Array.from(s.seasons)
-            .sort((a, b) => seasonSortKey(a) - seasonSortKey(b) || a.localeCompare(b))
-            .map(season => ({ season, count: count.get(`n:${lib.id}:${key}:${season}`) ?? 0 })),
-        }))
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    }))
-  }, [libraries, titles, matchedAll])
+  // While a filter narrows the list, the list shows the matches directly instead of the levels (#208).
+  const flat = titleFiltersActive(tf)
+  const panelFilterCount = [tf.status !== 'all', !!tf.actor, tf.rating !== 'all', !!(tf.yearFrom || tf.yearTo), !!(tf.scanFrom || tf.scanTo), tf.showIgnored].filter(Boolean).length
+    + (view === 'segments' ? [sf.state !== 'all', !!sf.origin, sf.labels.size > 0].filter(Boolean).length : 0)
+  const clearFilters = () => { setTf(NO_TITLE_FILTERS); setSf(NO_SEGMENT_FILTERS) }
 
   // ── Sorting ───────────────────────────────────────────────────────────────────
   const sortValue = useCallback((t: Title): number | string => {
@@ -371,7 +323,7 @@ export default function Browse() {
   const cmp = useCallback((a: number | string, b: number | string) => (a < b ? (sortDesc ? 1 : -1) : a > b ? (sortDesc ? -1 : 1) : 0), [sortDesc])
   const sorted = useMemo(() => [...matched].sort((a, b) => cmp(sortValue(a), sortValue(b))), [matched, cmp, sortValue])
 
-  // A group sorts by the best value among its episodes: newest scan, newest addition, total segments.
+  // A group sorts by the best value among its titles: newest scan, newest addition, total segments.
   const groupSortValue = (g: Group): number | string => {
     if (sortBy === 'title') return g.label.toLowerCase()
     if (sortBy === 'segments') return sum(g.titles, t => t.segment_count)
@@ -383,11 +335,13 @@ export default function Browse() {
     : sortBy === 'segments' ? (sortDesc ? 'Most first' : 'Fewest first')
     : (sortDesc ? 'Newest first' : 'Oldest first')
 
-  // ── The level below the scope: what the Titles view lists ─────────────────────
+  // ── Rows: the children of the current level ───────────────────────────────────
   const makeGroup = (kind: 'show' | 'season', eps: Title[]): Group => {
     const first = eps[0]
     const parsed = parseEpisodeTitle(first.title)
     const showName = showNameOf(first)
+    const seasonKey = eps.find(e => e.season_rating_key)?.season_rating_key
+    const showPoster = eps.find(e => !!e.poster_url)?.poster_url ?? ''
     return {
       kind,
       libId: first.library_id,
@@ -398,8 +352,8 @@ export default function Browse() {
       season: kind === 'season' ? parsed.season : '',
       label: kind === 'season' ? parsed.season : showName,
       titles: eps,
-      posterUrl: eps.find(e => !!e.poster_url)?.poster_url ?? '',
-      plexKey: (kind === 'season' ? eps.find(e => e.season_rating_key)?.season_rating_key : eps.find(e => e.show_rating_key)?.show_rating_key) ?? '',
+      posterUrl: kind === 'season' && seasonKey ? plexThumb(seasonKey) : showPoster,
+      plexKey: (kind === 'season' ? seasonKey : eps.find(e => e.show_rating_key)?.show_rating_key) ?? '',
     }
   }
   const groupBy = (kind: 'show' | 'season', eps: Title[]): Group[] => {
@@ -415,16 +369,96 @@ export default function Browse() {
       : groups.sort((a, b) => cmp(groupSortValue(a), groupSortValue(b)))
   }
 
-  const episodes = sorted.filter(t => t.media_type === 'episode')
-  const rowGroups: Group[] = level === 'library' ? groupBy('show', episodes) : level === 'show' ? groupBy('season', episodes) : []
-  const rowTitles: Title[] = level === 'all' ? [] : level === 'library' ? sorted.filter(t => t.media_type !== 'episode') : level === 'show' ? [] : sorted
+  const rows: Row[] = (() => {
+    if (level === 'title') return []
+    if (flat) {
+      // Each match appears once: inside a show (or season) whose own name matches the search,
+      // otherwise as its own row with its show and season as context.
+      const childKind: 'show' | 'season' | null = level === 'all' || level === 'library' ? 'show' : level === 'show' ? 'season' : null
+      let groups: Group[] = []
+      if (query && childKind) {
+        const named = sorted.filter(t => t.media_type === 'episode' && (childKind === 'show'
+          ? showNameOf(t).toLowerCase().includes(query)
+          : parseEpisodeTitle(t.title).season.toLowerCase().includes(query)))
+        groups = groupBy(childKind, named)
+      }
+      const inGroup = new Set(groups.flatMap(g => g.titles.map(t => t.plex_guid)))
+      return [
+        ...groups.map(group => ({ kind: 'group' as const, group })),
+        ...sorted.filter(t => !inGroup.has(t.plex_guid)).map(title => ({ kind: 'title' as const, title })),
+      ]
+    }
+    if (level === 'all') return libraries.map(lib => ({ kind: 'library' as const, lib, titles: matchedAll.filter(t => t.library_id === lib.id) }))
+    const episodes = sorted.filter(t => t.media_type === 'episode')
+    if (level === 'library') {
+      return [
+        ...groupBy('show', episodes).map(group => ({ kind: 'group' as const, group })),
+        ...sorted.filter(t => t.media_type !== 'episode').map(title => ({ kind: 'title' as const, title })),
+      ]
+    }
+    if (level === 'show') return groupBy('season', episodes).map(group => ({ kind: 'group' as const, group }))
+    return sorted.map(title => ({ kind: 'title' as const, title }))
+  })()
 
-  // The group the scope itself names (show or season level), for the header's actions.
+  // The group the scope itself names (show or season level), for the header.
   const scopeGroup: Group | null = (level === 'show' || level === 'season') && scopeTitles.length > 0
     ? { ...makeGroup(level, scopeTitles), titles: matched }
     : null
   const scopeLib = scope.lib ? libById.get(scope.lib) : undefined
   const scopeTitle = level === 'title' ? titles.find(t => t.plex_guid === scope.guid) : undefined
+
+  /** How a title is named in rows and segment headings at this level. */
+  const nameOf = useCallback((t: Title) => {
+    const parts = titleNameParts(t, level, flat)
+    // At the top level a match can come from any library; say which.
+    if (level === 'all' && libraries.length > 1) {
+      const lib = libById.get(t.library_id)?.title
+      // Last, so the show and season stay readable when the line is cut short.
+      if (lib) parts.context = [parts.context, lib].filter(Boolean).join(' · ')
+    }
+    return parts
+  }, [level, flat, libraries.length, libById])
+
+  // ── Markers: counts per title, loaded for the libraries in scope when the view opens ──
+  const [markerCounts, setMarkerCounts] = useState<Map<string, number>>(new Map())
+  const [markerNotCached, setMarkerNotCached] = useState<Set<string>>(new Set())
+  const [markerSync, setMarkerSync] = useState<SyncProgress | null>(null)
+  const markerLoaded = useRef<Set<string>>(new Set())
+  const loadMarkerCounts = useCallback(async (libIds: string[]) => {
+    await Promise.all(libIds.map(async libId => {
+      try {
+        const d = await api.get<{ titles: TitleRow[]; cached: boolean }>(`/api/markers/libraries/${libId}/titles`)
+        markerLoaded.current.add(libId)
+        setMarkerNotCached(prev => {
+          const n = new Set(prev)
+          d.cached === false ? n.add(libId) : n.delete(libId)
+          return n
+        })
+        // Keyed by rating key and by guid: the marker cache and the scan jobs can disagree on either one.
+        setMarkerCounts(prev => {
+          const n = new Map(prev)
+          for (const t of d.titles || []) { n.set(t.rating_key, t.marker_count); n.set(t.plex_guid, t.marker_count) }
+          return n
+        })
+      } catch {
+        // Counts stay unknown (shown as 0); the next markers_changed event or view switch retries.
+      }
+    }))
+  }, [])
+  const libsInScope = scopeTitle ? [scopeTitle.library_id] : scope.lib ? [scope.lib] : libraries.map(l => l.id)
+  const libsKey = libsInScope.join(',')
+  useEffect(() => {
+    if (view !== 'markers') return
+    const missing = libsInScope.filter(id => !markerLoaded.current.has(id))
+    if (missing.length) loadMarkerCounts(missing)
+  }, [view, libsKey, loadMarkerCounts])
+  useLiveRefresh(['markers_changed'], () => {
+    if (markerLoaded.current.size) loadMarkerCounts(Array.from(markerLoaded.current))
+  }, { debounceMs: 1000, fallbackMs: 0 })
+  const markerCount = (t: Title) => markerCounts.get(t.rating_key) ?? markerCounts.get(t.plex_guid) ?? 0
+  const onMarkerCountChange = useCallback((key: string, count: number) => {
+    setMarkerCounts(prev => new Map(prev).set(key, count))
+  }, [])
 
   // ── Actions ───────────────────────────────────────────────────────────────────
   const plexWebUrl = (ratingKey?: string) =>
@@ -512,10 +546,10 @@ export default function Browse() {
     else toast.success(`Deleted the segments of ${label}.`)
   }
   const deleteSegments = (label: string, list: Title[]) => {
-    const withSegs = list.filter(t => t.segment_count > 0 || (t.false_positive_count ?? 0) > 0)
+    const withSegs = list.filter(t => t.segment_count > 0 || fpOf(t) > 0)
     if (withSegs.length === 0) return
     if (skipDeleteConfirm) { runDelete(label, withSegs); return }
-    setPendingDelete({ label, guids: withSegs.map(t => t.plex_guid), count: sum(withSegs, t => t.segment_count + (t.false_positive_count ?? 0)), busy: false })
+    setPendingDelete({ label, guids: withSegs.map(t => t.plex_guid), count: sum(withSegs, t => t.segment_count + fpOf(t)), busy: false })
   }
   const confirmDelete = async () => {
     if (!pendingDelete) return
@@ -529,9 +563,44 @@ export default function Browse() {
     try { localStorage.setItem('skipDeleteConfirm', String(on)) } catch { /* not remembered across reloads */ }
   }
 
+  // Pulls markers from Plex for every listed title, five at a time with live progress.
+  const syncMarkers = async (list: Title[]) => {
+    if (list.length === 0 || markerSync && !markerSync.finished) return
+    let done = 0, failed = 0, totalMarkers = 0
+    setMarkerSync({ done: 0, total: list.length, failed: 0, totalMarkers: 0, finished: false })
+    await pool(list, async t => {
+      try {
+        const r = await api.post<{ count: number }>(`/api/markers/titles/${t.rating_key}/sync`, { plex_guid: t.plex_guid })
+        totalMarkers += r.count ?? 0
+      } catch {
+        failed++
+      } finally {
+        done++
+        setMarkerSync({ done, total: list.length, failed, totalMarkers, finished: false })
+      }
+    })
+    await loadMarkerCounts(Array.from(new Set(list.map(t => t.library_id))))
+    setMarkerSync({ done, total: list.length, failed, totalMarkers, finished: true })
+  }
+  // Reloads a library's marker title list from Plex (the marker cache), then its counts.
+  const refreshMarkerList = (libId: string) => withBusy(`mrefresh:${libId}`, async () => {
+    try {
+      await api.post(`/api/markers/libraries/${libId}/refresh`)
+      await loadMarkerCounts([libId])
+    } catch (err: any) {
+      toast.error(`Could not reload the marker list from Plex: ${err.message || 'Unknown error'}`)
+    }
+  })
+
   // Right-click rescan menu (#137): the listed titles that have segments, or the whole level.
   const openScanMenu = (e: React.MouseEvent, s: Scope) => {
     e.preventDefault()
+    if (s.guid) {
+      const t = titles.find(x => x.plex_guid === s.guid)
+      if (!t) return
+      setScanMenu({ x: e.clientX, y: e.clientY, label: nameOf(t).name, guids: [t.plex_guid] })
+      return
+    }
     const listed = matchedAll.filter(t => inScope(t, s) && t.segment_count > 0)
     const lib = s.lib ? libById.get(s.lib) : undefined
     const first = titles.find(t => inScope(t, s))
@@ -572,35 +641,24 @@ export default function Browse() {
   const allSelected = matchedGuids.length > 0 && matchedGuids.every(g => selected.has(g))
   const toggleGuids = (guids: string[]) => setSelected(prev => {
     const next = new Set(prev)
-    const allIn = guids.every(g => next.has(g))
+    const allIn = guids.length > 0 && guids.every(g => next.has(g))
     for (const g of guids) allIn ? next.delete(g) : next.add(g)
     return next
   })
   const selectedTitles = matched.filter(t => selected.has(t.plex_guid))
 
-  // ── Labels ────────────────────────────────────────────────────────────────────
-  /** A title's name relative to the level: the episode name inside a season, the full title higher up. */
-  const titleLabel = (t: Title) => {
-    if (t.media_type !== 'episode') return t.title
-    const p = parseEpisodeTitle(t.title)
-    if (level === 'season') return p.episode
-    if (level === 'show') return `${p.season} – ${p.episode}`
-    return t.title
-  }
-  const scopeOfTitle = (t: Title): Scope => ({ guid: t.plex_guid })
-  // The path above a title, for its breadcrumb.
+  // ── Breadcrumb ────────────────────────────────────────────────────────────────
   const pathOf = (t: Title): Scope => (t.media_type === 'episode'
     ? { lib: t.library_id, show: showKeyOf(t), season: parseEpisodeTitle(t.title).season }
     : { lib: t.library_id })
-
+  const path: Scope = scopeTitle ? pathOf(scopeTitle) : scope
   const crumbs: { label: string; scope: Scope }[] = [{ label: 'All libraries', scope: {} }]
   {
-    const path: Scope = scopeTitle ? pathOf(scopeTitle) : scope
     const anyInPath = scopeTitle ?? scopeTitles[0]
     if (path.lib) crumbs.push({ label: libById.get(path.lib)?.title ?? 'Library', scope: { lib: path.lib } })
     if (path.show) crumbs.push({ label: anyInPath ? showNameOf(anyInPath) : 'Show', scope: { lib: path.lib, show: path.show } })
     if (path.season) crumbs.push({ label: path.season, scope: { lib: path.lib, show: path.show, season: path.season } })
-    if (scopeTitle) crumbs.push({ label: scopeTitle.media_type === 'episode' ? parseEpisodeTitle(scopeTitle.title).episode : scopeTitle.title, scope })
+    if (scopeTitle) crumbs.push({ label: nameOf(scopeTitle).name, scope })
   }
   const heading = crumbs[crumbs.length - 1].label
 
@@ -610,22 +668,22 @@ export default function Browse() {
     if (!url) return null
     return (
       <a href={url} target="_blank" rel="noopener noreferrer" title={label} aria-label={label} className="p-1.5 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors">
-        <ExternalLink size={14} />
+        <ExternalLink size={15} />
       </a>
     )
   }
 
   const titleActions = (t: Title, name: string) => (
     <>
-      {(t.segment_count > 0 || (t.false_positive_count ?? 0) > 0) && (
-        <ActionIcon label={`Delete all segments for ${name}`} onClick={() => deleteSegments(name, [t])} tone="red"><Trash2 size={14} /></ActionIcon>
-      )}
-      <PlexLink ratingKey={t.rating_key} label="Open in Plex" />
-      <ActionIcon label="Scan tonight" onClick={() => scanTitles([t], false)} disabled={busy[`scan:${t.plex_guid}`]}><Moon size={14} /></ActionIcon>
-      <ActionIcon label="Scan now" onClick={() => scanTitles([t], true)} disabled={busy[`scan:${t.plex_guid}`]} tone="orange"><Zap size={14} /></ActionIcon>
+      <ActionIcon label="Scan tonight" onClick={() => scanTitles([t], false)} disabled={busy[`scan:${t.plex_guid}`]}><Moon size={15} /></ActionIcon>
+      <ActionIcon label="Scan now" onClick={() => scanTitles([t], true)} disabled={busy[`scan:${t.plex_guid}`]} tone="orange"><Zap size={15} /></ActionIcon>
       <ActionIcon label={t.ignored ? `Un-ignore ${name}` : `Ignore ${name}`} onClick={() => setIgnored([t], !t.ignored, name)} tone="yellow">
-        {t.ignored ? <Eye size={14} /> : <EyeOff size={14} />}
+        {t.ignored ? <Eye size={15} /> : <EyeOff size={15} />}
       </ActionIcon>
+      <PlexLink ratingKey={t.rating_key} label="Open in Plex" />
+      {(t.segment_count > 0 || fpOf(t) > 0) && (
+        <ActionIcon label={`Delete all segments for ${name}`} onClick={() => deleteSegments(name, [t])} tone="red"><Trash2 size={15} /></ActionIcon>
+      )}
     </>
   )
 
@@ -634,153 +692,200 @@ export default function Browse() {
     const all = titles.filter(t => inScope(t, { lib: g.libId, show: g.showKey, season: g.season || undefined }))
     return (
       <>
-        {sum(g.titles, t => t.segment_count + (t.false_positive_count ?? 0)) > 0 && (
-          <ActionIcon label={`Delete all segments for this ${g.kind}`} onClick={() => deleteSegments(g.kind === 'season' ? `${g.showName} – ${g.season}` : g.showName, g.titles)} tone="red"><Trash2 size={14} /></ActionIcon>
-        )}
+        <ActionIcon label={`Scan ${what} tonight`} onClick={() => scanGroup(g, false)}><Moon size={15} /></ActionIcon>
+        <ActionIcon label={`Scan ${what} now`} onClick={() => scanGroup(g, true)} tone="orange"><Zap size={15} /></ActionIcon>
+        <ActionIcon label={`Ignore all episodes in this ${g.kind}`} onClick={() => setIgnored(all, true, g.label)} tone="yellow"><EyeOff size={15} /></ActionIcon>
+        <ActionIcon label={`Un-ignore all episodes in this ${g.kind}`} onClick={() => setIgnored(all, false, g.label)}><Eye size={15} /></ActionIcon>
         <PlexLink ratingKey={g.plexKey} label={`Open ${g.kind} in Plex`} />
-        <ActionIcon label={`Scan ${what} tonight`} onClick={() => scanGroup(g, false)}><Moon size={14} /></ActionIcon>
-        <ActionIcon label={`Scan ${what} now`} onClick={() => scanGroup(g, true)} tone="orange"><Zap size={14} /></ActionIcon>
-        <ActionIcon label={`Ignore all episodes in this ${g.kind}`} onClick={() => setIgnored(all, true, g.label)} tone="yellow"><EyeOff size={14} /></ActionIcon>
-        <ActionIcon label={`Un-ignore all episodes in this ${g.kind}`} onClick={() => setIgnored(all, false, g.label)}><Eye size={14} /></ActionIcon>
+        {sum(g.titles, t => t.segment_count + fpOf(t)) > 0 && (
+          <ActionIcon label={`Delete all segments for this ${g.kind}`} onClick={() => deleteSegments(g.kind === 'season' ? `${g.showName} – ${g.season}` : g.showName, g.titles)} tone="red"><Trash2 size={15} /></ActionIcon>
+        )}
       </>
     )
   }
 
   const libraryActions = (lib: Library) => (
     <>
+      <ActionIcon label="Scan library tonight" onClick={() => scanLibrary(lib, false)}><Moon size={15} /></ActionIcon>
+      <ActionIcon label="Scan library now" onClick={() => scanLibrary(lib, true)} tone="orange"><Zap size={15} /></ActionIcon>
       <ActionIcon label="Sync from Plex: pick up titles added, removed or changed in Plex" onClick={() => syncLibrary(lib)} disabled={busy[`sync:${lib.id}`]}>
-        <RefreshCw size={14} className={busy[`sync:${lib.id}`] ? 'animate-spin' : ''} />
+        <RefreshCw size={15} className={busy[`sync:${lib.id}`] ? 'animate-spin' : ''} />
       </ActionIcon>
       <ActionIcon label="Retry failed: queue every failed title in this library again and clear ignored ones from the list" onClick={() => retryFailed(lib)} disabled={busy[`retry:${lib.id}`]}>
-        <RotateCcw size={14} />
+        <RotateCcw size={15} />
       </ActionIcon>
-      <ActionIcon label="Scan library tonight" onClick={() => scanLibrary(lib, false)}><Moon size={14} /></ActionIcon>
-      <ActionIcon label="Scan library now" onClick={() => scanLibrary(lib, true)} tone="orange"><Zap size={14} /></ActionIcon>
     </>
   )
 
-  const segmentCount = (list: Title[]) => {
-    const n = sum(list, t => t.segment_count)
-    const fp = sum(list, t => t.false_positive_count ?? 0)
-    if (n === 0 && fp === 0) return null
-    return (
-      <span className="flex items-center gap-1 text-xs">
-        <span className={n > 0 ? 'text-red-400 bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded font-medium' : 'text-gray-400 bg-white/5 border border-plex-border px-1.5 py-0.5 rounded'}>
-          {plural(n, 'segment')}
-        </span>
-        {fp > 0 && <span className="flex items-center gap-0.5 text-amber-300" title={`${fp} marked false positive`}><ThumbsDown size={10} /> {fp}</span>}
-      </span>
-    )
-  }
-
-  const checkbox = (guids: string[], label: string) => (
-    <input
-      type="checkbox"
-      checked={guids.length > 0 && guids.every(g => selected.has(g))}
-      onChange={() => toggleGuids(guids)}
-      aria-label={`Select ${label}`}
-      className="w-4 h-4 accent-plex-orange flex-shrink-0"
-    />
+  // Marker actions, added to the header in the Markers view.
+  const markerActions = (list: Title[], libId?: string) => (
+    <>
+      {libId && (
+        <ActionIcon label="Reload the marker title list from Plex" onClick={() => refreshMarkerList(libId)} disabled={busy[`mrefresh:${libId}`]}>
+          <RefreshCw size={15} className={busy[`mrefresh:${libId}`] ? 'animate-spin' : ''} />
+        </ActionIcon>
+      )}
+      <ActionIcon label={`Pull markers from Plex for ${plural(list.length, 'listed title')}`} onClick={() => syncMarkers(list)} disabled={!!markerSync && !markerSync.finished}>
+        <DownloadCloud size={15} />
+      </ActionIcon>
+    </>
   )
 
-  const poster = (src: string | undefined, wide = false) => {
-    const cls = wide ? 'w-20 h-12' : 'w-12 h-[4.5rem]'
-    return src
-      ? <img src={src} alt="" loading="lazy" className={`${cls} object-cover rounded bg-plex-border flex-shrink-0`} onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
-      : <div className={`${cls} bg-plex-border/50 rounded flex-shrink-0`} />
-  }
+  const countFor = (list: Title[]) => view === 'markers'
+    ? <CountCell count={sum(list, markerCount)} unit="markers" />
+    : <CountCell count={sum(list, t => t.segment_count)} falsePositives={sum(list, fpOf)} unit="segments" />
 
-  const titleRow = (t: Title) => {
-    const name = titleLabel(t)
-    const isEpisode = t.media_type === 'episode'
+  const titleImage = (t: Title): RowImage => (t.media_type === 'episode'
+    ? { kind: 'still', src: t.thumb_url }
+    : { kind: 'poster', src: t.poster_url || t.thumb_url })
+
+  const renderRow = (row: Row) => {
+    if (row.kind === 'library') {
+      const { lib, titles: list } = row
+      const shows = new Set(list.filter(t => t.media_type === 'episode').map(showKeyOf)).size
+      return (
+        <BrowseRow
+          key={`l:${lib.id}`}
+          image={{ kind: 'icon', icon: lib.type === 'movie' ? 'movie' : 'show' }}
+          name={lib.title}
+          context={lib.type === 'show' ? `${plural(shows, 'show')} · ${plural(list.length, 'episode')}` : plural(list.length, 'title')}
+          status={<GroupStatus titles={list} />}
+          scanned={scannedCell(list)}
+          count={countFor(list)}
+          actions={libraryActions(lib)}
+          checked={list.length > 0 && list.every(t => selected.has(t.plex_guid))}
+          onCheck={() => toggleGuids(list.map(t => t.plex_guid))}
+          onOpen={() => go({ lib: lib.id })}
+          onContextMenu={e => openScanMenu(e, { lib: lib.id })}
+        />
+      )
+    }
+    if (row.kind === 'group') {
+      const g = row.group
+      const s: Scope = { lib: g.libId, show: g.showKey, season: g.season || undefined }
+      const seasons = new Set(g.titles.map(t => parseEpisodeTitle(t.title).season)).size
+      const context = g.kind === 'show'
+        ? [level === 'all' && libraries.length > 1 ? libById.get(g.libId)?.title : '', plural(seasons, 'season'), plural(g.titles.length, 'episode')].filter(Boolean).join(' · ')
+        : [flat || level !== 'show' ? g.showName : '', plural(g.titles.length, 'episode')].filter(Boolean).join(' · ')
+      return (
+        <BrowseRow
+          key={`g:${g.libId}:${g.showKey}:${g.season}`}
+          image={{ kind: 'poster', src: g.posterUrl }}
+          name={g.label}
+          context={context}
+          badges={<IgnoredBadge titles={g.titles} />}
+          status={<GroupStatus titles={g.titles} />}
+          scanned={scannedCell(g.titles)}
+          count={countFor(g.titles)}
+          actions={groupActions(g)}
+          checked={g.titles.length > 0 && g.titles.every(t => selected.has(t.plex_guid))}
+          onCheck={() => toggleGuids(g.titles.map(t => t.plex_guid))}
+          onOpen={() => go(s)}
+          onContextMenu={e => openScanMenu(e, s)}
+          ignored={g.titles.length > 0 && g.titles.every(t => t.ignored)}
+        />
+      )
+    }
+    const t = row.title
+    const { name, context } = nameOf(t)
     return (
-      <div key={t.plex_guid} className={`flex items-center gap-3 rounded-xl p-2.5 border ${t.ignored ? 'bg-yellow-500/5 border-yellow-500/30' : 'bg-plex-card border-plex-border'}`}>
-        {checkbox([t.plex_guid], name)}
-        {poster(isEpisode ? t.thumb_url : (t.poster_url || t.thumb_url), isEpisode)}
-        <div className="flex-1 min-w-0">
-          <button onClick={() => go(scopeOfTitle(t), 'segments')} className="block max-w-full text-sm font-medium text-gray-100 truncate text-left hover:text-plex-orange" title="Open this title's segments">
-            {name}
-          </button>
-          <div className="flex flex-wrap items-center gap-2 mt-1">
-            <StatusBadge status={t.status} progress={t.progress} />
-            {t.ignored && <span className="text-xs bg-yellow-500/15 text-yellow-300 px-2 py-0.5 rounded-full">Ignored</span>}
-            {t.year ? <span className="text-xs text-muted">{t.year}</span> : null}
-            {t.content_rating && <span className="text-xs text-gray-400 bg-white/5 px-1.5 py-0.5 rounded">{t.content_rating}</span>}
-            {segmentCount([t])}
-            {t.finished_at && <span className="text-xs text-muted">Scanned {formatFinishedAt(t.finished_at)}</span>}
-          </div>
-          {/* The reason a title failed, so a Failed title never stands unexplained (#190). */}
-          {t.status === 'failed' && t.error_msg && <p className="text-xs text-red-400/80 mt-1 break-words" title={t.error_msg}>{failureText(t.error_msg)}</p>}
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-0.5 flex-shrink-0">{titleActions(t, name)}</div>
-      </div>
+      <BrowseRow
+        key={t.plex_guid}
+        image={titleImage(t)}
+        name={name}
+        context={context}
+        // The reason a title failed, so a Failed title never stands unexplained (#190).
+        note={t.status === 'failed' && t.error_msg ? <p className="text-xs text-red-400/80 truncate" title={t.error_msg}>{failureText(t.error_msg)}</p> : undefined}
+        badges={t.ignored ? <span className="text-xs bg-yellow-500/15 text-yellow-300 px-2 py-0.5 rounded-full flex-shrink-0">Ignored</span> : undefined}
+        status={<StatusBadge status={t.status} progress={t.progress} />}
+        scanned={scannedCell([t])}
+        count={countFor([t])}
+        actions={titleActions(t, name)}
+        checked={selected.has(t.plex_guid)}
+        onCheck={() => toggleGuids([t.plex_guid])}
+        onOpen={() => go({ guid: t.plex_guid })}
+        onContextMenu={e => openScanMenu(e, { guid: t.plex_guid })}
+        ignored={t.ignored}
+      />
     )
   }
 
-  const groupRow = (g: Group) => {
-    const s: Scope = { lib: g.libId, show: g.showKey, season: g.season || undefined }
-    const seasons = new Set(g.titles.map(t => parseEpisodeTitle(t.title).season)).size
-    return (
-      <div key={`${g.libId}:${g.showKey}:${g.season}`} className="flex items-center gap-3 rounded-xl p-2.5 border bg-plex-card border-plex-border" onContextMenu={e => openScanMenu(e, s)}>
-        {checkbox(g.titles.map(t => t.plex_guid), g.label)}
-        {g.kind === 'show' && poster(g.posterUrl)}
-        <div className="flex-1 min-w-0">
-          <button onClick={() => go(s)} className="flex items-center gap-1 max-w-full text-sm font-semibold text-gray-100 text-left hover:text-plex-orange">
-            <span className="truncate">{g.label}</span>
-            <ChevronRight size={14} className="flex-shrink-0 text-gray-400" />
-          </button>
-          <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-muted">
-            {g.kind === 'show' && <span>{plural(seasons, 'season')}</span>}
-            <span>{plural(g.titles.length, 'episode')}</span>
-            {segmentCount(g.titles)}
-            <IgnoredBadge titles={g.titles} />
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-0.5 flex-shrink-0">{groupActions(g)}</div>
-      </div>
-    )
-  }
+  // The list header names what the rows are, e.g. "63 shows · 11 movies" or "12 episodes".
+  const countText = (() => {
+    const n = { library: 0, show: 0, season: 0, movie: 0, episode: 0 }
+    for (const r of rows) {
+      if (r.kind === 'library') n.library++
+      else if (r.kind === 'group') n[r.group.kind]++
+      else n[r.title.media_type === 'episode' ? 'episode' : 'movie']++
+    }
+    const parts = [
+      n.library && `${n.library} ${n.library === 1 ? 'library' : 'libraries'}`,
+      n.show && plural(n.show, 'show'),
+      n.season && plural(n.season, 'season'),
+      n.movie && plural(n.movie, 'movie'),
+      n.episode && plural(n.episode, 'episode'),
+    ].filter(Boolean)
+    return (flat ? 'Matches: ' : '') + parts.join(' · ')
+  })()
 
-  const libraryRow = (lib: Library) => {
-    const list = matchedAll.filter(t => t.library_id === lib.id)
-    return (
-      <div key={lib.id} className="flex items-center gap-3 rounded-xl p-2.5 border bg-plex-card border-plex-border" onContextMenu={e => openScanMenu(e, { lib: lib.id })}>
-        {checkbox(list.map(t => t.plex_guid), lib.title)}
-        <div className="flex-1 min-w-0">
-          <button onClick={() => go({ lib: lib.id })} className="flex items-center gap-1 max-w-full text-sm font-semibold text-gray-100 text-left hover:text-plex-orange">
-            <span className="truncate">{lib.title}</span>
-            <ChevronRight size={14} className="flex-shrink-0 text-gray-400" />
-          </button>
-          <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-muted">
-            <span>{plural(list.length, lib.type === 'show' ? 'episode' : 'title')}</span>
-            {segmentCount(list)}
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-0.5 flex-shrink-0">{libraryActions(lib)}</div>
-      </div>
-    )
-  }
+  const headerImage: RowImage | null = scopeTitle ? titleImage(scopeTitle)
+    : scopeGroup ? { kind: 'poster', src: scopeGroup.posterUrl }
+    : null
+
+  // What the level holds, counted like the list: hidden (ignored, unscannable) titles are not in it.
+  const headerContext = (() => {
+    if (scopeTitle) return titleNameParts(scopeTitle, 'all', true).context
+    const shown = visible.filter(t => inScope(t, scope))
+    const eps = shown.filter(t => t.media_type === 'episode')
+    const seasons = new Set(eps.map(t => `${showKeyOf(t)}:${parseEpisodeTitle(t.title).season}`)).size
+    const shows = new Set(eps.map(showKeyOf)).size
+    const movies = shown.length - eps.length
+    const parts: string[] = []
+    if (level !== 'show' && level !== 'season' && shows) parts.push(plural(shows, 'show'))
+    if (level === 'show') parts.push(plural(seasons, 'season'))
+    if (eps.length) parts.push(plural(eps.length, 'episode'))
+    if (movies) parts.push(plural(movies, eps.length ? 'movie' : 'title'))
+    return parts.join(' · ') || 'Nothing here'
+  })()
 
   const inputCls = 'px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200 placeholder-muted focus:border-plex-orange/50'
-  const rowCount = level === 'all' ? libraries.length : rowGroups.length + rowTitles.length
-  const markerLibs = libraries.filter(l => (scopeTitle ? scopeTitle.library_id === l.id : !scope.lib || scope.lib === l.id))
-  const matchedKeys = useMemo(() => new Set(matched.flatMap(t => [t.rating_key, t.plex_guid])), [matched])
+  const views = level === 'title' ? VIEWS.filter(v => v.id !== 'titles') : VIEWS
+  const showTitleFilters = level !== 'title'
+  const filtersButton = showTitleFilters || view === 'segments'
+  const sidebarCount = (libId?: string) => libId ? matchedAll.filter(t => t.library_id === libId).length : matchedAll.length
+  const activeLib = path.lib
 
   return (
     <div className="flex gap-5 h-full">
-      {/* Level tree: desktop only; on a phone the breadcrumb and the rows do the navigating. */}
-      <aside className="hidden md:flex flex-col w-60 flex-shrink-0 min-h-0">
+      {/* Libraries: the only list beside the main one, so a show appears in one place (#208). */}
+      <aside className="hidden md:flex flex-col w-52 flex-shrink-0 min-h-0">
         <h1 className="text-2xl font-bold text-gray-100 mb-3">Browse</h1>
-        <div className="flex-1 min-h-0 overflow-y-auto pr-1 pb-6">
-          <ScopeTree tree={tree} total={matchedAll.length} scope={scopeTitle ? pathOf(scopeTitle) : scope} onScope={s => go(s)} onMenu={openScanMenu} />
-        </div>
+        <nav aria-label="Libraries" className="space-y-0.5 overflow-y-auto">
+          {[{ id: '', title: 'All libraries', type: 'all' }, ...libraries].map(lib => {
+            const active = lib.id ? activeLib === lib.id : !activeLib
+            const Icon = lib.type === 'all' ? Layers : lib.type === 'movie' ? Film : Tv
+            return (
+              <button
+                key={lib.id || 'all'}
+                onClick={() => go(lib.id ? { lib: lib.id } : {})}
+                aria-current={active ? 'true' : undefined}
+                onContextMenu={lib.id ? e => openScanMenu(e, { lib: lib.id }) : undefined}
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-left transition-colors ${active ? 'bg-plex-orange/20 text-plex-orange' : 'text-gray-300 hover:text-gray-100 hover:bg-white/5'}`}
+              >
+                <Icon size={16} className="flex-shrink-0" />
+                <span className="truncate">{lib.title}</span>
+                <span className="ml-auto text-xs tabular-nums text-muted">{sidebarCount(lib.id || undefined)}</span>
+              </button>
+            )
+          })}
+        </nav>
       </aside>
 
       <div className="flex-1 min-w-0 flex flex-col min-h-0">
         <h1 className="md:hidden text-xl font-bold text-gray-100 mb-2">Browse</h1>
 
-        {/* Breadcrumb */}
-        <nav aria-label="Breadcrumb" className="flex flex-wrap items-center gap-1 text-xs text-muted mb-1">
+        {/* Header: where you are, what it holds, and what can be done to all of it */}
+        <nav aria-label="Breadcrumb" className="flex flex-wrap items-center gap-1 text-xs text-muted mb-1 min-h-[1rem]">
           {crumbs.slice(0, -1).map((c, i) => (
             <span key={i} className="flex items-center gap-1">
               <button onClick={() => go(c.scope)} className="hover:text-gray-100">{c.label}</button>
@@ -788,192 +893,213 @@ export default function Browse() {
             </span>
           ))}
         </nav>
-
-        {/* Header: the level's name, bulk actions while titles are selected, the level's own actions */}
-        <div className="flex items-center gap-1 mb-2 min-w-0">
-          <h2 className="text-xl font-semibold text-gray-100 truncate">{heading}</h2>
-          <div className="flex items-center gap-2 ml-2 mr-auto min-w-0">
-            {scopeTitle && <StatusBadge status={scopeTitle.status} progress={scopeTitle.progress} />}
-            {scopeTitle?.ignored && <span className="text-xs bg-yellow-500/15 text-yellow-300 px-2 py-0.5 rounded-full">Ignored</span>}
-            {scopeTitle?.content_rating && <span className="text-xs text-gray-400 bg-white/5 px-1.5 py-0.5 rounded">{scopeTitle.content_rating}</span>}
-            {scopeTitle?.finished_at && <span className="text-xs text-muted truncate">Scanned {formatFinishedAt(scopeTitle.finished_at)}</span>}
-            {scopeGroup && <IgnoredBadge titles={scopeTitles} />}
-          </div>
-          {selectedTitles.length > 0 && (
-            <div className="flex items-center gap-0.5 mr-2 pl-2.5 pr-0.5 bg-plex-card border border-plex-border rounded-lg">
-              <span className="text-xs text-gray-400 mr-1 whitespace-nowrap">{selectedTitles.length} selected</span>
-              <ActionIcon label="Scan selected tonight" onClick={() => { scanTitles(selectedTitles, false); setSelected(new Set()) }}><Moon size={15} /></ActionIcon>
-              <ActionIcon label="Scan selected now" onClick={() => { scanTitles(selectedTitles, true); setSelected(new Set()) }} tone="orange"><Zap size={15} /></ActionIcon>
-              <ActionIcon label="Ignore selected" onClick={() => setIgnored(selectedTitles, true)} tone="yellow"><EyeOff size={15} /></ActionIcon>
-              <ActionIcon label="Un-ignore selected" onClick={() => setIgnored(selectedTitles, false)}><Eye size={15} /></ActionIcon>
-              <ActionIcon label="Delete segments of selected" onClick={() => deleteSegments(plural(selectedTitles.length, 'selected title'), selectedTitles)} tone="red"><Trash2 size={15} /></ActionIcon>
-              <ActionIcon label="Clear selection" onClick={() => setSelected(new Set())}><X size={15} /></ActionIcon>
-            </div>
+        <div className="flex items-center gap-3 mb-3 min-w-0">
+          {headerImage && headerImage.kind !== 'icon' && headerImage.src && (
+            <SafeImg src={headerImage.src} className={`${headerImage.kind === 'still' ? 'w-28 h-16' : 'w-11 h-16'} rounded bg-plex-border flex-shrink-0`} />
           )}
+          <div className="min-w-0 mr-auto">
+            <div className="flex items-center gap-2 min-w-0">
+              <h2 className="text-xl font-semibold text-gray-100 truncate">{heading}</h2>
+              {scopeTitle && <StatusBadge status={scopeTitle.status} progress={scopeTitle.progress} />}
+              {scopeTitle?.ignored && <span className="text-xs bg-yellow-500/15 text-yellow-300 px-2 py-0.5 rounded-full">Ignored</span>}
+              {scopeGroup && <IgnoredBadge titles={scopeTitles} />}
+            </div>
+            <p className="text-xs text-muted truncate">
+              {headerContext}
+              {scopeTitle?.finished_at && ` · Scanned ${scannedCell([scopeTitle]).full}`}
+            </p>
+            {scopeTitle?.status === 'failed' && scopeTitle.error_msg && (
+              <p className="text-xs text-red-400/80 break-words" title={scopeTitle.error_msg}>{failureText(scopeTitle.error_msg)}</p>
+            )}
+          </div>
           <div className="flex items-center gap-0.5 flex-shrink-0">
+            {view === 'markers' && level !== 'title' && markerActions(matched, scope.lib)}
             {level === 'library' && scopeLib && libraryActions(scopeLib)}
             {scopeGroup && groupActions(scopeGroup)}
             {scopeTitle && titleActions(scopeTitle, heading)}
           </div>
         </div>
-        {scopeTitle?.status === 'failed' && scopeTitle.error_msg && (
-          <p className="text-xs text-red-400/80 mb-2 break-words" title={scopeTitle.error_msg}>{failureText(scopeTitle.error_msg)}</p>
-        )}
 
-        {/* One thin line for running scans (#110); the per-scan bars are on the Dashboard. */}
-        {scannerStatus && scannerStatus.active_scans.length > 0 && (
-          <div className="mb-2 flex items-center gap-3 text-xs text-muted whitespace-nowrap overflow-hidden" title={scannerStatus.active_scans.map(s => `${s.title} ${Math.round(s.progress * 100)}%`).join('\n')}>
-            <span className="text-plex-orange animate-pulse flex-shrink-0">●</span>
-            {scannerStatus.active_scans.map(scan => (
-              <span key={scan.guid} className="flex items-baseline gap-1 min-w-0">
-                <span className="text-gray-300 truncate max-w-[14rem]">{scan.title}</span>
-                <span className="text-plex-orange flex-shrink-0">{Math.round(scan.progress * 100)}%</span>
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* Filter bar: applies at every level and to all three views. Hidden for a single title. */}
-        {level !== 'title' && (
-          <div className="mb-3 rounded-xl border border-plex-border bg-plex-card/40 p-2.5 space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="relative flex-1 min-w-[10rem]">
-                <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
-                <input type="text" placeholder="Name: show, season, episode or movie…" aria-label="Filter by name" value={filter} onChange={e => setFilter(e.target.value)} className={`${inputCls} w-full pl-8`} />
-              </div>
-              <div className="relative w-44">
-                <Users size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
-                <input type="text" list="cast-suggestions" placeholder="Actor…" aria-label="Filter by actor" value={castFilter} onChange={e => setCastFilter(e.target.value)} className={`${inputCls} w-full pl-8`} />
-              </div>
-              <datalist id="cast-suggestions">{castSuggestions.map(a => <option key={a} value={a} />)}</datalist>
-              {availableRatings.length > 0 && (
-                <select value={ratingFilter} aria-label="Filter by rating" onChange={e => setRatingFilter(e.target.value)} className={inputCls}>
-                  <option value="all">All ratings</option>
-                  {availableRatings.map(r => <option key={r} value={r}>{r}</option>)}
-                </select>
-              )}
-              <label className="flex items-center gap-1.5 text-xs text-muted">
-                Released
-                <input type="number" placeholder="From" aria-label="Released from year" value={yearFrom} onChange={e => setYearFrom(e.target.value)} className={`${inputCls} w-20`} />
-                <span>–</span>
-                <input type="number" placeholder="To" aria-label="Released to year" value={yearTo} onChange={e => setYearTo(e.target.value)} className={`${inputCls} w-20`} />
-              </label>
-              <label className="flex items-center gap-1.5 text-xs text-muted">
-                Scanned
-                <input type="date" aria-label="Scanned from" value={scanFrom} onChange={e => setScanFrom(e.target.value)} className={`${inputCls} w-36`} />
-                <span>–</span>
-                <input type="date" aria-label="Scanned to" value={scanTo} onChange={e => setScanTo(e.target.value)} className={`${inputCls} w-36`} />
-              </label>
-            </div>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              <input type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(matchedGuids))} title="Select all filtered titles" aria-label="Select all filtered titles" className="w-4 h-4 accent-plex-orange flex-shrink-0" />
-              {/* Segmented status control: scrolls sideways on a narrow screen rather than wrapping. */}
-              <div className="flex p-0.5 gap-0.5 rounded-lg bg-black/25 border border-plex-border overflow-x-auto max-w-full">
-                {STATUS_TABS.map(s => (
-                  <button
-                    key={s}
-                    onClick={() => setStatusFilter(s)}
-                    aria-pressed={statusFilter === s}
-                    className={`px-3 py-1 text-xs rounded-md transition-colors whitespace-nowrap ${statusFilter === s ? 'bg-plex-orange text-black font-semibold' : 'text-gray-400 hover:text-gray-100 hover:bg-white/5'}`}
-                  >
-                    {s === 'all' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}
-                    <span className={`ml-1.5 tabular-nums ${statusFilter === s ? 'opacity-70' : 'text-muted'}`}>{counts[s] ?? 0}</span>
-                  </button>
-                ))}
-              </div>
-              <button
-                onClick={() => setShowIgnored(!showIgnored)}
-                aria-pressed={showIgnored}
-                title={showIgnored ? 'Hide ignored titles' : 'Show ignored titles'}
-                aria-label="Show ignored titles"
-                className={`p-1.5 border rounded-lg transition-colors ${showIgnored ? 'bg-yellow-500/15 border-yellow-500/30 text-yellow-400' : 'bg-plex-card border-plex-border text-gray-400 hover:text-gray-200'}`}
-              >
-                {showIgnored ? <Eye size={15} /> : <EyeOff size={15} />}
-              </button>
-              {filtersActive && <button onClick={clearFilters} className="text-xs text-gray-400 hover:text-white">Clear filters</button>}
-              <span className="ml-auto text-xs text-muted tabular-nums whitespace-nowrap">{plural(matched.length, 'title')}</span>
-              {/* Sort and its direction are one joined control; the direction says what it does. */}
-              <div className="flex items-stretch">
-                <select value={sortBy} aria-label="Sort by" onChange={e => setSortBy(e.target.value as SortOption)} className={`${inputCls} rounded-r-none`}>
-                  <option value="date-added">Date added</option>
-                  <option value="scanned">Scan date</option>
-                  <option value="title">Name</option>
-                  <option value="year">Release year</option>
-                  <option value="segments">Segments</option>
-                </select>
-                <button onClick={() => setSortDesc(!sortDesc)} aria-label={`Sort direction: ${sortDirLabel}`} className={`${inputCls} -ml-px rounded-l-none whitespace-nowrap hover:text-white hover:border-gray-500`}>
-                  {sortDirLabel}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* View switch */}
-        <div className="flex items-center gap-3 mb-2">
+        {/* Toolbar: one row. The name search is always here; the other filters open below it. */}
+        <div className="flex flex-wrap items-center gap-2 mb-2">
           <div role="tablist" aria-label="Show" className="flex p-0.5 gap-0.5 rounded-lg bg-black/25 border border-plex-border">
-            {VIEWS.map(v => (
+            {views.map(v => (
               <button
                 key={v.id}
                 role="tab"
                 aria-selected={view === v.id}
                 onClick={() => go(scope, v.id)}
-                className={`px-3 py-1 text-xs rounded-md transition-colors ${view === v.id ? 'bg-plex-orange text-black font-semibold' : 'text-gray-400 hover:text-gray-100 hover:bg-white/5'}`}
+                className={`px-3 py-1 text-sm rounded-md transition-colors ${view === v.id ? 'bg-plex-orange text-black font-semibold' : 'text-gray-400 hover:text-gray-100 hover:bg-white/5'}`}
               >
                 {v.label}
               </button>
             ))}
           </div>
-          {notice && (
-            <p className="flex items-center gap-2 text-xs text-gray-400 min-w-0" role="status">
-              <span className="truncate">{notice}</span>
-              <button onClick={() => setNotice('')} aria-label="Dismiss" className="text-gray-400 hover:text-white flex-shrink-0"><X size={12} /></button>
-            </p>
+          {showTitleFilters && (
+            <div className="relative flex-1 min-w-[12rem]">
+              <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+              <input type="search" placeholder="Search movies, shows, seasons, episodes…" aria-label="Filter by name" value={tf.name} onChange={e => patchTf({ name: e.target.value })} className={`${inputCls} w-full pl-8`} />
+            </div>
+          )}
+          {filtersButton && (
+            <button
+              onClick={() => setFiltersOpen(o => !o)}
+              aria-expanded={filtersOpen}
+              aria-controls="browse-filters"
+              className={`flex items-center gap-1.5 ${inputCls} ${filtersOpen || panelFilterCount ? 'border-plex-orange/50 text-plex-orange' : 'hover:text-white'}`}
+            >
+              <SlidersHorizontal size={14} />
+              Filters
+              {panelFilterCount > 0 && <span className="text-xs tabular-nums bg-plex-orange text-black rounded-full px-1.5">{panelFilterCount}</span>}
+            </button>
+          )}
+          {showTitleFilters && (
+            <div className="flex items-stretch">
+              <select value={sortBy} aria-label="Sort by" onChange={e => setSortBy(e.target.value as SortOption)} className={`${inputCls} rounded-r-none`}>
+                <option value="date-added">Date added</option>
+                <option value="scanned">Scan date</option>
+                <option value="title">Name</option>
+                <option value="year">Release year</option>
+                <option value="segments">Segments</option>
+              </select>
+              <button onClick={() => setSortDesc(!sortDesc)} aria-label={`Sort direction: ${sortDirLabel}`} title="Reverse the order" className={`${inputCls} -ml-px rounded-l-none flex items-center gap-1 whitespace-nowrap hover:text-white`}>
+                {sortDesc ? <ArrowDown size={13} /> : <ArrowUp size={13} />}
+                {sortDirLabel}
+              </button>
+            </div>
           )}
         </div>
+
+        {filtersOpen && filtersButton ? (
+          <FilterPanel
+            titles={tf}
+            onTitles={patchTf}
+            statusCounts={statusCounts}
+            ratings={availableRatings}
+            castSuggestions={castSuggestions}
+            showTitleSection={showTitleFilters}
+            segments={sf}
+            onSegments={setSf}
+            segmentLabels={segOptions.labels}
+            segmentOrigins={segOptions.origins}
+            showSegmentSection={view === 'segments'}
+          />
+        ) : (
+          <FilterChips titles={showTitleFilters ? { ...tf, name: '' } : NO_TITLE_FILTERS} onTitles={patchTf} segments={sf} onSegments={setSf} showSegments={view === 'segments'} onClearAll={clearFilters} />
+        )}
+
+        {/* One thin line for running scans (#110), and the result of the last action. */}
+        {(notice || (scannerStatus && scannerStatus.active_scans.length > 0)) && (
+          <div className="mb-2 flex items-center gap-3 text-xs text-muted whitespace-nowrap overflow-hidden">
+            {scannerStatus && scannerStatus.active_scans.length > 0 && (
+              <span className="flex items-center gap-3 min-w-0" title={scannerStatus.active_scans.map(s => `${s.title} ${Math.round(s.progress * 100)}%`).join('\n')}>
+                <span className="text-plex-orange animate-pulse flex-shrink-0">●</span>
+                {scannerStatus.active_scans.map(scan => (
+                  <span key={scan.guid} className="flex items-baseline gap-1 min-w-0">
+                    <span className="text-gray-300 truncate max-w-[14rem]">{scan.title}</span>
+                    <span className="text-plex-orange flex-shrink-0">{Math.round(scan.progress * 100)}%</span>
+                  </span>
+                ))}
+              </span>
+            )}
+            {notice && (
+              <span className="flex items-center gap-1 ml-auto min-w-0" role="status">
+                <span className="truncate text-gray-300">{notice}</span>
+                <button onClick={() => setNotice('')} aria-label="Dismiss" className="text-gray-400 hover:text-white flex-shrink-0"><X size={12} /></button>
+              </span>
+            )}
+          </div>
+        )}
 
         <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pr-1 pb-6">
           {loading ? (
             <div className="text-muted text-sm">Loading…</div>
           ) : level === 'title' && !scopeTitle ? (
             <div className="text-muted text-sm">This title is no longer in the library. <button onClick={() => go({})} className="text-plex-orange hover:underline">Back to all libraries</button></div>
-          ) : view === 'titles' ? (
-            rowCount === 0 ? (
-              <div className="text-muted text-sm">No titles match here. Pick a higher level or clear a filter.</div>
-            ) : (
-              <div className="space-y-2">
-                {level === 'all' && libraries.map(libraryRow)}
-                {rowGroups.slice(0, limit).map(groupRow)}
-                {rowTitles.slice(0, Math.max(0, limit - rowGroups.length)).map(titleRow)}
-                {rowCount > limit && level !== 'all' && (
-                  <div className="text-center pt-1">
-                    <button onClick={() => setLimit(l => l + PAGE)} className="btn-outline">Show more ({rowCount - limit} left)</button>
-                  </div>
-                )}
+          ) : level === 'title' && scopeTitle ? (
+            view === 'markers' ? (
+              <div className="space-y-3">
+                <p className="text-sm text-muted">Drag the handles to move an intro or credits marker, then save it to Plex.</p>
+                <TitleMarkerPanel
+                  key={scopeTitle.plex_guid}
+                  defaultOpen
+                  title={{
+                    plex_guid: scopeTitle.plex_guid, title: scopeTitle.title, rating_key: scopeTitle.rating_key, media_type: scopeTitle.media_type,
+                    show_guid: scopeTitle.show_guid ?? '', show_title: scopeTitle.show_title ?? '', show_rating_key: scopeTitle.show_rating_key ?? '',
+                    content_rating: scopeTitle.content_rating, year: scopeTitle.year ?? null, thumb_url: scopeTitle.thumb_url,
+                    poster_url: scopeTitle.poster_url ?? '', marker_count: markerCount(scopeTitle),
+                  }}
+                  episodeLabel={heading}
+                  onMarkerCountChange={onMarkerCountChange}
+                />
               </div>
+            ) : (
+              <SegmentsView titles={[scopeTitle]} single nameOf={nameOf} onOpenTitle={t => go({ guid: t.plex_guid })} onImported={t => reloadLibrary(t.library_id)} filters={sf} onOptions={onSegOptions} />
             )
           ) : view === 'segments' ? (
-            <SegmentsView
-              titles={sorted}
-              single={level === 'title'}
-              titleLabel={titleLabel}
-              onOpenTitle={t => go(scopeOfTitle(t), 'segments')}
-              onImported={t => reloadLibrary(t.library_id)}
-            />
+            <SegmentsView titles={sorted} single={false} nameOf={nameOf} onOpenTitle={t => go({ guid: t.plex_guid })} onImported={t => reloadLibrary(t.library_id)} filters={sf} onOptions={onSegOptions} />
           ) : (
-            <div className="space-y-6">
-              <p className="text-sm text-muted">Drag the handles to move an intro or credits marker, then save it to Plex.</p>
-              {markerLibs.map(lib => (
-                <Markers
-                  key={lib.id}
-                  libraryId={lib.id}
-                  libraryType={lib.type}
-                  libraryTitle={markerLibs.length > 1 ? lib.title : undefined}
-                  // Unfiltered at library level: the marker cache can list titles Cleanplex has no scan job for.
-                  allowed={level === 'library' && !filtersActive && showIgnored ? undefined : matchedKeys}
-                />
-              ))}
-            </div>
+            <>
+              {view === 'markers' && (
+                <>
+                  {markerSync && <SyncAllBanner progress={markerSync} onDismiss={() => setMarkerSync(null)} />}
+                  {libsInScope.filter(id => markerNotCached.has(id)).map(id => (
+                    <p key={id} className="mb-2 text-sm text-muted">
+                      The marker list of {libById.get(id)?.title ?? 'this library'} has not been loaded from Plex yet.{' '}
+                      <button onClick={() => refreshMarkerList(id)} className="text-plex-orange hover:underline">Load it now</button>
+                    </p>
+                  ))}
+                </>
+              )}
+              {rows.length === 0 ? (
+                <div className="text-muted text-sm py-8 text-center">Nothing matches here. Go up a level or clear a filter.</div>
+              ) : (
+                <div className="rounded-xl border border-plex-border bg-plex-card overflow-hidden">
+                  {/* Column header; becomes the bulk-action bar while something is selected. */}
+                  <div className="sticky top-0 z-10 flex items-center gap-3 px-3 py-2 bg-plex-dark border-b border-plex-border text-[11px] uppercase tracking-wide text-muted">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={() => setSelected(allSelected ? new Set() : new Set(matchedGuids))}
+                      title="Select all filtered titles"
+                      aria-label="Select all filtered titles"
+                      className={`${COL.check} h-4 accent-plex-orange`}
+                    />
+                    {selectedTitles.length > 0 ? (
+                      <div className="flex-1 flex flex-wrap items-center gap-1 normal-case tracking-normal">
+                        <span className="text-sm text-gray-200 mr-2">{plural(selectedTitles.length, 'title')} selected</span>
+                        <ActionIcon label="Scan selected tonight" onClick={() => { scanTitles(selectedTitles, false); setSelected(new Set()) }}><Moon size={15} /></ActionIcon>
+                        <ActionIcon label="Scan selected now" onClick={() => { scanTitles(selectedTitles, true); setSelected(new Set()) }} tone="orange"><Zap size={15} /></ActionIcon>
+                        <ActionIcon label="Ignore selected" onClick={() => setIgnored(selectedTitles, true)} tone="yellow"><EyeOff size={15} /></ActionIcon>
+                        <ActionIcon label="Un-ignore selected" onClick={() => setIgnored(selectedTitles, false)}><Eye size={15} /></ActionIcon>
+                        {view === 'markers' && (
+                          <ActionIcon label="Pull markers from Plex for the selected titles" onClick={() => syncMarkers(selectedTitles)}><DownloadCloud size={15} /></ActionIcon>
+                        )}
+                        <ActionIcon label="Delete segments of selected" onClick={() => deleteSegments(plural(selectedTitles.length, 'selected title'), selectedTitles)} tone="red"><Trash2 size={15} /></ActionIcon>
+                        <button onClick={() => setSelected(new Set())} className="ml-auto text-xs text-gray-400 hover:text-white">Clear selection</button>
+                      </div>
+                    ) : (
+                      <>
+                        <span className={COL.image} />
+                        <span className={COL.name}>{countText}</span>
+                        <span className={COL.status}>Status</span>
+                        <span className={COL.scanned}>Scanned</span>
+                        <span className={COL.count}>{view === 'markers' ? 'Markers' : 'Segments'}</span>
+                        {/* Room for the row actions and chevron, so the columns above line up. */}
+                        <span className={COL.actions} />
+                        <span className="w-4 flex-shrink-0" />
+                      </>
+                    )}
+                  </div>
+                  {rows.slice(0, limit).map(renderRow)}
+                </div>
+              )}
+              {rows.length > limit && (
+                <div className="text-center pt-3">
+                  <button onClick={() => setLimit(l => l + PAGE)} className="btn-outline">Show more ({rows.length - limit} left)</button>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -1004,3 +1130,4 @@ export default function Browse() {
     </div>
   )
 }
+

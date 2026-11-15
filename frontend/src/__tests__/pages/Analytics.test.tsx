@@ -118,6 +118,18 @@ describe('Analytics', () => {
     expect(mockApi.post).toHaveBeenCalledWith('/api/segments/9/false-positive', { false_positive: false })
   })
 
+  it('shows false positives as a gallery of large frames and still undoes a mark (#208)', async () => {
+    renderAt('/analytics?tab=false-positives')
+    await screen.findByText('Wrong One')
+    fireEvent.click(screen.getByRole('button', { name: 'Show as a gallery' }))
+    expect(screen.getByRole('button', { name: /^Play segment/ })).toBeInTheDocument()
+    expect(localStorage.getItem('analytics.segmentLayout')).toBe('gallery')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo false positive' }))
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/segments/9/false-positive', { false_positive: false }))
+    await waitFor(() => expect(screen.queryByText('Wrong One')).not.toBeInTheDocument())
+  })
+
   it('still toggles a section when storage is unavailable (#117)', async () => {
     vi.stubGlobal('localStorage', undefined)
     renderAt('/analytics?tab=accuracy')

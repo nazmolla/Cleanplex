@@ -281,7 +281,7 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 
 ### 5.6 Frontend
 
-- **Titles, segments and markers are browsed in `pages/Browse.tsx`** (#207): scope tree, one filter bar, three views. A segment is rendered by `components/browse/SegmentRow`; never add another segment row or another library/show/season browser.
+- **Titles, segments and markers are browsed in `pages/Browse.tsx`** (#207, #208): a libraries sidebar, one row layout for every level (`components/browse/BrowseRow`), one toolbar with the filters behind it, three views. In Browse a segment is a `components/browse/SegmentRow`; the large-card `SegmentCard` is for the Analytics gallery. Never add another segment row or another library/show/season browser.
 - **All API calls go through `src/api/`.** No `fetch`/`axios` calls inline in components or pages.
 - **Polling intervals must cancel in-flight requests.** Use `AbortController` before each new poll tick.
 - **No polling loop may run unbounded.** Every `setInterval`/recursive `setTimeout` must have a terminal condition (success, error, or max-duration).

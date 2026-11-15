@@ -278,11 +278,11 @@ Once saved, the token is never sent back to the browser: Settings shows "Saved. 
 - **Recent skips** — Every recorded skip and mute (paged, with a total), with optional from/to date filters; failed actions are flagged. History is kept for `skip_event_retention_days`
 
 #### Browse
-Titles, segments and Plex markers share one page. A tree on the left picks the level (all libraries, a library, a show, a season; open a movie or episode from the list), the filter bar narrows it, and *Titles / Segments / Markers* choose what is listed for that level. The level and view are part of the address, so a level can be bookmarked; the old `/library`, `/segments` and `/markers` addresses open Browse.
+Titles, segments and Plex markers share one page. The sidebar lists your libraries; the main list always shows what is inside the current level (libraries, shows, seasons, movies, episodes) in the same rows, and clicking a row opens it. *Titles / Segments / Markers* choose what is listed for that level, and a movie or episode opens on its own page with its segments and markers. The level and view are part of the address, so a level can be bookmarked; the old `/library`, `/segments` and `/markers` addresses open Browse.
 
-- **Filters that combine at every level** — name, **actor** (the cast is copied from Plex in the background; type a name or pick a suggestion), rating, release-year range, scan-date range, scan status and ignored titles. The numbers in the tree count the titles that pass them
+- **Search and filters** — the search box is always in the toolbar; *Filters* opens the rest below it, and active filters show as chips you can remove. While a filter is active the list shows the matches directly (a show whose name matches as one row, episodes with their show and season beside them). Filters: name, **actor** (the cast is copied from Plex in the background; type a name or pick a suggestion), rating, release-year range, scan-date range, scan status and ignored titles. The numbers in the tree count the titles that pass them
 - **Sort** — date added, scan date, name, release year or segments, with the direction spelled out (*Newest first / Oldest first*); defaults to date added, newest first
-- **Segments at any level** — the Segments view lists every segment of the matching titles, with its own filters: state (active, marked false positive, rejected by the verifier), what found it, and label
+- **Segments at any level** — the Segments view lists every segment of the matching titles as rows with a 240 px frame (hover plays the preview, click opens the player), with segment filters in the same panel: state (active, marked false positive, rejected by the verifier), what found it, and label. Import and export sit behind *Import or export skip files* on a title's page
 - **Bulk actions** — tick titles, shows or seasons (or *select all filtered*) to scan, ignore, un-ignore or delete the segments of the selection; deleting segments of a whole title, show or selection asks first
 - **Import skip files** — Upload `.skp` / `.edl` / `.mcf`, paste a timestamp list, or export segments as EDL/MCF
 - **Browse all titles** with scan status icons
@@ -309,7 +309,7 @@ Titles, segments and Plex markers share one page. A tree on the left picks the l
 - Lists the titles of a library with their **Plex intro and credits markers**, and lets you create, edit and delete them (and refresh them from Plex). A title's credits marker is what stops SigLIP from reading end credits as nudity
 
 #### Analytics
-Tabs (linkable with `?tab=`), and sections that can be minimised (remembered per browser):
+Tabs (linkable with `?tab=`), and sections that can be minimised (remembered per browser). The segment lists of *Detections* and *False positives* switch between a list and a **gallery** of large frames (remembered per browser):
 - **Detections** — Segments per label (click a bar for a per-rating breakdown), a label filter, and the matching segments with preview, jump, false-positive and delete actions
 - **Skips** — Skip and mute history by category, client and title
 - **Accuracy** — How often each detector and label was marked a false positive by you (verifier rejections are counted separately and left out of the rate), with mean scores of kept vs. marked segments

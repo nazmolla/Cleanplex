@@ -4,6 +4,8 @@ interface Props {
   /** The segment's hover_url; empty until the overnight job has rendered it (#114). */
   src?: string
   className?: string
+  /** How the clip fills the box; match the still under it so the two line up. */
+  fit?: 'cover' | 'contain'
   children: ReactNode
 }
 
@@ -13,7 +15,7 @@ interface Props {
  * like a GIF at a fraction of the size. The <video> exists only while hovered:
  * nothing is downloaded for a list nobody points at, and leaving stops playback.
  */
-export default function HoverPreview({ src, className = '', children }: Props) {
+export default function HoverPreview({ src, className = '', fit = 'cover', children }: Props) {
   const [hovered, setHovered] = useState(false)
   return (
     <div
@@ -30,7 +32,7 @@ export default function HoverPreview({ src, className = '', children }: Props) {
           loop
           playsInline
           aria-label="Segment preview"
-          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+          className={`absolute inset-0 w-full h-full pointer-events-none ${fit === 'contain' ? 'object-contain' : 'object-cover'}`}
         />
       )}
     </div>

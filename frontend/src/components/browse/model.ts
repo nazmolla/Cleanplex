@@ -158,3 +158,52 @@ export function shortLabel(label: string): string {
 export function segmentOrigin(seg: Segment): string {
   return seg.detector || seg.source || 'scanner'
 }
+
+/** Segment-level filters of the Segments view; they live in Browse's filter panel (#208). */
+export type SegmentState = 'all' | 'active' | 'fp_user' | 'fp_verifier'
+export interface SegmentFilters {
+  state: SegmentState
+  /** '' = anything; else a value of segmentOrigin(). */
+  origin: string
+  /** Keep segments carrying at least one of these labels; empty = any label. */
+  labels: Set<string>
+}
+export const NO_SEGMENT_FILTERS: SegmentFilters = { state: 'all', origin: '', labels: new Set() }
+
+export function segmentFiltersActive(f: SegmentFilters): boolean {
+  return f.state !== 'all' || f.origin !== '' || f.labels.size > 0
+}
+
+export function segmentPasses(s: Segment, f: SegmentFilters): boolean {
+  if (f.state === 'active' && s.false_positive) return false
+  if (f.state === 'fp_user' && !(s.false_positive && !s.auto_rejected)) return false
+  if (f.state === 'fp_verifier' && !s.auto_rejected) return false
+  if (f.origin && segmentOrigin(s) !== f.origin) return false
+  if (f.labels.size > 0 && !segmentLabels(s).some(l => f.labels.has(l))) return false
+  return true
+}
+
+export const SEGMENT_STATE_LABELS: Record<SegmentState, string> = {
+  all: 'All segments',
+  active: 'Active only',
+  fp_user: 'False positives (marked by you)',
+  fp_verifier: 'Rejected by the verifier',
+}
+
+/**
+ * A title's name and the line under it, relative to the level being looked at (#208): an
+ * episode is named by its own title, with its show and season as context unless the level
+ * already says them. Every row and every segment heading names titles this way.
+ */
+export function titleNameParts(t: Title, level: ScopeLevel, flat: boolean): { name: string; context: string } {
+  const extra = [t.year ? String(t.year) : '', t.content_rating].filter(Boolean)
+  if (t.media_type !== 'episode') return { name: t.title, context: extra.join(' · ') }
+  const p = parseEpisodeTitle(t.title)
+  const where = level === 'season' && !flat ? [] : level === 'show' && !flat ? [p.season] : [showNameOf(t), p.season]
+  return { name: p.episode, context: [...where, t.content_rating].filter(Boolean).join(' · ') }
+}
+
+/** Plex's own picture of a show or season, through the server's image proxy. */
+export function plexThumb(ratingKey?: string): string {
+  return ratingKey ? `/api/plex-image?path=${encodeURIComponent(`/library/metadata/${ratingKey}/thumb`)}` : ''
+}

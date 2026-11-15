@@ -8,6 +8,7 @@ import FalsePositiveButton, { FalsePositiveTag } from '../FalsePositiveButton'
 import RelabelButton from '../RelabelButton'
 import { toast } from '../Toast'
 import { parseDbTimestamp } from '../../utils/dbTime'
+import SafeImg from './SafeImg'
 import { Segment, msToTimecode, segmentLabels, shortLabel } from './model'
 
 interface Props {
@@ -18,7 +19,11 @@ interface Props {
   onDeleted: (seg: Segment) => void
 }
 
-/** One segment with every action it supports. The only segment row Browse renders (#207). */
+/**
+ * One segment as a line of the Browse list (#207, #208). The frame is 240 px wide, 16:9 and not
+ * cropped, so a detection can be judged from the list; hovering plays the preview loop at that size
+ * and clicking the frame opens the player. The large-card gallery lives in Analytics (SegmentCard).
+ */
 export default function SegmentRow({ seg, onPreview, onChange, onDeleted }: Props) {
   const [jumping, setJumping] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -46,36 +51,40 @@ export default function SegmentRow({ seg, onPreview, onChange, onDeleted }: Prop
     }
   }
 
-  const timeCls = `font-mono text-xs ${seg.false_positive ? 'text-gray-400 line-through' : 'text-plex-orange'}`
+  const timeCls = `font-mono text-sm ${seg.false_positive ? 'text-gray-400 line-through' : 'text-plex-orange'}`
   const labels = segmentLabels(seg)
 
   return (
-    <div className={`flex flex-col sm:flex-row bg-plex-darker border border-plex-border rounded-lg overflow-hidden ${seg.false_positive ? '[&_img]:opacity-40 [&_video]:opacity-40' : ''}`}>
-      <HoverPreview src={seg.hover_url} className="w-full sm:w-40 sm:flex-shrink-0 bg-black">
-        {seg.has_thumbnail ? (
-          <img src={seg.thumbnail_url} alt="Flagged frame" loading="lazy" className="w-full object-cover" style={{ height: '100px' }} />
-        ) : (
-          <div className="w-full flex items-center justify-center text-faint" style={{ height: '100px' }}><AlertTriangle size={20} /></div>
-        )}
-        <div className="absolute bottom-0.5 left-0.5 bg-black/70 text-gray-300 px-1 py-0.5 rounded text-[10px]">
-          {Math.round(seg.confidence * 100)}%
-        </div>
-        <ThumbnailTime ms={seg.thumbnail_ms} />
-      </HoverPreview>
-      <div className="flex-1 p-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 min-w-0">
-        <div className="min-w-0">
+    <div className={`flex flex-col sm:flex-row bg-plex-card border rounded-xl overflow-hidden ${seg.false_positive ? 'border-amber-400/30' : 'border-plex-border'}`}>
+      <button onClick={() => onPreview(seg)} aria-label={`Play segment ${msToTimecode(seg.start_ms)}`} title="Play this segment" className="group block w-full sm:w-60 flex-shrink-0">
+        <HoverPreview src={seg.hover_url} fit="contain" className={`aspect-video bg-black ${seg.false_positive ? '[&_img]:opacity-40 [&_video]:opacity-40' : ''}`}>
+          {seg.has_thumbnail ? (
+            <SafeImg src={seg.thumbnail_url} alt="Flagged frame" fit="contain" iconSize={24} className="w-full h-full bg-black" />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-faint"><AlertTriangle size={24} /></div>
+          )}
+          <div className="absolute bottom-1 left-1 bg-black/70 text-xs text-gray-200 px-1.5 py-0.5 rounded">
+            {Math.round(seg.confidence * 100)}%
+          </div>
+          <ThumbnailTime ms={seg.thumbnail_ms} />
+          <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity pointer-events-none">
+            <span className="rounded-full bg-black/60 p-2.5 text-white"><Play size={18} /></span>
+          </div>
+        </HoverPreview>
+      </button>
+      <div className="flex-1 min-w-0 p-3 flex flex-col sm:flex-row sm:items-center gap-3">
+        <div className="flex-1 min-w-0 space-y-1.5">
           <div className="flex flex-wrap items-center gap-1.5">
-            {/* A false positive recedes without losing legibility: the thumbnail dims, the times are struck through. */}
+            {/* A false positive recedes without losing legibility: the frame dims, the times are struck through. */}
             <span className={timeCls}>{msToTimecode(seg.start_ms)}</span>
             <span className="text-muted text-xs">→</span>
             <span className={timeCls}>{msToTimecode(seg.end_ms)}</span>
-            <span className="text-xs text-muted">({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)</span>
+            <span className="text-xs text-muted">{Math.round((seg.end_ms - seg.start_ms) / 1000)}s</span>
             <SegmentOriginBadge seg={seg} />
             {seg.false_positive && <FalsePositiveTag autoRejected={seg.auto_rejected} />}
           </div>
-          <p className="text-xs text-muted mt-0.5">Detected {parseDbTimestamp(seg.created_at).toLocaleDateString()}</p>
           {labels.length > 0 && (
-            <div className="flex flex-wrap gap-1 mt-1">
+            <div className="flex flex-wrap gap-1">
               {labels.map(label => (
                 <span key={label} className="text-xs px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/30" title={label}>
                   {shortLabel(label)}
@@ -83,21 +92,19 @@ export default function SegmentRow({ seg, onPreview, onChange, onDeleted }: Prop
               ))}
             </div>
           )}
+          {seg.created_at && <p className="text-xs text-muted">Detected {parseDbTimestamp(seg.created_at).toLocaleDateString()}</p>}
         </div>
         <div className="flex flex-wrap items-center gap-1 sm:flex-shrink-0">
-          <button onClick={() => onPreview(seg)} title="Preview segment video" aria-label="Preview segment video" className="p-2 text-gray-400 hover:text-green-400 hover:bg-green-400/10 rounded transition-colors">
-            <Play size={15} />
-          </button>
-          <a href={`/api/segments/${seg.id}/vlc`} title="Open in VLC" aria-label="Open in VLC" className="p-2 text-gray-400 hover:text-blue-400 hover:bg-blue-400/10 rounded transition-colors">
-            <Tv2 size={15} />
+          <a href={`/api/segments/${seg.id}/vlc`} title="Open in VLC" aria-label="Open in VLC" className="p-2 text-gray-400 hover:text-blue-400 hover:bg-blue-400/10 rounded-lg transition-colors">
+            <Tv2 size={16} />
           </a>
-          <button onClick={jump} disabled={jumping} title="Jump active Plex playback to this segment" aria-label="Jump active Plex playback to this segment" className="p-2 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors disabled:opacity-40">
-            <SkipForward size={15} />
+          <button onClick={jump} disabled={jumping} title="Jump active Plex playback to this segment" aria-label="Jump active Plex playback to this segment" className="p-2 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors disabled:opacity-40">
+            <SkipForward size={16} />
           </button>
-          <RelabelButton seg={seg} onChange={(_, labels) => onChange({ ...seg, labels })} />
+          <RelabelButton seg={seg} onChange={(_, l) => onChange({ ...seg, labels: l })} />
           <FalsePositiveButton seg={seg} onChange={(_, fp) => onChange({ ...seg, false_positive: fp, auto_rejected: fp ? seg.auto_rejected : false })} />
-          <button onClick={remove} disabled={deleting} title="Delete this segment" aria-label="Delete this segment" className="p-2 text-gray-400 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-40">
-            <Trash2 size={15} />
+          <button onClick={remove} disabled={deleting} title="Delete this segment" aria-label="Delete this segment" className="p-2 text-gray-400 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors disabled:opacity-40">
+            <Trash2 size={16} />
           </button>
         </div>
       </div>
