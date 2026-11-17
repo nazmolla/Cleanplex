@@ -234,6 +234,22 @@ describe('Browse search and filters (#207, #208)', () => {
     await screen.findByText('Movie E')
   })
 
+  it('clears the scanned range so pending titles show again, and resets filters (#217)', async () => {
+    renderAt('/browse?lib=lib1')
+    await screen.findByText('Movie B')
+    openFilters()
+    fireEvent.change(screen.getByLabelText('Scanned from'), { target: { value: '2026-11-01' } })
+    await waitFor(() => expect(screen.queryByText('Movie B')).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    await screen.findByText('Movie B')
+    fireEvent.change(screen.getByLabelText('Scanned to'), { target: { value: '2026-11-30' } })
+    fireEvent.click(screen.getByLabelText('Show ignored and out-of-scope titles'))
+    fireEvent.click(screen.getByRole('button', { name: 'Reset filters' }))
+    await screen.findByText('Movie B')
+    expect(screen.getByLabelText('Scanned to')).toHaveValue('')
+    expect(screen.getByLabelText('Show ignored and out-of-scope titles')).not.toBeChecked()
+  })
+
   it('names the sort direction and reverses the order', async () => {
     renderAt('/browse?lib=lib1')
     await screen.findByText('Movie A')

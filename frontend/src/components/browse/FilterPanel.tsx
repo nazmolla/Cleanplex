@@ -103,12 +103,21 @@ export function FilterPanel(p: PanelProps) {
               <input type="date" aria-label="Scanned from" value={t.scanFrom} onChange={e => p.onTitles({ scanFrom: e.target.value })} className={inputCls} />
               <span className="text-muted">–</span>
               <input type="date" aria-label="Scanned to" value={t.scanTo} onChange={e => p.onTitles({ scanTo: e.target.value })} className={inputCls} />
+              {/* Titles not scanned yet have no scan date, so any range hides pending and scanning ones (#217). */}
+              {(t.scanFrom || t.scanTo) && (
+                <button type="button" onClick={() => p.onTitles({ scanFrom: '', scanTo: '' })} className="btn-outline text-xs px-2 py-1 flex-shrink-0">Clear</button>
+              )}
             </div>
           </div>
           <label className="flex items-center gap-2 text-sm text-gray-300 sm:col-span-2 xl:col-span-4">
             <input type="checkbox" checked={t.showIgnored} onChange={e => p.onTitles({ showIgnored: e.target.checked })} className="w-4 h-4 accent-plex-orange" />
             Show ignored and out-of-scope titles
           </label>
+          {titleFiltersActive(t) || t.showIgnored ? (
+            <div className="sm:col-span-2 xl:col-span-4">
+              <button type="button" onClick={() => p.onTitles({ ...NO_TITLE_FILTERS, name: t.name })} className="btn-outline text-xs">Reset filters</button>
+            </div>
+          ) : null}
         </div>
       )}
 
