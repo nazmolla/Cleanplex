@@ -184,6 +184,16 @@ async def test_scan_library_skips_done_jobs(http_client):
     mock_enqueue.assert_not_awaited()
 
 
+async def test_scan_library_now_skips_ignored_jobs(http_client):
+    await _make_job("keep", library_id="lib3")
+    await _make_job("ignored", library_id="lib3")
+    await db.set_ignored("ignored", True)
+    with patch("cleanplex.web.routes.scanner_routes.scan_mod.force_scan_job", new=AsyncMock()) as mock_force:
+        resp = await http_client.post("/api/scan/library/lib3", json={"now": True})
+    assert resp.json()["queued"] == 1
+    mock_force.assert_awaited_once_with("keep")
+
+
 # ── POST /api/scan/titles (issue #79) ────────────────────────────────────────
 
 async def test_scan_titles_queues_known_jobs_for_tonight(http_client):
