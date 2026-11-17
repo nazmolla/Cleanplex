@@ -68,6 +68,8 @@ export interface ScannerStatus {
   workers_active: number
   workers_idle: number
   paused: boolean
+  /** The whole queue in order (sessions.py builds it from the database). */
+  queue_items?: { guid: string }[]
 }
 
 /**

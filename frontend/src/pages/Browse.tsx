@@ -258,11 +258,14 @@ export default function Browse() {
   const libById = useMemo(() => new Map(libraries.map(l => [l.id, l])), [libraries])
   const query = tf.name.trim().toLowerCase()
 
+  const queuedGuids = useMemo(() => new Set((scannerStatus?.queue_items ?? []).map(q => q.guid)), [scannerStatus?.queue_items])
+
   // Every filter except the status, so each status choice's count matches what it lists.
   const passes = useCallback((t: Title) => {
     // A pending title whose rating the scanner excludes will never be scanned, so it is
     // not listed at all; already-scanned ones keep their results visible.
-    if (t.status === 'pending' && !ratingAllowed(t.content_rating, scanRatings)) return false
+    // A queued title will be scanned whatever its rating (Scan now forces it), so it stays listed (#214).
+    if (t.status === 'pending' && !ratingAllowed(t.content_rating, scanRatings) && !queuedGuids.has(t.plex_guid)) return false
     // The full title is "<show> – <season> – <episode>" for an episode, so a show or season name matches too.
     if (query && !t.title.toLowerCase().includes(query)) return false
     if (tf.actor && !(t.cast ?? []).some(a => a.toLowerCase().includes(tf.actor.toLowerCase()))) return false
@@ -280,7 +283,7 @@ export default function Browse() {
     // A scan in progress is always listed, so the Scanning count matches the scan line (#212).
     if (t.ignored && !tf.showIgnored && scope.guid !== t.plex_guid && t.status !== 'scanning') return false
     return true
-  }, [scanRatings, query, tf, scope.guid])
+  }, [scanRatings, query, tf, scope.guid, queuedGuids])
 
   const visible = useMemo(() => titles.filter(passes), [titles, passes])
   const matchedAll = useMemo(() => visible.filter(t => tf.status === 'all' || t.status === tf.status), [visible, tf.status])
