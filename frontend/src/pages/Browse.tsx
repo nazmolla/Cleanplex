@@ -277,7 +277,8 @@ export default function Browse() {
       if (!d || (tf.scanFrom && d < tf.scanFrom) || (tf.scanTo && d > tf.scanTo)) return false
     }
     // An ignored title is hidden unless asked for, or it is the title being looked at.
-    if (t.ignored && !tf.showIgnored && scope.guid !== t.plex_guid) return false
+    // A scan in progress is always listed, so the Scanning count matches the scan line (#212).
+    if (t.ignored && !tf.showIgnored && scope.guid !== t.plex_guid && t.status !== 'scanning') return false
     return true
   }, [scanRatings, query, tf, scope.guid])
 

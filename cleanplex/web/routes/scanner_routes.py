@@ -267,7 +267,11 @@ async def scan_library(library_id: str, body: ScanLibraryRequest):
 
     todo = [j for j in jobs if j["status"] in ("pending", "failed")]
     if body.now:
-        chosen, skipped = todo, 0
+        # Scan now bypasses the rating and library gates, but not ignored: a whole-library
+        # click is not a request to scan titles the user set aside (#212). Scan now on one
+        # ignored title still forces it.
+        chosen = [j for j in todo if not j.get("ignored")]
+        skipped = len(todo) - len(chosen)
     else:
         chosen = [j for j in todo if scan_mod.is_scan_eligible(j, excluded_library_ids, scan_ratings_set)]
         skipped = len(todo) - len(chosen)
