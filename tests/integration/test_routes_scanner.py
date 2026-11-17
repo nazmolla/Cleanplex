@@ -194,6 +194,18 @@ async def test_scan_library_now_skips_ignored_jobs(http_client):
     mock_force.assert_awaited_once_with("keep")
 
 
+async def test_scan_library_now_skips_out_of_scope_ratings(http_client):
+    await db.set_setting("scan_ratings", '["R"]')
+    for guid, rating in (("rated-r", "R"), ("rated-pg", "PG")):
+        await db.upsert_scan_job(plex_guid=guid, title=guid, file_path=f"/media/{guid}.mkv", rating_key="100",
+                                 library_id="lib4", library_title="Movies", content_rating=rating)
+    with patch("cleanplex.web.routes.scanner_routes.scan_mod.force_scan_job", new=AsyncMock()) as mock_force:
+        resp = await http_client.post("/api/scan/library/lib4", json={"now": True})
+    assert resp.json()["queued"] == 1
+    assert resp.json()["skipped_ineligible"] == 1
+    mock_force.assert_awaited_once_with("rated-r")
+
+
 # ── POST /api/scan/titles (issue #79) ────────────────────────────────────────
 
 async def test_scan_titles_queues_known_jobs_for_tonight(http_client):

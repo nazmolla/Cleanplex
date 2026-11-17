@@ -259,22 +259,15 @@ async def scan_library(library_id: str, body: ScanLibraryRequest):
 
     # For the normal queue, pre-filter using the same eligibility rules as enqueue_pending()
     # so ineligible titles never enter the queue rather than being silently dropped later.
-    excluded_library_ids: set[str] = set()
-    scan_ratings_set: set[str] = set()
-    if not body.now:
-        excluded_library_ids = set(json.loads(await db.get_setting("excluded_library_ids", "[]")))
-        scan_ratings_set = set(json.loads(await db.get_setting("scan_ratings", "[]")))
+    # Scan now and Scan tonight queue the same titles: never ignored ones, never a rating or
+    # library the scan settings leave out (#212, #215). Scan now only skips the scan window.
+    # Scan now on a single title (POST /title) still forces any title.
+    excluded_library_ids = set(json.loads(await db.get_setting("excluded_library_ids", "[]")))
+    scan_ratings_set = set(json.loads(await db.get_setting("scan_ratings", "[]")))
 
     todo = [j for j in jobs if j["status"] in ("pending", "failed")]
-    if body.now:
-        # Scan now bypasses the rating and library gates, but not ignored: a whole-library
-        # click is not a request to scan titles the user set aside (#212). Scan now on one
-        # ignored title still forces it.
-        chosen = [j for j in todo if not j.get("ignored")]
-        skipped = len(todo) - len(chosen)
-    else:
-        chosen = [j for j in todo if scan_mod.is_scan_eligible(j, excluded_library_ids, scan_ratings_set)]
-        skipped = len(todo) - len(chosen)
+    chosen = [j for j in todo if scan_mod.is_scan_eligible(j, excluded_library_ids, scan_ratings_set)]
+    skipped = len(todo) - len(chosen)
     # One transaction for all resets instead of one connection per title (#163).
     await db.reset_scan_jobs([j["plex_guid"] for j in chosen])
     if body.now:
