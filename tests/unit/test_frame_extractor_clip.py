@@ -131,6 +131,10 @@ class _SilentProc:
     async def wait(self):
         return self.returncode
 
+    # reap_process drains the pipes with communicate() after kill (#218).
+    async def communicate(self):
+        return b"", b""
+
 
 async def test_a_silent_ffmpeg_fails_the_stream_instead_of_ending_it(monkeypatch):
     """Regression for #108: a stall used to end the stream, so the scan was saved as done."""
