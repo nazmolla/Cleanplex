@@ -104,6 +104,8 @@ interface RowProps {
   onOpen: () => void
   onContextMenu?: (e: React.MouseEvent) => void
   ignored?: boolean
+  /** Set for a row that expands in place (a title, #209) rather than opening a level. */
+  expanded?: boolean
 }
 
 /**
@@ -128,7 +130,7 @@ export default function BrowseRow(p: RowProps) {
       <div className={COL.image}><Thumb image={p.image} /></div>
       <div className={COL.name}>
         <div className="flex items-center gap-2 min-w-0">
-          <button onClick={e => { e.stopPropagation(); p.onOpen() }} className="text-sm font-medium text-gray-100 truncate text-left hover:text-plex-orange" title={`Open ${p.name}`}>
+          <button onClick={e => { e.stopPropagation(); p.onOpen() }} className="text-sm font-medium text-gray-100 truncate text-left hover:text-plex-orange" title={p.expanded === undefined ? `Open ${p.name}` : `Show segments of ${p.name}`} aria-expanded={p.expanded}>
             {p.name}
           </button>
           {p.badges}
@@ -144,7 +146,7 @@ export default function BrowseRow(p: RowProps) {
       <div className={`${COL.actions} opacity-70 group-hover:opacity-100 transition-opacity`} onClick={e => e.stopPropagation()}>
         {p.actions}
       </div>
-      <ChevronRight size={16} className="flex-shrink-0 text-gray-400" aria-hidden="true" />
+      <ChevronRight size={16} className={`flex-shrink-0 text-gray-400 transition-transform ${p.expanded ? 'rotate-90' : ''}`} aria-hidden="true" />
     </div>
   )
 }

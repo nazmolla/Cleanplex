@@ -12,6 +12,7 @@ import Modal from '../components/Modal'
 import { toast } from '../components/Toast'
 import ScanContextMenu, { ScanTarget } from '../components/ScanContextMenu'
 import SegmentsView from '../components/browse/SegmentsView'
+import TitleSegments from '../components/browse/TitleSegments'
 import BrowseRow, { COL, CountCell, GroupStatus, IgnoredBadge, RowImage, StatusBadge, scannedCell } from '../components/browse/BrowseRow'
 import { FilterChips, FilterPanel, NO_TITLE_FILTERS, TitleFilters, titleFiltersActive } from '../components/browse/FilterPanel'
 import SafeImg from '../components/browse/SafeImg'
@@ -739,6 +740,14 @@ export default function Browse() {
     ? { kind: 'still', src: t.thumb_url }
     : { kind: 'poster', src: t.poster_url || t.thumb_url })
 
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const toggleExpanded = (guid: string) => setExpanded(prev => {
+    const next = new Set(prev)
+    if (next.has(guid)) next.delete(guid)
+    else next.add(guid)
+    return next
+  })
+
   const renderRow = (row: Row) => {
     if (row.kind === 'library') {
       const { lib, titles: list } = row
@@ -788,9 +797,10 @@ export default function Browse() {
     }
     const t = row.title
     const { name, context } = nameOf(t)
+    const open = expanded.has(t.plex_guid)
     return (
+      <div key={t.plex_guid}>
       <BrowseRow
-        key={t.plex_guid}
         image={titleImage(t)}
         name={name}
         context={context}
@@ -803,10 +813,14 @@ export default function Browse() {
         actions={titleActions(t, name)}
         checked={selected.has(t.plex_guid)}
         onCheck={() => toggleGuids([t.plex_guid])}
-        onOpen={() => go({ guid: t.plex_guid })}
+        // A title expands into its segments in place instead of opening its own page (#209).
+        onOpen={() => toggleExpanded(t.plex_guid)}
+        expanded={open}
         onContextMenu={e => openScanMenu(e, { guid: t.plex_guid })}
         ignored={t.ignored}
       />
+      {open && <TitleSegments title={t} onChanged={x => reloadLibrary(x.library_id)} />}
+      </div>
     )
   }
 
