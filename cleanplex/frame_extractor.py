@@ -93,8 +93,7 @@ async def render_clip(file_path: str, start_ms: int, duration_ms: int, out_path:
         try:
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=CLIP_TIMEOUT_S)
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+            await reap_process(proc)
             logger.warning("Preview render timed out for %s", file_path)
             tmp.unlink(missing_ok=True)
             return False
@@ -159,8 +158,7 @@ async def render_hover_clip(file_path: str, start_ms: int, duration_ms: int, out
         try:
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=HOVER_TIMEOUT_S)
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+            await reap_process(proc)
             logger.warning("Hover preview timed out for %s", file_path)
             tmp.unlink(missing_ok=True)
             return False
@@ -302,6 +300,29 @@ async def extract_frames_window(
                 yield item
 
 
+# Bound on draining a killed process's pipes; ffmpeg dies at once, so this only guards
+# against a pipe that never reports EOF.
+REAP_TIMEOUT_S = 10.0
+
+
+async def reap_process(proc: asyncio.subprocess.Process) -> None:
+    """Kill *proc* if it is still running and wait for it without hanging (#218).
+
+    asyncio's wait() (CPython 3.12) returns only after every pipe has disconnected. A stdout
+    pipe left unread is paused once its buffer fills and never sees EOF, so a bare wait()
+    after kill() can block forever. communicate() reads the pipes to EOF, which lets them close.
+    """
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+    try:
+        await asyncio.wait_for(proc.communicate(), timeout=REAP_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        logger.warning("Process %s did not close its pipes after kill; leaving it to the event loop", proc.pid)
+
+
 async def _frame_stream(
     file_path: str, step_ms: int, duration_ms: int, size: int, hardware: bool,
     start_ms: int = 0, length_ms: int | None = None,
@@ -363,9 +384,9 @@ async def _frame_stream(
                     yield offset_ms, frame
                     offset_ms += step_ms
     finally:
-        if proc.returncode is None:
-            proc.kill()
-        await proc.wait()
+        # shield: closing the generator on a skip must not leave ffmpeg unreaped if the
+        # closing task is itself cancelled.
+        await asyncio.shield(reap_process(proc))
 
 
 def locate_in_parts(parts: list[str], durations_ms: list[int], start_ms: int, end_ms: int) -> tuple[str, int, int]:

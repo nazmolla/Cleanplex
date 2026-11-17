@@ -12,7 +12,7 @@ import asyncio
 import os
 
 from . import database as db
-from .frame_extractor import _FFPROBE_BIN
+from .frame_extractor import _FFPROBE_BIN, reap_process
 from .logger import get_logger
 
 logger = get_logger(__name__)
@@ -42,8 +42,7 @@ async def probe_keyframes(path: str) -> list[int] | None:
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), PROBE_TIMEOUT_S)
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await reap_process(proc)
         return None
     if proc.returncode != 0:
         return None
