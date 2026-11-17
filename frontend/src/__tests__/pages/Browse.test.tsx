@@ -94,7 +94,8 @@ afterEach(() => {
 })
 
 const openFilters = () => fireEvent.click(screen.getByRole('button', { name: /^Filters/ }))
-const rowNames = () => screen.getAllByTitle(/^Open /).map(b => b.textContent)
+// Group rows open their level; title rows expand in place (#209).
+const rowNames = () => screen.getAllByTitle(/^(Open|Show segments of) /).map(b => b.textContent)
 
 describe('Browse levels (#207, #208)', () => {
   it('lists the libraries at the top level without syncing any of them', async () => {
@@ -121,13 +122,13 @@ describe('Browse levels (#207, #208)', () => {
     await waitFor(() => expect(rowNames()).toEqual(['Finale', 'Return']))
   })
 
-  it('opens a movie on its own page, on its segments', async () => {
+  it('expands a movie row into its segments without leaving the list (#209)', async () => {
     renderAt('/browse?lib=lib1')
-    fireEvent.click(await screen.findByTitle('Open Movie A'))
-    await waitFor(() => expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('Movie A'))
-    expect(screen.getByRole('tab', { name: 'Segments' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.queryByRole('tab', { name: 'Titles' })).not.toBeInTheDocument()
+    const name = await screen.findByTitle('Show segments of Movie A')
+    fireEvent.click(name)
     await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/titles/segments/batch', { guids: ['g1'] }))
+    expect(name).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('tab', { name: 'Titles' })).toHaveAttribute('aria-selected', 'true')
   })
 
   it('keeps the view when opening a row', async () => {
@@ -196,6 +197,20 @@ describe('Browse search and filters (#207, #208)', () => {
     await waitFor(() => expect(screen.queryByText('Movie B')).not.toBeInTheDocument())
     openFilters()
     expect(screen.getByRole('button', { name: /^All/, pressed: true })).toHaveTextContent('2')
+  })
+
+  it('lists a queued title whatever its rating, and an ignored one only with Show ignored (#214)', async () => {
+    settings = { plex_url: '', scan_ratings: '["R"]' }
+    movieList = [...movies, { ...base, plex_guid: 'g4', rating_key: '4', title: 'Movie D', status: 'pending', content_rating: 'PG', ignored: true }]
+    scanner = { ...scannerIdle, queue_size: 2, queue_items: [{ guid: 'g2' }, { guid: 'g4' }] } as typeof scannerIdle
+    renderAt('/browse?lib=lib1')
+    await screen.findByText('Movie B')
+    expect(screen.queryByText('Movie D')).not.toBeInTheDocument()
+    openFilters()
+    expect(screen.getByRole('button', { name: /^Pending/ })).toHaveTextContent('1')
+    fireEvent.click(screen.getByLabelText('Show ignored titles'))
+    await screen.findByText('Movie D')
+    expect(screen.getByRole('button', { name: /^Pending/ })).toHaveTextContent('2')
   })
 
   it('names the sort direction and reverses the order', async () => {
@@ -328,7 +343,7 @@ describe('Browse markers view (#207, #208)', () => {
     await screen.findByText('Movie A')
     await waitFor(() => expect(mockApi.get).toHaveBeenCalledWith('/api/markers/libraries/lib1/titles'))
     expect(screen.getByRole('tab', { name: 'Markers' })).toHaveAttribute('aria-selected', 'true')
-    const row = screen.getByTitle('Open Movie A').closest('.group') as HTMLElement
+    const row = screen.getByTitle('Show segments of Movie A').closest('.group') as HTMLElement
     await waitFor(() => expect(within(row).getByText('2')).toBeInTheDocument())
   })
 
