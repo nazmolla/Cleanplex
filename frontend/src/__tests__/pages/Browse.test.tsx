@@ -208,7 +208,7 @@ describe('Browse search and filters (#207, #208)', () => {
     expect(screen.queryByText('Movie D')).not.toBeInTheDocument()
     openFilters()
     expect(screen.getByRole('button', { name: /^Pending/ })).toHaveTextContent('1')
-    fireEvent.click(screen.getByLabelText('Show ignored titles'))
+    fireEvent.click(screen.getByLabelText('Show ignored and out-of-scope titles'))
     await screen.findByText('Movie D')
     expect(screen.getByRole('button', { name: /^Pending/ })).toHaveTextContent('2')
   })
@@ -221,6 +221,17 @@ describe('Browse search and filters (#207, #208)', () => {
     await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/scan/title', { plex_guid: 'g1', now: true, library_id: 'lib1' }))
     expect(mockApi.post.mock.calls.some(([p]: [string]) => p.startsWith('/api/scan/library'))).toBe(false)
     expect(screen.queryByRole('button', { name: 'Scan library now' })).toBeInTheDocument()
+  })
+
+  it('hides a scanned title whose rating is out of scope until asked for (#216)', async () => {
+    settings = { plex_url: '', scan_ratings: '["R"]' }
+    movieList = [...movies, { ...base, plex_guid: 'g5', rating_key: '5', title: 'Movie E', status: 'done', content_rating: 'PG' }]
+    renderAt('/browse?lib=lib1')
+    await screen.findByText('Movie A')
+    await waitFor(() => expect(screen.queryByText('Movie E')).not.toBeInTheDocument())
+    openFilters()
+    fireEvent.click(screen.getByLabelText('Show ignored and out-of-scope titles'))
+    await screen.findByText('Movie E')
   })
 
   it('names the sort direction and reverses the order', async () => {
