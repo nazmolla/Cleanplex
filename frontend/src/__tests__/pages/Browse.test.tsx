@@ -213,6 +213,16 @@ describe('Browse search and filters (#207, #208)', () => {
     expect(screen.getByRole('button', { name: /^Pending/ })).toHaveTextContent('2')
   })
 
+  it('scans the selected titles from the header instead of the library (#215)', async () => {
+    renderAt('/browse?lib=lib1')
+    await screen.findByText('Movie A')
+    fireEvent.click(screen.getByLabelText('Select Movie A'))
+    fireEvent.click(screen.getByRole('button', { name: 'Scan 1 selected title now' }))
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/scan/title', { plex_guid: 'g1', now: true, library_id: 'lib1' }))
+    expect(mockApi.post.mock.calls.some(([p]: [string]) => p.startsWith('/api/scan/library'))).toBe(false)
+    expect(screen.queryByRole('button', { name: 'Scan library now' })).toBeInTheDocument()
+  })
+
   it('names the sort direction and reverses the order', async () => {
     renderAt('/browse?lib=lib1')
     await screen.findByText('Movie A')

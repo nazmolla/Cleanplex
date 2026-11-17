@@ -932,9 +932,21 @@ export default function Browse() {
           </div>
           <div className="flex items-center gap-0.5 flex-shrink-0">
             {view === 'markers' && level !== 'title' && markerActions(matched, scope.lib)}
-            {level === 'library' && scopeLib && libraryActions(scopeLib)}
-            {scopeGroup && groupActions(scopeGroup)}
-            {scopeTitle && titleActions(scopeTitle, heading)}
+            {/* With titles selected, the header's scan buttons scan the selection, never the whole
+                library or show: they are the buttons people reach for first (#215). */}
+            {selectedTitles.length > 0 && !scopeTitle ? (
+              <>
+                <span className="text-xs text-plex-orange mr-1 whitespace-nowrap">{plural(selectedTitles.length, 'selected title')}</span>
+                <ActionIcon label={`Scan ${plural(selectedTitles.length, 'selected title')} tonight`} onClick={() => { scanTitles(selectedTitles, false); setSelected(new Set()) }}><Moon size={15} /></ActionIcon>
+                <ActionIcon label={`Scan ${plural(selectedTitles.length, 'selected title')} now`} onClick={() => { scanTitles(selectedTitles, true); setSelected(new Set()) }} tone="orange"><Zap size={15} /></ActionIcon>
+              </>
+            ) : (
+              <>
+                {level === 'library' && scopeLib && libraryActions(scopeLib)}
+                {scopeGroup && groupActions(scopeGroup)}
+                {scopeTitle && titleActions(scopeTitle, heading)}
+              </>
+            )}
           </div>
         </div>
 
