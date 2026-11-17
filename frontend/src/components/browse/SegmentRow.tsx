@@ -57,7 +57,7 @@ export default function SegmentRow({ seg, onPreview, onChange, onDeleted }: Prop
   return (
     <div className={`flex flex-col sm:flex-row bg-plex-card border rounded-xl overflow-hidden ${seg.false_positive ? 'border-amber-400/30' : 'border-plex-border'}`}>
       <button onClick={() => onPreview(seg)} aria-label={`Play segment ${msToTimecode(seg.start_ms)}`} title="Play this segment" className="group block w-full sm:w-60 flex-shrink-0">
-        <HoverPreview src={seg.hover_url} fit="contain" className={`aspect-video bg-black ${seg.false_positive ? '[&_img]:opacity-40 [&_video]:opacity-40' : ''}`}>
+        <HoverPreview src={seg.hover_url} fit="contain" className={`aspect-video bg-black ${seg.false_positive ? '[&_img]:brightness-50 [&_video]:brightness-50' : ''}`}>
           {seg.has_thumbnail ? (
             <SafeImg src={seg.thumbnail_url} alt="Flagged frame" fit="contain" iconSize={24} className="w-full h-full bg-black" />
           ) : (

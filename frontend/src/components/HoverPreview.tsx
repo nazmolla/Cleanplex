@@ -32,7 +32,7 @@ export default function HoverPreview({ src, className = '', fit = 'cover', child
           loop
           playsInline
           aria-label="Segment preview"
-          className={`absolute inset-0 w-full h-full pointer-events-none ${fit === 'contain' ? 'object-contain' : 'object-cover'}`}
+          className={`absolute inset-0 w-full h-full bg-black pointer-events-none ${fit === 'contain' ? 'object-contain' : 'object-cover'}`}
         />
       )}
     </div>
