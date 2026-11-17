@@ -107,7 +107,7 @@ export function FilterPanel(p: PanelProps) {
           </div>
           <label className="flex items-center gap-2 text-sm text-gray-300 sm:col-span-2 xl:col-span-4">
             <input type="checkbox" checked={t.showIgnored} onChange={e => p.onTitles({ showIgnored: e.target.checked })} className="w-4 h-4 accent-plex-orange" />
-            Show ignored titles
+            Show ignored and out-of-scope titles
           </label>
         </div>
       )}

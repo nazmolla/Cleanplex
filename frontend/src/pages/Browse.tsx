@@ -262,10 +262,11 @@ export default function Browse() {
 
   // Every filter except the status, so each status choice's count matches what it lists.
   const passes = useCallback((t: Title) => {
-    // A pending title whose rating the scanner excludes will never be scanned, so it is
-    // not listed at all; already-scanned ones keep their results visible.
-    // A queued title will be scanned whatever its rating (Scan now forces it), so it stays listed (#214).
-    if (t.status === 'pending' && !ratingAllowed(t.content_rating, scanRatings) && !queuedGuids.has(t.plex_guid)) return false
+    // A rating outside Scan ratings is out of scope at every status, like an ignored title (#216);
+    // the Show ignored and out-of-scope checkbox lists them. A scan in progress or a queued title
+    // (a single-title Scan now forces any rating, #214) stays listed.
+    if (!ratingAllowed(t.content_rating, scanRatings) && !tf.showIgnored && scope.guid !== t.plex_guid
+        && t.status !== 'scanning' && !queuedGuids.has(t.plex_guid)) return false
     // The full title is "<show> – <season> – <episode>" for an episode, so a show or season name matches too.
     if (query && !t.title.toLowerCase().includes(query)) return false
     if (tf.actor && !(t.cast ?? []).some(a => a.toLowerCase().includes(tf.actor.toLowerCase()))) return false
