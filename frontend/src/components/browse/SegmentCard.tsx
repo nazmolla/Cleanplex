@@ -64,7 +64,7 @@ export default function SegmentCard({ seg, onPreview, onChange, onDeleted, capti
         title="Play this segment"
         className="group block w-full text-left"
       >
-        <HoverPreview src={seg.hover_url} fit="contain" className={`aspect-video bg-black ${seg.false_positive ? '[&_img]:opacity-40 [&_video]:opacity-40' : ''}`}>
+        <HoverPreview src={seg.hover_url} fit="contain" className={`aspect-video bg-black ${seg.false_positive ? '[&_img]:brightness-50 [&_video]:brightness-50' : ''}`}>
           {seg.has_thumbnail ? (
             <SafeImg src={seg.thumbnail_url} alt="Flagged frame" fit="contain" iconSize={28} className="w-full h-full bg-black" />
           ) : (
