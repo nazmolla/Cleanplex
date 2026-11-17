@@ -356,7 +356,8 @@ export default function SettingsPage() {
     }
   }
 
-  const h2Cls = "text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border"
+  // Same small uppercase label as CollapsibleSection and Browse (#211).
+  const h2Cls = "text-sm font-semibold text-gray-400 uppercase tracking-wide mb-4"
   const inputCls = "w-full px-3 py-2 bg-plex-darker border border-plex-border rounded-lg text-sm text-gray-100 placeholder-muted focus:border-plex-orange/60 transition-colors"
 
   if (loading) return <div className="text-muted text-sm">Loading...</div>
@@ -385,7 +386,7 @@ export default function SettingsPage() {
               onClick={() => setSection(sec.id)}
               aria-current={section === sec.id ? 'page' : undefined}
               className={`text-left whitespace-nowrap px-3 py-2 rounded-lg text-sm transition-colors ${
-                section === sec.id ? 'bg-plex-orange/20 text-plex-orange' : 'text-gray-400 hover:text-gray-100 hover:bg-white/5'
+                section === sec.id ? 'bg-plex-orange/20 text-plex-orange' : 'text-gray-300 hover:text-gray-100 hover:bg-white/5'
               }`}
             >
               {sec.label}
@@ -439,7 +440,7 @@ export default function SettingsPage() {
                   <button
                     onClick={testConnection}
                     disabled={testing || !form.plex_url || !(form.plex_token || form.plex_token_set)}
-                    className="px-4 py-2 text-sm bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
+                    className="btn-outline text-sm"
                   >
                     {testing && <Loader2 size={14} className="animate-spin" />}
                     Test Connection
@@ -642,7 +643,7 @@ export default function SettingsPage() {
                                   type="button"
                                   onClick={validateModelPath}
                                   disabled={validatingModel}
-                                  className="px-3 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
+                                  className="btn-outline text-xs"
                                 >
                                   {validatingModel && <Loader2 size={13} className="animate-spin" />}
                                   Download/Check 640m model
@@ -809,7 +810,7 @@ export default function SettingsPage() {
                     type="button"
                     onClick={saveSync}
                     disabled={savingSync}
-                    className="px-4 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
+                    className="btn-outline text-xs"
                   >
                     {savingSync && <Loader2 size={13} className="animate-spin" />}
                     Save Sync Settings
@@ -827,7 +828,7 @@ export default function SettingsPage() {
                       type="button"
                       onClick={doUpload}
                       disabled={uploading || !syncForm.sync_enabled}
-                      className="px-4 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
+                      className="btn-outline text-xs"
                     >
                       {uploading && <Loader2 size={13} className="animate-spin" />}
                       Upload My Segments
@@ -836,7 +837,7 @@ export default function SettingsPage() {
                       type="button"
                       onClick={doDownload}
                       disabled={downloading || !syncForm.sync_enabled}
-                      className="px-4 py-2 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-40 flex items-center gap-2"
+                      className="btn-outline text-xs"
                     >
                       {downloading && <Loader2 size={13} className="animate-spin" />}
                       Download Crowdsourced Segments
@@ -872,7 +873,7 @@ export default function SettingsPage() {
           <button
             onClick={save}
             disabled={saving}
-            className="px-6 py-2.5 bg-plex-orange text-black font-semibold text-sm rounded-lg hover:bg-plex-orange/90 transition-colors disabled:opacity-50 flex items-center gap-2"
+            className="btn-primary px-5 py-2"
           >
             {saving && <Loader2 size={14} className="animate-spin" />}
             Save Settings
@@ -885,7 +886,7 @@ export default function SettingsPage() {
           <button
             onClick={restartScanner}
             disabled={restarting}
-            className="px-4 py-2.5 bg-plex-card border border-plex-border text-sm rounded-lg text-gray-300 hover:border-plex-orange/50 hover:text-white transition-colors disabled:opacity-50 flex items-center gap-2"
+            className="btn-outline py-2"
             title="Restart the scanner pool — picks up config changes and reorders the queue"
           >
             <RotateCcw size={14} className={restarting ? 'animate-spin' : ''} />
