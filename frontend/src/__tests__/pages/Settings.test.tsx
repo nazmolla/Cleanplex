@@ -259,3 +259,28 @@ describe('Settings sections', () => {
     await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument())
   })
 })
+
+describe('Scan ratings checklist (#219)', () => {
+  it('lists the ratings in the libraries with counts and saves the normalized value', async () => {
+    mockApi.get.mockImplementation((path: string) => {
+      if (path === '/api/settings/ratings') return Promise.resolve([
+        { rating: 'G', count: 327, sources: ['G', 'eg/G'] },
+        { rating: 'R', count: 671, sources: ['R', 'eg/16', 'eg/18'] },
+        { rating: '', count: 288, sources: [] },
+      ])
+      if (path.includes('detector-labels')) return Promise.resolve({ labels: [] })
+      if (path.includes('sync/status')) return Promise.resolve(null)
+      if (path.includes('settings')) return Promise.resolve({ ...defaultSettings, scan_ratings: '["eg/16"]' })
+      if (path.includes('libraries')) return Promise.resolve({ libraries: [] })
+      return Promise.resolve({})
+    })
+    render(<MemoryRouter initialEntries={['/settings?section=schedule']}><Settings /></MemoryRouter>)
+    const r = await screen.findByRole('checkbox', { name: /^R · 671/ })
+    expect(r).toBeChecked()
+    expect(screen.getByText(/includes eg\/16, eg\/18/)).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: /^G · 327/ })).not.toBeChecked()
+    expect(screen.queryByRole('checkbox', { name: /^NC-17/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: /^G · 327/ }))
+    expect(screen.getByRole('checkbox', { name: /^G · 327/ })).toBeChecked()
+  })
+})

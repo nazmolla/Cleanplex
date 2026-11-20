@@ -747,3 +747,13 @@ async def test_queued_jobs_page_and_count():
     await db.queue_scan_jobs(["a", "b", "c"])
     assert await db.count_queued_scan_jobs() == 3
     assert [j["plex_guid"] for j in await db.get_queued_scan_jobs(limit=2, offset=1)] == ["b", "c"]
+
+
+async def test_get_content_rating_counts_groups_raw_ratings(setup_db):
+    from cleanplex import database as db
+    assert await db.get_content_rating_counts() == []
+    await db.upsert_scan_job("a", "A", "/a", "1", "1", "M", content_rating="eg/G")
+    await db.upsert_scan_job("b", "B", "/b", "2", "1", "M", content_rating="eg/G")
+    await db.upsert_scan_job("c", "C", "/c", "3", "1", "M")
+    rows = {r["content_rating"]: r["n"] for r in await db.get_content_rating_counts()}
+    assert rows == {"eg/G": 2, "": 1}

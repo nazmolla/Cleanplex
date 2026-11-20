@@ -6,6 +6,10 @@ import { UsersPanel } from './Users'
 import BulkRescan from '../components/BulkRescan'
 import VerifierPanel from '../components/VerifierPanel'
 import EnforcementPanel from '../components/EnforcementPanel'
+import { normalizeRating } from '../utils/ratings'
+
+// A content rating in the libraries as Scan ratings compares it (#219); sources are Plex's spellings.
+interface LibraryRating { rating: string; count: number; sources: string[] }
 
 interface Settings {
   plex_url: string
@@ -154,6 +158,7 @@ export default function SettingsPage() {
   // Segments stored before dense re-sampling that the background job has not reached yet (#141).
   const [refineRemaining, setRefineRemaining] = useState(0)
   const [detectorLabels, setDetectorLabels] = useState<string[]>([])
+  const [libraryRatings, setLibraryRatings] = useState<LibraryRating[]>([])
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
   const [syncForm, setSyncForm] = useState({ sync_enabled: false, instance_name: '' })
   const [savingSync, setSavingSync] = useState(false)
@@ -178,7 +183,9 @@ export default function SettingsPage() {
       api.get<{ labels: string[] }>('/api/settings/detector-labels').catch(() => ({ labels: [] })),
       api.get<SyncStatus>('/api/sync/status').catch(() => null),
       api.get<{ remaining: number; enabled: boolean }>('/api/segments/refine-status').catch(() => null),
-    ]).then(([settings, libs, labels, sync, refine]) => {
+      api.get<LibraryRating[]>('/api/settings/ratings').catch(() => []),
+    ]).then(([settings, libs, labels, sync, refine, ratings]) => {
+      setLibraryRatings(Array.isArray(ratings) ? ratings : [])
       setRefineRemaining(refine?.enabled ? refine.remaining : 0)
       setForm({ ...DEFAULT, ...settings })
       setLibraries(libs.libraries)
@@ -570,35 +577,36 @@ export default function SettingsPage() {
                 <h2 className={h2Cls}>Scan Ratings</h2>
                 <p className="text-xs text-muted mb-3">Only scan titles with these content ratings. Leave all unchecked to scan everything.</p>
                 <div className="grid grid-cols-2 gap-2">
-                  {/* VALUE is the exact content_rating string stored in Plex / the DB.
-                      Empty string ("") represents titles Plex left unrated. */}
-                  {[
-                    { label: 'G',            value: 'G' },
-                    { label: 'PG',           value: 'PG' },
-                    { label: 'PG-13',        value: 'PG-13' },
-                    { label: 'R',            value: 'R' },
-                    { label: 'NC-17',        value: 'NC-17' },
-                    { label: 'TV-G',         value: 'TV-G' },
-                    { label: 'TV-PG',        value: 'TV-PG' },
-                    { label: 'TV-14',        value: 'TV-14' },
-                    { label: 'TV-MA',        value: 'TV-MA' },
-                    { label: 'NR',           value: 'NR' },
-                    { label: 'X',            value: 'X' },
-                    { label: 'Unrated (no rating set in Plex)', value: '' },
-                  ].map(({ label, value }) => {
+                  {/* The ratings the libraries hold (#219), normalized the way the scanner compares them, so
+                      "eg/16" is under R. A checked rating no title has any more stays listed so it can be unchecked.
+                      "" is titles Plex left unrated. */}
+                  {(() => {
                     const selected: string[] = (() => { try { return JSON.parse(form.scan_ratings) } catch { return [] } })()
-                    const checked = selected.includes(value)
-                    const toggle = () => {
-                      const next = checked ? selected.filter((r: string) => r !== value) : [...selected, value]
-                      setForm(f => ({ ...f, scan_ratings: JSON.stringify(next) }))
-                    }
-                    return (
-                      <label key={value === '' ? '__unrated__' : value} className="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 accent-plex-orange" />
-                        <span className={`text-sm ${checked ? 'text-gray-100' : 'text-muted'}`}>{label}</span>
-                      </label>
-                    )
-                  })}
+                    const selectedNorm = new Set(selected.map(normalizeRating))
+                    const rows = [...libraryRatings]
+                    for (const r of selectedNorm) if (!rows.some(x => x.rating === r)) rows.push({ rating: r, count: 0, sources: [] })
+                    rows.sort((x, y) => (x.rating === '' ? 1 : y.rating === '' ? -1 : x.rating.localeCompare(y.rating)))
+                    if (rows.length === 0) return <p className="text-sm text-muted col-span-2">No titles in the libraries yet.</p>
+                    return rows.map(({ rating, count, sources }) => {
+                      const checked = selectedNorm.has(rating)
+                      const toggle = () => {
+                        // Saved values are stored normalized; older spellings of the same rating are dropped with it.
+                        const rest = selected.filter(r => normalizeRating(r) !== rating)
+                        setForm(f => ({ ...f, scan_ratings: JSON.stringify(checked ? rest : [...rest, rating]) }))
+                      }
+                      const also = sources.filter(s => s !== rating)
+                      return (
+                        <label key={rating === '' ? '__unrated__' : rating} className="flex items-start gap-2 cursor-pointer">
+                          <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 mt-0.5 accent-plex-orange" />
+                          <span className={`text-sm ${checked ? 'text-gray-100' : 'text-muted'}`}>
+                            {rating === '' ? 'Unrated (no rating set in Plex)' : rating}
+                            <span className="text-xs text-muted"> · {count}</span>
+                            {also.length > 0 && <span className="block text-xs text-muted">includes {also.join(', ')}</span>}
+                          </span>
+                        </label>
+                      )
+                    })
+                  })()}
                 </div>
       </section>
               {libraries.length > 0 && (

@@ -93,6 +93,26 @@ async def get_settings():
     return settings
 
 
+@router.get("/ratings")
+async def get_library_ratings():
+    """Return the content ratings in the libraries, normalized as Scan ratings compares them.
+
+    Shape: [{rating, count, sources}] sorted by rating; ``sources`` lists the spellings Plex used
+    (e.g. "eg/16" under "R"). "" is titles Plex left unrated.
+    """
+    merged: dict[str, dict] = {}
+    for row in await db.get_content_rating_counts():
+        raw = row["content_rating"].strip()
+        entry = merged.setdefault(scan_mod.normalize_rating(raw), {"count": 0, "sources": set()})
+        entry["count"] += row["n"]
+        if raw:
+            entry["sources"].add(raw)
+    return [
+        {"rating": r, "count": e["count"], "sources": sorted(e["sources"])}
+        for r, e in sorted(merged.items())
+    ]
+
+
 @router.get("/plex-server-id")
 async def get_plex_server_id():
     """Return the Plex server machine identifier for constructing web deep links."""
