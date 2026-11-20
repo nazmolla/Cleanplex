@@ -1920,6 +1920,15 @@ async def count_scan_jobs_by_status() -> dict[str, int]:
         return {(r["status"] or "unknown"): r["n"] for r in rows}
 
 
+async def get_content_rating_counts() -> list[dict]:
+    """Return [{content_rating, n}] for every content rating (as Plex spells it) among scan jobs."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT COALESCE(content_rating, '') AS content_rating, COUNT(*) AS n FROM scan_jobs GROUP BY 1"
+        )
+        return [dict(r) for r in rows]
+
+
 async def get_scan_job_by_guid(plex_guid: str) -> dict | None:
     async with get_connection() as conn:
         row = await (await conn.execute("SELECT * FROM scan_jobs WHERE plex_guid=?", (plex_guid,))).fetchone()

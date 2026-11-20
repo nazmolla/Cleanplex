@@ -48,3 +48,18 @@ def test_a_not_rated_title_is_eligible_when_nr_is_listed():
 def test_a_not_rated_title_is_not_eligible_when_only_other_ratings_are_listed():
     job = {"library_id": "26", "content_rating": "Not Rated", "ignored": 0}
     assert scanner.is_scan_eligible(job, set(), {"R", "TV-MA"}) is False
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("eg/G", "G"), ("eg/8", "PG"), ("eg/12", "PG-13"), ("eg/13", "PG-13"), ("eg/14", "PG-13"),
+    ("eg/16", "R"), ("eg/18", "R"), ("eg/R", "R"), ("EG/18+", "R"),
+    ("eg/Egypt", "NR"), ("eg/أفلام صوت الفن - soutelfan", "NR"),
+])
+def test_egyptian_ratings_map_onto_the_us_scale(raw, expected):
+    """#219: the AR library's eg/ ratings are checked with the same Scan ratings list."""
+    assert scanner.normalize_rating(raw) == expected
+
+
+def test_an_egyptian_g_is_out_of_scope_when_g_is_unchecked():
+    assert scanner.rating_allowed("eg/G", {"R", "PG-13"}) is False
+    assert scanner.rating_allowed("eg/16", {"R"}) is True

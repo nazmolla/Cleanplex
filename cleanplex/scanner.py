@@ -115,11 +115,36 @@ IDLE_POLL_S = 30
 
 # Plex says "Not Rated" (or "Unrated") where the scan list says "NR"; they are the same rating (#149).
 _RATING_ALIASES = {"not rated": "NR", "unrated": "NR", "nr": "NR"}
+# Country ratings arrive as "<country>/<rating>" (the AR library gets Egyptian ones: "eg/G", "eg/16").
+# They are mapped onto the US scale so one Scan ratings list covers every library (#219).
+_COUNTRY_RATING = re.compile(r"^[a-z]{2}/(.+)$", re.IGNORECASE)
+_COUNTRY_WORDS = {"g": "G", "pg": "PG", "pg-13": "PG-13", "r": "R", "nc-17": "NC-17", "x": "X"}
+
+
+def _age_to_us(age: int) -> str:
+    """US rating for a minimum viewing age: 16+ is R, as a US R (17) is the closest adult rating."""
+    if age <= 6:
+        return "G"
+    if age <= 10:
+        return "PG"
+    if age <= 15:
+        return "PG-13"
+    return "R"
 
 
 def normalize_rating(rating: str | None) -> str:
-    """Return a rating as the scan list spells it: "Not Rated" and "Unrated" become "NR", others are trimmed."""
+    """Return a rating as the scan list spells it.
+
+    "Not Rated" and "Unrated" become "NR"; country ratings ("eg/16") map onto the US scale, and a
+    country rating that names no rating ("eg/Egypt") becomes "NR". Others are trimmed.
+    """
     clean = (rating or "").strip()
+    match = _COUNTRY_RATING.match(clean)
+    if match:
+        body = match.group(1).strip().rstrip("+")
+        if body.isdigit():
+            return _age_to_us(int(body))
+        return _COUNTRY_WORDS.get(body.lower(), "NR")
     return _RATING_ALIASES.get(clean.lower(), clean)
 
 

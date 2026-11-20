@@ -322,3 +322,22 @@ async def test_update_settings_accepts_only_known_verifier_levels(http_client):
         bad = await http_client.put("/api/settings", json={"verifier_loss_pct": "7"})
     assert ok.status_code == 200 and bad.status_code == 422
     assert await db.get_setting("verifier_loss_pct") == "10"
+
+
+async def test_library_ratings_are_normalized_with_counts_and_sources(http_client):
+    """#219: the Scan ratings checklist is built from what the libraries hold."""
+    from cleanplex import database as db
+    for i, rating in enumerate(["G", "eg/G", "eg/16", "R", "Not Rated", ""]):
+        await db.upsert_scan_job(f"g{i}", f"T{i}", f"/f{i}.mkv", str(i), "1", "Movies", content_rating=rating)
+    resp = await http_client.get("/api/settings/ratings")
+    assert resp.status_code == 200
+    by = {r["rating"]: r for r in resp.json()}
+    assert by["G"] == {"rating": "G", "count": 2, "sources": ["G", "eg/G"]}
+    assert by["R"]["count"] == 2 and by["R"]["sources"] == ["R", "eg/16"]
+    assert by["NR"]["sources"] == ["Not Rated"]
+    assert by[""] == {"rating": "", "count": 1, "sources": []}
+
+
+async def test_library_ratings_empty_without_titles(http_client):
+    resp = await http_client.get("/api/settings/ratings")
+    assert resp.status_code == 200 and resp.json() == []

@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import { api } from '../api/client'
 import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
-import { ratingAllowed } from '../utils/ratings'
+import { normalizeRating, ratingAllowed } from '../utils/ratings'
 import { parseDbTimestamp } from '../utils/dbTime'
 import Modal from '../components/Modal'
 import { toast } from '../components/Toast'
@@ -270,7 +270,7 @@ export default function Browse() {
     // The full title is "<show> – <season> – <episode>" for an episode, so a show or season name matches too.
     if (query && !t.title.toLowerCase().includes(query)) return false
     if (tf.actor && !(t.cast ?? []).some(a => a.toLowerCase().includes(tf.actor.toLowerCase()))) return false
-    if (tf.rating !== 'all' && t.content_rating !== tf.rating) return false
+    if (tf.rating !== 'all' && normalizeRating(t.content_rating) !== tf.rating) return false
     if (tf.yearFrom || tf.yearTo) {
       // Titles Plex has no year for cannot be inside a range.
       if (!t.year || (tf.yearFrom && t.year < Number(tf.yearFrom)) || (tf.yearTo && t.year > Number(tf.yearTo))) return false
@@ -300,7 +300,11 @@ export default function Browse() {
   }, [visible, scope])
 
   const scopeTitles = useMemo(() => titles.filter(t => inScope(t, scope)), [titles, scope])
-  const availableRatings = useMemo(() => Array.from(new Set(scopeTitles.map(t => t.content_rating).filter(Boolean))).sort(), [scopeTitles])
+  // Ratings offered by the rating filter: normalized ("eg/16" is R, #219) and, unless out-of-scope
+  // titles are shown, only ratings inside Scan ratings, since the rest are not listed anyway.
+  const availableRatings = useMemo(() => Array.from(new Set(scopeTitles
+    .filter(t => tf.showIgnored || ratingAllowed(t.content_rating, scanRatings))
+    .map(t => normalizeRating(t.content_rating)).filter(Boolean))).sort(), [scopeTitles, scanRatings, tf.showIgnored])
   // Actors in two or more titles of this level, most frequent first, as suggestions for the cast filter.
   const castSuggestions = useMemo(() => {
     const n = new Map<string, number>()

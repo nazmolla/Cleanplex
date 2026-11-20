@@ -19,4 +19,10 @@ describe('ratings (#149)', () => {
     expect(ratingAllowed('anything', [])).toBe(true)
     expect(ratingAllowed('', ['R', 'NR'])).toBe(false)
   })
+
+  it.each([
+    ['eg/G', 'G'], ['eg/8', 'PG'], ['eg/12', 'PG-13'], ['eg/16', 'R'], ['eg/18', 'R'], ['eg/R', 'R'], ['eg/Egypt', 'NR'],
+  ])('maps the Egyptian rating %s to %s (#219)', (raw, expected) => {
+    expect(normalizeRating(raw)).toBe(expected)
+  })
 })
