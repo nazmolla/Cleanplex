@@ -1,6 +1,6 @@
-# Connecting Cleanplex to the central sync service
+# Connecting Cleanplex to Hayaa, the shared scene service
 
-Status: design for the Cleanplex side. The service exists in [cleanplex-sync](https://github.com/nazmolla/cleanplex-sync) (not deployed yet). Nothing in this repository changes until this plan and the rule changes in §9 are agreed.
+Status: design for the Cleanplex side. The service is **Hayaa** (حياء), developed locally in `~/Code/cleanplex-sync` (not deployed yet). It is named without "Plex" because it is public and will later serve other players; Plex's trademark guidelines do not allow "Plex" in third-party product names. Nothing in this repository changes until this plan and the rule changes in §9 are agreed.
 
 This replaces today's GitHub sync (`cleanplex/sync.py`, `cleanplex/sync_merge.py`): no GitHub repo or token, no per-instance JSON slots, and conflicts resolved by the service's consensus instead of at download.
 
@@ -10,8 +10,8 @@ This replaces today's GitHub sync (`cleanplex/sync.py`, `cleanplex/sync_merge.py
 sequenceDiagram
     participant U as User (browser/phone)
     participant C as Cleanplex instance
-    participant A as Auth app (OAuth)
-    participant S as Sync API
+    participant A as Hayaa auth (OAuth)
+    participant S as Hayaa sync API
     C->>A: start linking (device code)
     A-->>C: user code WXYZ-1234 + link
     C-->>U: "Go to the link and enter WXYZ-1234"
@@ -28,7 +28,7 @@ sequenceDiagram
 ## 2. Linking (once per instance)
 
 1. **Settings → Sync → Sign in.** Cleanplex calls `POST {auth}/oauth/device_authorization` with `client_id=cleanplex`. It shows the returned user code and link: "On any phone or computer, go to … and enter WXYZ-1234".
-2. **The user signs in on the auth site** with a passkey or an emailed 6-digit code, names the device ("Living-room server") and approves. Cleanplex never sees the email address.
+2. **The user signs in on the Hayaa site** with a passkey or an emailed 6-digit code, names the device ("Living-room server") and approves. Cleanplex never sees the email address.
 3. **Cleanplex polls** `POST {auth}/oauth/token` (every 5 s, longer if told `slow_down`) and receives an access token (15 minutes) and a refresh token (90 days, rotates on every use).
 4. **Cleanplex generates an Ed25519 keypair** and registers the public key with `POST {api}/api/v1/keys/add`, using the access token.
 5. **Two files are stored in the data directory**, both with 0600 permissions and **excluded from `db_backup`** archives a user might share:
@@ -36,7 +36,7 @@ sequenceDiagram
    - `sync/cleanplex.token`: the refresh token.
 6. **Unlinking** (Settings, or the account page on the auth site) revokes the device and its key at once. Cleanplex then shows "Not linked" and keeps its outbox.
 
-All of this is implemented in the service's client library: `cpsync.client.SyncClient.link(show=...)`. Cleanplex depends on the `cpsync` package rather than re-implementing signing.
+All of this is implemented in the service's client library: `hayaa.client.SyncClient.link(show=...)`. Cleanplex depends on the `hayaa` package rather than re-implementing signing.
 
 ## 3. What Cleanplex sends
 
@@ -61,7 +61,7 @@ Every observation carries a client-generated `id`, so a retry after a timeout is
 ### 3.2 Media descriptors (`POST /api/v1/media`, signed)
 
 One per title, so the service (and future players) can find the file:
-- `title`: the **content key**, a SHA-256 over the file size and 16 sampled 64 KB chunks (`cpsync.protocol.contentkey`). It replaces the full-file SHA-256 of `compute_file_hash`, reads about 1 MB per file, and can also be computed from a stream.
+- `title`: the **content key**, a SHA-256 over the file size and 16 sampled 64 KB chunks (`hayaa.protocol.contentkey`). It replaces the full-file SHA-256 of `compute_file_hash`, reads about 1 MB per file, and can also be computed from a stream.
 - `release_key`: a hash of the **file name and exact size**. The name itself is never sent.
 - `ids`: TMDB, IMDb and TVDB ids from Plex metadata; season and episode for shows. Stored as hashes on the service.
 - `runtime`.
@@ -134,7 +134,7 @@ Pulled claims never go straight into `segments`:
 4. **`local_overrides` last:** the user's own verdict always wins.
 5. **Audit scans:** 5% of synced-only titles per pull get a full scan. If the service disagrees with local scans more than 10% of the time, the instance switches itself to "Verify first" and tells the user.
 
-The full rules are in cleanplex-sync `docs/CONFLICTS.md` §7.
+The full rules are in Hayaa's `docs/CONFLICTS.md` §7.
 
 ## 7. When things go wrong
 
@@ -163,7 +163,7 @@ Before Cleanplex connects, the service's `LABEL_SEVERITY` must switch to Cleanpl
 
 ## 10. Work in this repository (after agreement)
 
-1. Add the `cpsync` dependency, the content-key cache, and the DB migration (§5).
+1. Add the `hayaa` dependency, the content-key cache, and the DB migration (§5).
 2. Sync settings page with device-code linking.
 3. Outbox fed by the user actions in §5, with separate "False positive" and "Don't skip for me" buttons.
 4. Manual Sync: push the outbox and media descriptors, pull, stage.
