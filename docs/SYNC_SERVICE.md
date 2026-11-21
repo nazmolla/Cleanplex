@@ -1,6 +1,6 @@
 # Connecting Cleanplex to Hayaa, the shared scene service
 
-Status: design for the Cleanplex side. The service is **Hayaa** (حياء), developed locally in `~/Code/cleanplex-sync` (not deployed yet). It is named without "Plex" because it is public and will later serve other players; Plex's trademark guidelines do not allow "Plex" in third-party product names. Nothing in this repository changes until this plan and the rule changes in §9 are agreed.
+Status: design for the Cleanplex side. The service is **Hayaa** (حياء), developed locally in `~/Code/cleanplex-sync` (not deployed yet). Hayaa only stores and shares segment information; it has no connection to any media server. Nothing in this repository changes until this plan and the rule changes in §9 are agreed.
 
 This replaces today's GitHub sync (`cleanplex/sync.py`, `cleanplex/sync_merge.py`): no GitHub repo or token, no per-instance JSON slots, and conflicts resolved by the service's consensus instead of at download.
 
