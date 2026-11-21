@@ -25,16 +25,25 @@ sequenceDiagram
     S-->>C: consensus claims, staged locally, verified, then applied
 ```
 
+## Naming
+
+Cleanplex keeps its name. Everything that belongs to the integration uses the service's name, **Hayaa**:
+- **UI:** the Settings page "Hayaa", the buttons "Sign in to Hayaa" and "Sync with Hayaa", and segments labelled "from Hayaa".
+- **Code:** the module `cleanplex/hayaa.py` (replacing `sync.py` and `sync_merge.py`) and the `hayaa_*` tables.
+- **Data:** the `hayaa/` folder in the data directory.
+
+On the Hayaa side, a linked instance shows up as "Cleanplex server", because that is the device.
+
 ## 2. Linking (once per instance)
 
-1. **Settings → Sync → Sign in.** Cleanplex calls `POST {auth}/oauth/device_authorization` with `client_id=cleanplex`. It shows the returned user code and link: "On any phone or computer, go to … and enter WXYZ-1234".
+1. **Settings → Hayaa → Sign in to Hayaa.** Cleanplex calls `POST {auth}/oauth/device_authorization` with `client_id=cleanplex`. It shows the returned user code and link: "On any phone or computer, go to … and enter WXYZ-1234".
 2. **The user signs in on the Hayaa site** with a passkey or an emailed 6-digit code, names the device ("Living-room server") and approves. Cleanplex never sees the email address.
 3. **Cleanplex polls** `POST {auth}/oauth/token` (every 5 s, longer if told `slow_down`) and receives an access token (15 minutes) and a refresh token (90 days, rotates on every use).
 4. **Cleanplex generates an Ed25519 keypair** and registers the public key with `POST {api}/api/v1/keys/add`, using the access token.
 5. **Two files are stored in the data directory**, both with 0600 permissions and **excluded from `db_backup`** archives a user might share:
-   - `sync/sync.key`: the private key.
-   - `sync/cleanplex.token`: the refresh token.
-6. **Unlinking** (Settings, or the account page on the auth site) revokes the device and its key at once. Cleanplex then shows "Not linked" and keeps its outbox.
+   - `hayaa/sync.key`: the private key.
+   - `hayaa/cleanplex.token`: the refresh token.
+6. **Unlinking** (Settings → Hayaa, or the account page on the Hayaa site) revokes the device and its key at once. Cleanplex then shows "Not linked to Hayaa" and keeps its outbox.
 
 All of this is implemented in the service's client library: `hayaa.client.SyncClient.link(show=...)`. Cleanplex depends on the `hayaa` package rather than re-implementing signing.
 
@@ -89,10 +98,10 @@ The client library validates every response before Cleanplex touches it: size ca
 ## 5. Local changes in Cleanplex
 
 **Database**
-- `remote_claims`: staging for pulled claims, with verify and apply state.
-- `segments.origin` (`local` | `sync`) and `segments.claim_id`.
-- `local_overrides`: the user's own verdicts by claim id; they always win, across every later pull.
-- `sync_outbox`: observations waiting to be pushed.
+- `hayaa_claims`: staging for pulled claims, with verify and apply state.
+- `segments.origin` (`local` | `hayaa`) and `segments.hayaa_claim_id`.
+- `hayaa_overrides`: the user's own verdicts by claim id; they always win, across every later pull.
+- `hayaa_outbox`: observations waiting to be pushed.
 - Local tombstones, so a deleted segment never comes back for this user.
 
 **User actions mapped to the service**
@@ -109,18 +118,18 @@ The client library validates every response before Cleanplex touches it: size ca
 
 The first two rows must be distinct buttons with distinct wording. Confusing them is the likeliest way an honest user hides a real scene for everyone.
 
-**Settings → Sync**
+**Settings → Hayaa**
 - Linked status and account link.
 - Last push and pull.
 - Outbox size.
 - Policy preset: **Balanced** (default), **Cautious** or **Verify first**.
-- Sign in / Unlink buttons.
+- "Sign in to Hayaa" / "Unlink" buttons, and a "Sync with Hayaa" button that runs one manual sync.
 
 ## 6. Applying pulled claims safely
 
 Pulled claims never go straight into `segments`:
 
-1. **Stage** them in `remote_claims`.
+1. **Stage** them in `hayaa_claims`.
 2. **Verifier scan:** a new scan-job kind that runs ahead of full scans. It samples only the claimed window plus 5 s at 500 ms, reusing `segment_refine` (`_refine_cluster`), the keyframe index, and `verifier.judge_jpeg` for disputed claims.
    - A hit gives local bounds and a thumbnail, and queues a `verify_hit`.
    - A miss queues a `verify_miss`.
@@ -131,7 +140,7 @@ Pulled claims never go straight into `segments`:
    - `disputed` applies unless the false-positive model objects.
    - `rejected` hides a locally found low or medium segment with one-click restore, and keeps a high-severity one unless the local model agrees.
    - Matches from a different release (later) always need a hit.
-4. **`local_overrides` last:** the user's own verdict always wins.
+4. **`hayaa_overrides` last:** the user's own verdict always wins.
 5. **Audit scans:** 5% of synced-only titles per pull get a full scan. If the service disagrees with local scans more than 10% of the time, the instance switches itself to "Verify first" and tells the user.
 
 The full rules are in Hayaa's `docs/CONFLICTS.md` §7.
@@ -140,8 +149,8 @@ The full rules are in Hayaa's `docs/CONFLICTS.md` §7.
 
 | Situation | Cleanplex behaviour |
 |---|---|
-| 429 / 503 (quota, flood breaker) | Stop this sync, keep the outbox, show "Sync service busy, try later (retry after …)". **Never retry in a loop** |
-| Device unlinked or token reuse detected | Show "Sign in again"; the outbox is kept |
+| 429 / 503 (quota, flood breaker) | Stop this sync, keep the outbox, show "Hayaa is busy, try later (retry after …)". **Never retry in a loop** |
+| Device unlinked or token reuse detected | Show "Sign in to Hayaa again"; the outbox is kept |
 | Service unreachable | Same as 503 |
 | Invalid response | Drop it; nothing is staged |
 | New account (first 7 days) | Pushes are limited to a tenth of the normal quota; a large first upload spreads over several syncs |
@@ -164,8 +173,8 @@ Before Cleanplex connects, the service's `LABEL_SEVERITY` must switch to Cleanpl
 ## 10. Work in this repository (after agreement)
 
 1. Add the `hayaa` dependency, the content-key cache, and the DB migration (§5).
-2. Sync settings page with device-code linking.
+2. Settings → Hayaa page with device-code linking.
 3. Outbox fed by the user actions in §5, with separate "False positive" and "Don't skip for me" buttons.
-4. Manual Sync: push the outbox and media descriptors, pull, stage.
+4. Manual "Sync with Hayaa": push the outbox and media descriptors, pull, stage.
 5. Verifier scan-job kind, apply matrix, presets, review list, audit scans.
 6. Remove `sync.py` / `sync_merge.py` GitHub code, with a one-time import of the user's own GitHub slot as `detect` observations.
