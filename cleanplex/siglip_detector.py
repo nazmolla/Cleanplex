@@ -209,6 +209,11 @@ def _session(name: str):
     return sessions[name]
 
 
+def release_thread_sessions() -> None:
+    """Drop this thread's SigLIP sessions, for threads that are not in the scanner's pool."""
+    _thread_local.sessions = {}
+
+
 def _normalize(x: np.ndarray) -> np.ndarray:
     return x / np.linalg.norm(x, axis=-1, keepdims=True)
 
@@ -223,6 +228,9 @@ def _embed_texts(prompts: list[str]) -> np.ndarray:
         tokens = tokenizer.encode(text.lower()).ids[:TEXT_LENGTH]
         ids[row, : len(tokens)] = tokens
     out = _session("text_model.onnx").run(["pooler_output"], {"input_ids": ids})[0]
+    # The text model is only needed until the embeddings are cached on disk; keeping its
+    # 421 MB session per thread wasted memory for the life of the process (#220).
+    _thread_local.sessions.pop("text_model.onnx", None)
     return _normalize(out.astype(np.float32))
 
 

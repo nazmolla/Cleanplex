@@ -168,13 +168,17 @@ def judge_jpeg(jpeg: bytes, group: str, loss_pct: int) -> tuple[bool, float | No
 def _embed_all(rows: list[dict]) -> tuple[list[dict], np.ndarray]:
     """Blocking: embed every readable frame, updating progress; unreadable files are skipped."""
     kept_rows, vectors = [], []
-    for i, row in enumerate(rows):
-        try:
-            vectors.append(siglip_detector.embed_frame(Path(row["path"]).read_bytes()))
-            kept_rows.append(row)
-        except Exception:
-            continue
-        _state["progress"] = (i + 1) / len(rows)
+    try:
+        for i, row in enumerate(rows):
+            try:
+                vectors.append(siglip_detector.embed_frame(Path(row["path"]).read_bytes()))
+                kept_rows.append(row)
+            except Exception:
+                continue
+            _state["progress"] = (i + 1) / len(rows)
+    finally:
+        # Runs on a default-pool thread that would otherwise keep the vision model forever (#220).
+        siglip_detector.release_thread_sessions()
     return kept_rows, np.array(vectors)
 
 

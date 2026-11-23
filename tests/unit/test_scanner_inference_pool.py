@@ -47,3 +47,37 @@ async def test_without_a_pool_inference_still_runs():
     scanner._replace_inference_pool(None)
 
     assert isinstance(await scanner._infer(_which_thread, 0), int)
+
+
+async def test_idle_pool_is_replaced_so_its_models_are_freed():
+    """#220: models live in the pool's threads, so an idle pool must be swapped out."""
+    scanner._replace_inference_pool(1)
+    await scanner._infer(_which_thread, 0)
+    old_pool = scanner._inference_pool
+    assert not scanner.release_idle_models(now=time.monotonic())  # just used
+    assert scanner.release_idle_models(now=time.monotonic() + scanner.MODEL_IDLE_RELEASE_S + 1)
+    assert scanner._inference_pool is not old_pool
+    assert scanner._inference_pool._max_workers == 1
+    # A fresh pool holds nothing, so it is not released again until it is used.
+    assert not scanner.release_idle_models(now=time.monotonic() + 10 * scanner.MODEL_IDLE_RELEASE_S)
+
+
+async def test_pool_is_not_released_while_inference_is_running():
+    scanner._replace_inference_pool(1)
+    started = threading.Event()
+
+    def slow(_):
+        started.set()
+        time.sleep(0.2)
+
+    task = asyncio.create_task(scanner._infer(slow, 0))
+    await asyncio.to_thread(started.wait)
+    old_pool = scanner._inference_pool
+    assert not scanner.release_idle_models(now=time.monotonic() + 10 * scanner.MODEL_IDLE_RELEASE_S)
+    assert scanner._inference_pool is old_pool
+    await task
+
+
+async def test_unused_pool_is_never_released():
+    scanner._replace_inference_pool(1)
+    assert not scanner.release_idle_models(now=time.monotonic() + 10 * scanner.MODEL_IDLE_RELEASE_S)

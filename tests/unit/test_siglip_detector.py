@@ -145,3 +145,25 @@ def test_credit_and_title_card_phrases_are_neutral_counter_examples():
     for phrase in ("end credits scrolling text", "a film title card", "white text on a black background"):
         i = prompts.index(phrase)
         assert owner[i] == "" and positive[i] is False
+
+
+def test_text_model_session_is_released_after_embedding_prompts(monkeypatch, tmp_path):
+    """#220: the 421 MB text model must not stay loaded once prompts are embedded."""
+    import tokenizers
+
+    class FakeTok:
+        def encode(self, text):
+            return type("E", (), {"ids": [1, 2]})()
+
+    class FakeText:
+        def run(self, outputs, feeds):
+            return [np.ones((feeds["input_ids"].shape[0], 4), dtype=np.float32)]
+
+    monkeypatch.setattr(tokenizers.Tokenizer, "from_file", staticmethod(lambda path: FakeTok()))
+    sd._thread_local.sessions = {"text_model.onnx": FakeText(), "vision_model.onnx": object()}
+    out = sd._embed_texts(["a", "b"])
+    assert out.shape == (2, 4)
+    assert "text_model.onnx" not in sd._thread_local.sessions
+    assert "vision_model.onnx" in sd._thread_local.sessions
+    sd.release_thread_sessions()
+    assert sd._thread_local.sessions == {}
