@@ -47,23 +47,13 @@ interface Settings {
   hover_window_end: string
 }
 
-type SectionId = 'connection' | 'playback' | 'filtering' | 'schedule' | 'nudenet' | 'siglip' | 'segments' | 'sync' | 'hayaa' | 'users'
-const SECTION_IDS: SectionId[] = ['connection', 'users', 'playback', 'filtering', 'schedule', 'nudenet', 'siglip', 'segments', 'sync']
+type SectionId = 'connection' | 'playback' | 'filtering' | 'schedule' | 'nudenet' | 'siglip' | 'segments' | 'hayaa' | 'users'
+const SECTION_IDS: SectionId[] = ['connection', 'users', 'playback', 'filtering', 'schedule', 'nudenet', 'siglip', 'segments', 'hayaa']
 
 interface Library {
   id: string
   title: string
   type: string
-}
-
-interface SyncStatus {
-  sync_enabled: boolean
-  instance_name: string | null
-  github_repo: string | null
-  conflict_resolution: string
-  verified_threshold: number
-  timing_tolerance_ms: number
-  last_sync_time: string | null
 }
 
 const DEFAULT: Settings = {
@@ -160,14 +150,6 @@ export default function SettingsPage() {
   const [refineRemaining, setRefineRemaining] = useState(0)
   const [detectorLabels, setDetectorLabels] = useState<string[]>([])
   const [libraryRatings, setLibraryRatings] = useState<LibraryRating[]>([])
-  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
-  const [syncForm, setSyncForm] = useState({ sync_enabled: false, instance_name: '' })
-  const [savingSync, setSavingSync] = useState(false)
-  const [savedSync, setSavedSync] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const [uploadResult, setUploadResult] = useState<{ ok: boolean; message: string } | null>(null)
-  const [downloading, setDownloading] = useState(false)
-  const [downloadResult, setDownloadResult] = useState<{ ok: boolean; message: string } | null>(null)
   const [restarting, setRestarting] = useState(false)
   const [restarted, setRestarted] = useState(false)
   // The open section lives in ?section= so it can be linked (e.g. /users redirects here).
@@ -182,23 +164,14 @@ export default function SettingsPage() {
       api.get<Settings>('/api/settings'),
       api.get<{ libraries: Library[] }>('/api/libraries').catch(() => ({ libraries: [] })),
       api.get<{ labels: string[] }>('/api/settings/detector-labels').catch(() => ({ labels: [] })),
-      api.get<SyncStatus>('/api/sync/status').catch(() => null),
       api.get<{ remaining: number; enabled: boolean }>('/api/segments/refine-status').catch(() => null),
       api.get<LibraryRating[]>('/api/settings/ratings').catch(() => []),
-    ]).then(([settings, libs, labels, sync, refine, ratings]) => {
+    ]).then(([settings, libs, labels, refine, ratings]) => {
       setLibraryRatings(Array.isArray(ratings) ? ratings : [])
       setRefineRemaining(refine?.enabled ? refine.remaining : 0)
       setForm({ ...DEFAULT, ...settings })
       setLibraries(libs.libraries)
       setDetectorLabels(labels.labels)
-      if (sync) {
-        setSyncStatus(sync)
-        setSyncForm(f => ({
-          ...f,
-          sync_enabled: sync.sync_enabled,
-          instance_name: sync.instance_name ?? '',
-        }))
-      }
       setLoading(false)
     })
   }, [])
@@ -241,98 +214,6 @@ export default function SettingsPage() {
       setTestResult(r)
     } finally {
       setTesting(false)
-    }
-  }
-
-  const saveSync = async () => {
-    setSavingSync(true)
-    setSavedSync(false)
-    try {
-      await api.post('/api/sync/settings', {
-        instance_name: syncForm.instance_name || 'default',
-        sync_enabled: syncForm.sync_enabled,
-      })
-      setSavedSync(true)
-      const updated = await api.get<SyncStatus>('/api/sync/status').catch(() => null)
-      if (updated) setSyncStatus(updated)
-      setTimeout(() => setSavedSync(false), 3000)
-    } catch (e: any) {
-      setUploadResult({ ok: false, message: e?.message ?? 'Failed to save sync settings' })
-    } finally {
-      setSavingSync(false)
-    }
-  }
-
-  const doUpload = async () => {
-    setUploading(true)
-    setUploadResult(null)
-    try {
-      // Step 1: Enqueue the upload job
-      const r = await api.post<{ status: string; job_id: number; message: string }>('/api/sync/upload-segment-library')
-      const jobId = r.job_id
-      setUploadResult({ ok: true, message: `Upload job ${jobId} queued. Starting...` })
-      
-      // Step 2: Poll for job status — max 120 attempts (≈2 min) before timing out.
-      const MAX_POLLS = 120
-      let completed = false
-      let isSuccess = false
-      let finalMessage = ''
-
-      for (let attempt = 0; attempt < MAX_POLLS && !completed; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 1000))
-
-        try {
-          const status = await api.get<any>(`/api/sync/job-status/${jobId}`)
-
-          if (status.status === 'completed') {
-            completed = true
-            isSuccess = true
-            const result = status.result || {}
-            finalMessage = result.message || 'Upload completed'
-          } else if (status.status === 'failed') {
-            completed = true
-            isSuccess = false
-            finalMessage = status.error || 'Upload failed'
-          } else {
-            const progress = status.progress || 0
-            finalMessage = `Uploading... ${progress}%`
-          }
-
-          setUploadResult({ ok: isSuccess, message: finalMessage })
-        } catch {
-          // Transient poll error — keep trying until max attempts
-        }
-      }
-
-      if (!completed) {
-        isSuccess = false
-        finalMessage = 'Upload timed out — check server logs'
-        setUploadResult({ ok: false, message: finalMessage })
-      }
-      
-      const updated = await api.get<SyncStatus>('/api/sync/status').catch(() => null)
-      if (updated) setSyncStatus(updated)
-    } catch (e: any) {
-      setUploadResult({ ok: false, message: 'Upload failed to start' })
-    } finally {
-      setUploading(false)
-    }
-  }
-
-  const doDownload = async () => {
-    setDownloading(true)
-    setDownloadResult(null)
-    try {
-      const r = await api.get<{ status: string; results: Record<string, any[]>; merge_results: Record<string, any> }>('/api/sync/download-local-library')
-      const fileCount = Object.keys(r.results || {}).length
-      const ok = r.status === 'success' || r.status === 'no_data'
-      setDownloadResult({ ok, message: ok ? `Downloaded/merged ${fileCount} file(s) from GitHub library` : 'Download failed' })
-      const updated = await api.get<SyncStatus>('/api/sync/status').catch(() => null)
-      if (updated) setSyncStatus(updated)
-    } catch (e: any) {
-      setDownloadResult({ ok: false, message: e?.message ?? 'Download failed' })
-    } finally {
-      setDownloading(false)
     }
   }
 
@@ -379,7 +260,6 @@ export default function SettingsPage() {
     { id: 'nudenet', label: 'NudeNet Detection' },
     { id: 'siglip', label: 'SigLIP Fallback' },
     { id: 'segments', label: 'Segments' },
-    { id: 'sync', label: 'Sharing' },
     { id: 'hayaa', label: 'Hayaa' },
   ]
 
@@ -791,94 +671,6 @@ export default function SettingsPage() {
             </section>
           )}
 
-          {section === 'sync' && (
-            <section>
-              <h2 className={h2Cls}>Segment Library Sync</h2>
-              <p className="text-xs text-muted mb-4">Crowdsource segment detections through one shared GitHub repository. Upload and download are always manual.</p>
-              <div className="grid gap-4 lg:grid-cols-2 items-start">
-                <Field label="Repository" hint="Fixed shared repository used by all users.">
-                  <input
-                    type="text"
-                    value={syncStatus?.github_repo || 'nazmolla/cleanplex-segments'}
-                    readOnly
-                    className={inputCls + ' opacity-80'}
-                  />
-                </Field>
-                <Field label="Instance Name" hint="Name attached to your submissions in the crowdsourced dataset.">
-                  <input
-                    type="text"
-                    value={syncForm.instance_name}
-                    onChange={e => setSyncForm(f => ({ ...f, instance_name: e.target.value }))}
-                    placeholder="e.g. home-server"
-                    className={inputCls}
-                  />
-                </Field>
-                <label className="flex items-center gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={syncForm.sync_enabled}
-                    onChange={e => setSyncForm(f => ({ ...f, sync_enabled: e.target.checked }))}
-                    className="w-4 h-4 accent-plex-orange"
-                  />
-                  <span className="text-sm text-gray-300">Enable sync</span>
-                </label>
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={saveSync}
-                    disabled={savingSync}
-                    className="btn-outline text-xs"
-                  >
-                    {savingSync && <Loader2 size={13} className="animate-spin" />}
-                    Save Sync Settings
-                  </button>
-                  {savedSync && (
-                    <span className="flex items-center gap-1.5 text-xs text-green-400">
-                      <CheckCircle2 size={13} /> Saved
-                    </span>
-                  )}
-                </div>
-                <div className="pt-2 border-t border-plex-border/50 space-y-3">
-                  <p className="text-xs text-muted">Upload and download crowdsourced segment detections from the shared library.</p>
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <button
-                      type="button"
-                      onClick={doUpload}
-                      disabled={uploading || !syncForm.sync_enabled}
-                      className="btn-outline text-xs"
-                    >
-                      {uploading && <Loader2 size={13} className="animate-spin" />}
-                      Upload My Segments
-                    </button>
-                    <button
-                      type="button"
-                      onClick={doDownload}
-                      disabled={downloading || !syncForm.sync_enabled}
-                      className="btn-outline text-xs"
-                    >
-                      {downloading && <Loader2 size={13} className="animate-spin" />}
-                      Download Crowdsourced Segments
-                    </button>
-                    {uploadResult && (
-                      <span className={`flex items-center gap-1.5 text-xs ${uploadResult.ok ? 'text-green-400' : 'text-red-400'}`}>
-                        {uploadResult.ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
-                        {uploadResult.message}
-                      </span>
-                    )}
-                    {downloadResult && (
-                      <span className={`flex items-center gap-1.5 text-xs ${downloadResult.ok ? 'text-green-400' : 'text-red-400'}`}>
-                        {downloadResult.ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
-                        {downloadResult.message}
-                      </span>
-                    )}
-                  </div>
-                  {syncStatus?.last_sync_time && (
-                    <p className="text-xs text-muted">Last sync: {syncStatus.last_sync_time}</p>
-                  )}
-                </div>
-              </div>
-      </section>
-          )}
         </div>
       </div>
 

@@ -59,9 +59,10 @@ Every change, whatever its size, follows these rules; the only exceptions are th
 | `plex_client.py` | All Plex API calls — no `plexapi` imports elsewhere |
 | `filter_engine.py` | Playback position checks and seek decisions (live skipping). Stands down for streams the proxy edited (`db.is_proxied`); seeks to the widened segment end (#185) |
 | `watcher.py` | Polling loops only — no business logic. The library pass runs every 5 min and must look titles up in chunks, never per item. The session loop also runs the enforcement backstop (stops a filtered stream that bypassed the front door, only when `enforcement_enabled`) |
-| `sync.py` / `sync_merge.py` | GitHub sync and segment merge logic (being replaced by Hayaa) |
 | `hayaa.py` | Client of the Hayaa segment service (#221): device-flow sign-in, refresh-token rotation, the Ed25519 instance key and request signing, content and release keys (pinned to Hayaa's own outputs by test vectors). Key and refresh token live in `<data dir>/hayaa/` (0600), never in the DB or an API response. Design: `docs/SYNC_SERVICE.md` |
-| `bg_jobs.py` | Background job lifecycle — no domain logic |
+| `hayaa_sync.py` | Hayaa sync (#222): derives each synced title's observations from its segments, verdicts and verify results and diffs them against the sent-ledger (`hayaa_sent`); pushes, pulls changed views into `hayaa_claims`, and applies them through the apply matrix (`decide`) with the user's `hayaa_overrides` first. Manual sync and the opt-in automatic loop, within the daily quotas |
+| `hayaa_verify.py` | Background job re-checking pulled claims locally inside the scan window (refinement sampler, claim ± 5 s, never grown); the false-positive model judges disputed claims |
+| `bg_jobs.py` | Background job records: stale-job recovery and status — no domain logic |
 | `events.py` | In-process event bus streamed to browsers by `GET /api/events` (SSE). Publish where a change happens; events name what changed, not the new state |
 | `web/routes/` | HTTP surface only — call domain modules, never raw DB |
 
@@ -263,7 +264,7 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 - **Only `skip` and `mute` are executable.** Plex exposes playback position and volume, nothing else. `blank` and `blur` must be logged and ignored, never downgraded to a skip.
 - **Filtering is a threshold, not a boolean**: a segment fires when the user's category level plus its severity rank exceeds 3.
 - **A new parser goes in `importers/`** and must return normalized segment dicts through `validate_segment`. Never let a parser write to the database itself.
-- **Never redistribute third-party segment data.** Parse what a user supplies; do not bundle or mirror another project's catalogue.
+- **Never redistribute third-party segment data.** Parse what a user supplies; do not bundle or mirror another project's catalogue. Segments whose `source` is not the scanner, SigLIP or the subtitle scanner never reach Hayaa.
 
 ### 5.5 Scanner
 
@@ -299,7 +300,9 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 
 - **Automatic sync is allowed** (opt-in). Shared segments are protected by Hayaa's consensus, holds and the client-side stage/verify/apply step, not by keeping sync manual. An automatic sync must respect the service's daily quotas and stop on 429/503 until its Retry-After, never retry in a loop.
 - **File identity caches are keyed by `(path, size, mtime)`.** Recompute a SHA-256 or Hayaa content key only when any of these change.
-- **Segment merge complexity must be sub-quadratic on practical inputs.** Use time-bucketed or sorted interval matching.
+- **Outgoing sync data is derived, never queued.** What an instance asserts comes from `hayaa_sync.desired_observations`; a new path that changes segments needs no sync hook. Only verdicts on pulled segments (deleting one, restoring a community false positive) are recorded, in `hayaa_overrides`, because the segment row is gone or changed.
+- **Pulled claims act only through the apply matrix.** Never insert a `source='hayaa'` segment outside `hayaa_sync.apply_titles`, and never let a pull overwrite a user verdict.
+- **Only the instance's own detections and verdicts are sent**: sources `scanner`, `siglip`, `subtitles` and the user's votes. Imported skip files never (§5.4), subtitle words never (severity only).
 
 ### 5.8 Security & Resource Hygiene
 
@@ -328,8 +331,7 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 tests/
 ├── unit/
 │   ├── test_database.py       # DB helpers — real in-memory SQLite
-│   ├── test_sync_merge.py     # SegmentMerger logic
-│   ├── test_filter_engine.py  # FilterEngine seek decisions
+│   │   ├── test_filter_engine.py  # FilterEngine seek decisions
 │   └── test_plex_client.py    # PlexClient (httpx mocked)
 ├── integration/
 │   ├── test_routes_segments.py
@@ -344,7 +346,7 @@ tests/
 |---|---|
 | New `database.py` function | Unit test: happy path + empty/missing input |
 | New route handler | Integration test: happy path + 404/422 error cases |
-| New sync / merge logic | Unit test: correctness + edge cases (empty, single source, conflict) |
+| New sync logic | Unit test: correctness + edge cases (empty, single source, conflict); end to end against Hayaa's dev server |
 | Bug fix | Regression test that fails before the fix and passes after |
 | Performance optimisation | Before/after assertion (row count, call count, or timing) |
 | New filter / skip logic | Unit test covering the boundary conditions |

@@ -1100,6 +1100,13 @@ async def scan_video(plex_guid: str, config) -> None:
             part_time_offset_ms += part_duration_ms
 
         await db.update_scan_job_status(plex_guid, "done", progress=1.0, scan_version=SCAN_VERSION)
+        # A rescan rewrote the title's segments: put pulled Hayaa segments back and match the new
+        # local ones to their claims (#222). Best effort; the next sync does the same.
+        try:
+            from . import hayaa_sync
+            await hayaa_sync.apply_titles([plex_guid], config)
+        except Exception as exc:
+            logger.warning("Hayaa apply after scan failed for %s: %s", title, exc)
 
         if rating_key:
             await plex_summary.refresh_now(plex_guid)

@@ -409,60 +409,6 @@ async def test_update_bg_job_error():
 
 # ── Segment Library Entries ────────────────────────────────────────────────────
 
-async def test_upsert_and_get_segment_library_entry():
-    entry_id = await db.upsert_segment_library_entry(
-        file_hash="abc123",
-        file_name="movie.mkv",
-        file_size=1000,
-        duration_ms=90000,
-        segments_json='[{"start_ms":0,"end_ms":1000}]',
-        source_instance="instance-1",
-        confidence_level="local",
-    )
-    assert entry_id > 0
-    rows = await db.get_segment_library_entries_by_hash("abc123")
-    assert len(rows) == 1
-    assert rows[0]["source_instance"] == "instance-1"
-
-
-async def test_upsert_segment_library_entry_updates_on_conflict():
-    await db.upsert_segment_library_entry(
-        file_hash="hash1", file_name="f.mkv", file_size=1, duration_ms=1,
-        segments_json="[]", source_instance="inst", confidence_level="local",
-    )
-    await db.upsert_segment_library_entry(
-        file_hash="hash1", file_name="f.mkv", file_size=1, duration_ms=1,
-        segments_json='[{"x":1}]', source_instance="inst", confidence_level="verified",
-    )
-    rows = await db.get_segment_library_entries_by_hash("hash1")
-    assert len(rows) == 1
-    assert rows[0]["confidence_level"] == "verified"
-
-
-async def test_get_segment_library_entries_by_hash_returns_empty():
-    rows = await db.get_segment_library_entries_by_hash("no-such-hash")
-    assert rows == []
-
-
-async def test_get_segment_library_entries_by_hashes():
-    await db.upsert_segment_library_entry(
-        file_hash="h1", file_name="a.mkv", file_size=1, duration_ms=1,
-        segments_json="[]", source_instance="x", confidence_level="local",
-    )
-    await db.upsert_segment_library_entry(
-        file_hash="h2", file_name="b.mkv", file_size=1, duration_ms=1,
-        segments_json="[]", source_instance="y", confidence_level="local",
-    )
-    rows = await db.get_segment_library_entries_by_hashes(["h1", "h2"])
-    hashes = {r["file_hash"] for r in rows}
-    assert hashes == {"h1", "h2"}
-
-
-async def test_get_segment_library_entries_by_hashes_empty_returns_empty():
-    rows = await db.get_segment_library_entries_by_hashes([])
-    assert rows == []
-
-
 # ── Category pref backfill (issue #77) ─────────────────────────────────────────
 
 async def test_backfill_adds_missing_categories_at_everything():

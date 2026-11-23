@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { ExternalLink, Loader2 } from 'lucide-react'
 import { api } from '../api/client'
 import { toast } from './Toast'
+import HayaaSync from './HayaaSync'
 
 interface LinkState {
   status: 'pending' | 'linked' | 'error'
@@ -25,7 +26,7 @@ const POLL_MS = 3000
 
 /**
  * Settings → Hayaa (#221): the service URLs and signing this instance in with a short code
- * the user confirms on any phone or computer (OAuth device flow). Syncing comes later.
+ * the user confirms on any phone or computer (OAuth device flow); once linked, syncing.
  */
 export default function HayaaPanel() {
   const [st, setSt] = useState<HayaaStatus | null>(null)
@@ -112,6 +113,9 @@ export default function HayaaPanel() {
             <p className="text-sm text-gray-100">Signed in as <span className="font-medium">{st.device_label}</span>.</p>
             <p className="text-xs text-muted break-all">Instance key {st.key_id}</p>
             <button className="btn-danger" onClick={unlink} disabled={busy}>Unlink from Hayaa</button>
+            <div className="border-t border-plex-border pt-4">
+              <HayaaSync />
+            </div>
           </>
         ) : pending && st.link ? (
           <div className="space-y-2">

@@ -18,7 +18,6 @@ from .routes.users import router as users_router
 from .routes.segments import router as segments_router
 from .routes.scanner_routes import router as scanner_router
 from .routes.thumbnails import router as thumbnails_router
-from .routes.sync_routes import router as sync_router
 from .routes.hayaa_routes import router as hayaa_router
 from .routes.mcp_routes import router as mcp_router
 from .routes.analytics_routes import router as analytics_router
@@ -82,7 +81,6 @@ def create_app() -> FastAPI:
     app.include_router(segments_router)
     app.include_router(scanner_router)
     app.include_router(thumbnails_router)
-    app.include_router(sync_router)
     app.include_router(hayaa_router)
     app.include_router(mcp_router)
     app.include_router(analytics_router)

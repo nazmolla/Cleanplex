@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -400,6 +401,31 @@ async def unlink() -> None:
             logger.warning("Hayaa revoke failed: %s", exc)
         _token_path().unlink(missing_ok=True)
     _access = None
+
+
+async def signed_post(path: str, body: dict[str, Any]) -> dict[str, Any]:
+    """POST a JSON body to the sync API signed with the instance key; returns the JSON reply.
+
+    Raises HayaaBusy on 429/503, NotLinked when the key is unknown or revoked, HayaaError otherwise.
+    """
+    api, _ = await get_urls()
+    if not is_linked():
+        raise NotLinked("Not signed in to Hayaa")
+    key = await asyncio.to_thread(load_or_create_key)
+    raw = json.dumps(body, separators=(",", ":")).encode()
+    headers = sign_headers(key, "POST", path, raw)
+    headers["Content-Type"] = "application/json"
+    try:
+        resp = await _client().post(api + path, content=raw, headers=headers)
+    except httpx.HTTPError as exc:
+        raise HayaaError(f"Could not reach Hayaa: {type(exc).__name__}") from exc
+    data = _json(resp)
+    err = data.get("error") if isinstance(data, dict) else None
+    if resp.status_code in (401, 403):
+        raise NotLinked(f"Hayaa does not accept this instance ({err or resp.status_code}); sign in again")
+    if resp.status_code >= 400 or not isinstance(data, dict):
+        raise HayaaError(f"Hayaa refused the request: {err or resp.status_code}")
+    return data
 
 
 async def status() -> dict[str, Any]:

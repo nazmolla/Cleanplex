@@ -1,6 +1,6 @@
 # Connecting Cleanplex to Hayaa, the shared scene service
 
-Status: design for the Cleanplex side. The service is **Hayaa** (حياء), developed locally in `~/Code/cleanplex-sync` (not deployed yet). Hayaa only stores and shares segment information; it has no connection to any media server. Nothing in this repository changes until this plan and the rule changes in §9 are agreed.
+Status: **implemented** on the Cleanplex side (#221, #222): `cleanplex/hayaa.py` (linking, signing, content keys), `cleanplex/hayaa_sync.py` (observations, push, pull, apply), `cleanplex/hayaa_verify.py` (local re-checks). The service is **Hayaa** (حياء), developed in `~/Code/cleanplex-sync` (not deployed yet). Hayaa only stores and shares segment information; it has no connection to any media server. §11 lists where the implementation differs from the design below.
 
 This replaces today's GitHub sync (`cleanplex/sync.py`, `cleanplex/sync_merge.py`): no GitHub repo or token, no per-instance JSON slots, and conflicts resolved by the service's consensus instead of at download.
 
@@ -183,11 +183,19 @@ When Cleanplex changes its vocabulary, Hayaa changes in the same release.
 - **§5.4:** add "segments with `source` other than the scanner or the user are never added to the sync outbox".
 - **§5.8:** add "the sync private key and refresh token are excluded from backups and never returned by the API".
 
-## 10. Work in this repository (after agreement)
+## 10. Work in this repository
 
-1. Add the `hayaa` dependency, the content-key cache, and the DB migration (§5).
-2. Settings → Hayaa page with device-code linking.
-3. Outbox fed by the user actions in §5, with separate "False positive" and "Don't skip for me" buttons.
-4. Manual "Sync with Hayaa": push the outbox and media descriptors, pull, stage.
-5. Verifier scan-job kind, apply matrix, presets, review list, audit scans.
-6. Remove `sync.py` / `sync_merge.py` GitHub code, with a one-time import of the user's own GitHub slot as `detect` observations.
+Done: content-key cache and migration; Settings → Hayaa with device-code linking; observations derived from local state; manual and automatic sync; local re-checks, apply matrix, presets, review list and disagreement fallback; GitHub sync removed.
+
+## 11. How the implementation differs from the design
+
+- **No `hayaa` dependency.** The Hayaa repo is private and its client blocks, so signing, content keys and release keys are re-implemented in `cleanplex/hayaa.py` and pinned to Hayaa's own outputs by test vectors. Change both in the same release.
+- **No outbox table.** What an instance asserts is derived at sync time from its segments, verdicts and verify results (`desired_observations`), and diffed against a sent-ledger (`hayaa_sent`). Deletes, rescans and purges need no hooks; a withdrawn assertion becomes a `retract`. Hayaa ignores a repeated id, so an assertion made again after a retraction carries a new generation id.
+- **No "don't skip for me" button.** Cleanplex has no per-segment preference; the false-positive button's wording says it is a vote that nothing is there and points to category levels instead.
+- **No manual add or bounds edit** exists in Cleanplex yet, so `add` and `bounds` are never sent.
+- **Re-checks are a background job, not a scan-job kind.** `hayaa_verify` re-checks pending claims inside the scan window with the refinement sampler (claim window ± 5 s at 500 ms, never grown); the false-positive model judges disputed claims.
+- **Audit sampling** uses the re-check results: when more than 10% of at least 20 re-checked machine-only accepted claims miss locally, the preset switches to Verify first. Titles are scanned locally anyway, so no extra audit scans are queued.
+- **Single-file titles only.** A content key names one file; multi-part titles are not synced.
+- **Media descriptors** carry the release key and runtime; public ids (TMDB, IMDb, TVDB) are not stored by Cleanplex yet.
+- **No import of the GitHub slot.** An instance's own GitHub entries came from its own database, which syncs to Hayaa directly.
+- **Community false positives** are stored as `segments.false_positive = 3` and restored with the usual undo, which records a `restore` override.

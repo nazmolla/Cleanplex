@@ -4,7 +4,7 @@ import { api } from '../api/client'
 import { toast } from './Toast'
 
 interface Props {
-  seg: { id: number; false_positive?: boolean; auto_rejected?: boolean }
+  seg: { id: number; false_positive?: boolean; auto_rejected?: boolean; community_rejected?: boolean }
   /** Called after the server accepted the change, so the list can update in place. */
   onChange: (id: number, falsePositive: boolean) => void
 }
@@ -37,9 +37,12 @@ export default function FalsePositiveButton({ seg, onChange }: Props) {
       disabled={busy}
       title={
         seg.auto_rejected ? 'Restore: the verifier was wrong, this segment is real'
-          : marked ? 'Undo: this segment is real' : 'Not nudity: mark as a false positive'
+          : seg.community_rejected ? 'Restore: Hayaa users called this a false positive, but it is real'
+          : marked ? 'Undo: this segment is real'
+          // Distinct from a preference: with Hayaa this is a vote that nothing is there (#222).
+          : 'False positive: nothing is there. Shared with Hayaa as a vote; to stop skipping a kind of scene, lower the viewer\'s category level instead'
       }
-      aria-label={seg.auto_rejected ? 'Restore segment' : marked ? 'Undo false positive' : 'Mark as false positive'}
+      aria-label={seg.auto_rejected || seg.community_rejected ? 'Restore segment' : marked ? 'Undo false positive' : 'Mark as false positive'}
       aria-pressed={marked}
       className={`p-2 rounded-lg transition-colors disabled:opacity-40 ${
         marked

@@ -25,6 +25,8 @@ from .thumbnail_backfill import thumbnail_backfill_loop
 from .cast_sync import cast_sync_loop
 from .keyframe_index import keyframe_index_loop
 from .frontdoor import frontdoor_cert_loop
+from .hayaa_sync import hayaa_sync_loop
+from .hayaa_verify import hayaa_verify_loop
 from .web.app import create_app
 from . import stream_proxy
 from .bg_jobs import recover_stale_jobs
@@ -175,6 +177,8 @@ async def _amain() -> None:
             ("cast-sync", cast_sync_loop(get_config, get_client)),
             ("keyframe-index", keyframe_index_loop()),
             ("frontdoor-cert", frontdoor_cert_loop(DATA_DIR)),
+            ("hayaa-sync", hayaa_sync_loop()),
+            ("hayaa-verify", hayaa_verify_loop(get_config)),
         )
     ]
     # Stop when the server stops, or when any loop dies (which used to leave a half-working app).

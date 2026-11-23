@@ -123,7 +123,7 @@ Rules for every layout:
 
 ## Configuration
 
-All configuration is done via the **web UI** at `http://your-server:7979/settings`, grouped into sections (Plex Connection, Users, Playback, Stream Filtering, Scan Scope & Schedule, NudeNet Detection, SigLIP Fallback, Segments, Sharing, Hayaa). No config files to edit.
+All configuration is done via the **web UI** at `http://your-server:7979/settings`, grouped into sections (Plex Connection, Users, Playback, Stream Filtering, Scan Scope & Schedule, NudeNet Detection, SigLIP Fallback, Segments, Hayaa). No config files to edit.
 
 | Setting | Default | Description |
 |---|---|---|
@@ -329,17 +329,30 @@ Tabs (linkable with `?tab=`), and sections that can be minimised (remembered per
 - **NudeNet Detection** — Model (320n / 640m), confidence threshold, scan frame interval, detector labels, per-label thresholds
 - **SigLIP Fallback** — Enable it, threshold, per-label thresholds, consecutive frames, end-credits handling, the false-positive verifier
 - **Segments** — Merge gap, refinement step (with how many older segments still wait for refinement), minimum hits
-- **Sharing** — Optional crowdsourced segment library (below)
-- **Hayaa** — Sign this instance in to the Hayaa segment service (below)
+- **Hayaa** — Share segments with other Cleanplex servers through the Hayaa service (below)
 - Profanity wordlist and log level are stored as settings (`profanity_wordlist`, `log_level`)
 
 ## Hayaa
 
-Hayaa is a shared segment service that will replace the GitHub library below. Settings → Hayaa takes the service and sign-in URLs (https), then **Sign in to Hayaa** shows a short code: open the link on any phone or computer, sign in with a passkey or an emailed code, and confirm the code. Cleanplex then registers its own signing key with your account. The key and sign-in token stay in `hayaa/` in the data directory, never in the database or its backups. **Unlink** revokes this instance; you can also unlink it from the Hayaa account page. Sharing segments through Hayaa (sync) is not available yet.
+Hayaa is a shared segment service: Cleanplex servers share what their scans found, and what their users confirmed or rejected, so a title scanned once helps everyone with the same file. Only time ranges, labels and votes are shared, keyed by a fingerprint of the file; titles, file names, frames, subtitle words and your preferences (category levels, thresholds) never leave your server, and neither do segments imported from skip files.
 
-## Segment Library Sharing
+**Signing in.** Settings → Hayaa takes the service and sign-in URLs (https), then **Sign in to Hayaa** shows a short code: open the link on any phone or computer, sign in with a passkey or an emailed code, and confirm the code. Cleanplex registers its own signing key with your account. The key and sign-in token stay in `hayaa/` in the data directory, never in the database or its backups. **Unlink** revokes this server; you can also unlink it from the Hayaa account page.
 
-Optional and **always manual**: Settings → Sharing connects to one shared GitHub repository where users publish detections keyed by a hash of the media file. *Upload* sends your segments (labelled with your instance name); *Download* fetches other instances' segments for titles you have, merging them by consensus: segments agreed by at least *verified threshold* instances (2 by default) within *timing tolerance* (2 s) count as verified, and a conflict-resolution mode decides disagreements. Nothing syncs in the background.
+**Syncing.** **Sync with Hayaa** sends what changed since the last sync and fetches updated titles. Turn on **Sync automatically** to do this every few hours (3 to 48); automatic syncs use at most four fifths of Hayaa's daily quota, so a manual sync always fits. When Hayaa asks to wait (busy or over quota), syncing pauses until the time it gives.
+
+**What your actions share.** Marking a segment a false positive is a vote that nothing is there; to stop skipping a kind of scene, lower the viewer's category level instead (nothing is shared). Deleting your own segment withdraws your support; a relabel is a label vote. Deleting a segment that came from Hayaa only hides it here, for good.
+
+**How shared segments are applied.** Nothing from Hayaa acts until it passes these checks:
+
+| Preset | Applies |
+|---|---|
+| Balanced (default) | Segments other users agree on; unconfirmed ones wait for a re-check on this server |
+| Cautious | Also unconfirmed segments; ignores segments the community rejected |
+| Verify first | Only what this server re-checked and found itself |
+
+Re-checks run in the scan window and look only at the shared segment's few seconds, with your own detectors and thresholds. Shared segments that only a detector found also have to pass your thresholds. A segment of yours the community rejected is hidden (low and medium severity) and listed under **Community false positives**, with Restore. Unconfirmed ones wait under **Waiting for review**: Keep applies one and vouches for it, Dismiss hides it for good. If this server's re-checks keep disagreeing with shared segments, the preset switches itself to Verify first and says so.
+
+Only titles made of a single file are synced.
 
 ## AI Agent (MCP) Endpoint
 
