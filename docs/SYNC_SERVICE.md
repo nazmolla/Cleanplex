@@ -155,11 +155,24 @@ The full rules are in Hayaa's `docs/CONFLICTS.md` §7.
 | Invalid response | Drop it; nothing is staged |
 | New account (first 7 days) | Pushes are limited to a tenth of the normal quota; a large first upload spreads over several syncs |
 
-## 8. Vocabulary alignment (must be fixed before integration)
+## 8. Vocabulary (same as Cleanplex)
 
-The service currently uses its own label names (`nudity_exposed_genitalia`, `nudity_exposed_breast`, …). Cleanplex uses NudeNet labels (`FEMALE_GENITALIA_EXPOSED`, …, see `importers/_common.py`) and MovieContentFilter 1.1.0 categories (rule §5.4).
+Hayaa uses Cleanplex's vocabulary exactly (`hayaa/rules/vocabulary.py`, checked against `cleanplex/importers/_common.py` by a test whenever both checkouts are present):
 
-Before Cleanplex connects, the service's `LABEL_SEVERITY` must switch to Cleanplex's vocabulary: the NudeNet labels, plus the MCF category on human `add` and `label` votes, with the same severity mapping as `severity_for_labels`. Otherwise severity and quorum rules would disagree between the two.
+| Field | Values | Cleanplex source |
+|---|---|---|
+| `category` | MovieContentFilter 1.1.0: commercial, discrimination, dispensable, drugs, fear, language, nudity, sex, violence, other | `CATEGORIES` |
+| `labels` | NudeNet's 19 `DETECTOR_LABELS` (`FEMALE_GENITALIA_EXPOSED`, …, `FACE_MALE`) | `DETECTOR_LABELS` |
+| `severity` | low, medium, high; from labels via `severity_for_labels` (default high) | `LABEL_SEVERITY`, `severity_for_labels` |
+| `detector` / `detector_version` | `nudenet` + `nudenet-<model>[-custom]`, `siglip` + `siglip-base-224`, `subtitles` | `scanner.py`, `siglip_detector.DETECTOR_ID`, subtitle `source` |
+
+Mapping a Cleanplex segment to an observation:
+- **Scanner and SigLIP segments:** category `nudity`, their NudeNet labels, and the `detector` column as `detector_version`.
+- **Subtitle segments:** category `language` and their severity, but **no labels**. Cleanplex stores the matched words as labels, and those are never shared.
+- **Manual adds:** their MCF category, plus labels or a severity if the user set them.
+- **Relabels:** a `label` vote with the new NudeNet labels and/or category.
+
+When Cleanplex changes its vocabulary, Hayaa changes in the same release.
 
 ## 9. Rule changes this needs in `CLAUDE.md`
 
