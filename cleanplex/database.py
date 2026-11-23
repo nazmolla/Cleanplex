@@ -245,6 +245,16 @@ CREATE TABLE IF NOT EXISTS keyframe_index (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Hayaa content keys per media file (#221): reading 16 sampled chunks is cheap but not free,
+-- so a key is recomputed only when the file's path, size or mtime changes (§5.7).
+CREATE TABLE IF NOT EXISTS hayaa_content_keys (
+    file_path   TEXT PRIMARY KEY,
+    size        INTEGER NOT NULL,
+    mtime       INTEGER NOT NULL,
+    content_key TEXT NOT NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Titles Plex no longer reports (#191). Their segments (the marks) move to removed_segments, which
 -- every live query ignores; everything else saved for the title is purged after a retention period.
 CREATE TABLE IF NOT EXISTS removed_titles (
@@ -1182,7 +1192,8 @@ async def purge_removed_titles(older_than_days: int) -> list[tuple[int, str]]:
                 await conn.execute(f"DELETE FROM {table} WHERE rating_key IN ({_in(chunk)})", chunk)
         for i in range(0, len(files), 500):
             chunk = files[i:i + 500]
-            await conn.execute(f"DELETE FROM keyframe_index WHERE file_path IN ({_in(chunk)})", chunk)
+            for table in ("keyframe_index", "hayaa_content_keys"):
+                await conn.execute(f"DELETE FROM {table} WHERE file_path IN ({_in(chunk)})", chunk)
         for i in range(0, len(guids), 500):
             chunk = guids[i:i + 500]
             await conn.execute(f"UPDATE removed_titles SET purged_at=CURRENT_TIMESTAMP WHERE plex_guid IN ({_in(chunk)})", chunk)
@@ -2380,6 +2391,26 @@ async def put_keyframes(file_path: str, size: int, mtime: int, keyframes: list[i
         await conn.execute(
             "INSERT OR REPLACE INTO keyframe_index(file_path, size, mtime, keyframes) VALUES(?,?,?,?)",
             (file_path, size, mtime, json.dumps(keyframes)),
+        )
+        await conn.commit()
+
+
+async def get_hayaa_content_key(file_path: str, size: int, mtime: int) -> str | None:
+    """Return the cached Hayaa content key for a file, or None when missing or the file changed."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(
+            "SELECT content_key FROM hayaa_content_keys WHERE file_path=? AND size=? AND mtime=?",
+            (file_path, size, mtime),
+        )).fetchone()
+    return row[0] if row else None
+
+
+async def put_hayaa_content_key(file_path: str, size: int, mtime: int, content_key: str) -> None:
+    """Store a file's Hayaa content key, replacing an older one for the same path."""
+    async with get_connection() as conn:
+        await conn.execute(
+            "INSERT OR REPLACE INTO hayaa_content_keys(file_path, size, mtime, content_key) VALUES(?,?,?,?)",
+            (file_path, size, mtime, content_key),
         )
         await conn.commit()
 

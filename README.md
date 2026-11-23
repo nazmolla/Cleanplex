@@ -123,12 +123,14 @@ Rules for every layout:
 
 ## Configuration
 
-All configuration is done via the **web UI** at `http://your-server:7979/settings`, grouped into sections (Plex Connection, Users, Playback, Stream Filtering, Scan Scope & Schedule, NudeNet Detection, SigLIP Fallback, Segments, Sharing). No config files to edit.
+All configuration is done via the **web UI** at `http://your-server:7979/settings`, grouped into sections (Plex Connection, Users, Playback, Stream Filtering, Scan Scope & Schedule, NudeNet Detection, SigLIP Fallback, Segments, Sharing, Hayaa). No config files to edit.
 
 | Setting | Default | Description |
 |---|---|---|
 | Plex Server URL | — | e.g. `http://192.168.1.10:32400` |
 | Plex Token | — | Your Plex authentication token |
+| Hayaa service URL | — | Hayaa sync API, https (plain http only to this machine, for Hayaa's dev server) |
+| Hayaa sign-in URL | — | Hayaa's sign-in (OAuth) host, https |
 | Poll Interval | 5s | How often to check active streams |
 | Confidence Threshold | 0.6 | NudeNet score threshold (0–1). Lower = more sensitive. |
 | NudeNet Model | 320n | `320n` is bundled and fastest; `640m` is larger and more accurate, downloaded once on first use (or pre-download it in the same section) |
@@ -328,7 +330,12 @@ Tabs (linkable with `?tab=`), and sections that can be minimised (remembered per
 - **SigLIP Fallback** — Enable it, threshold, per-label thresholds, consecutive frames, end-credits handling, the false-positive verifier
 - **Segments** — Merge gap, refinement step (with how many older segments still wait for refinement), minimum hits
 - **Sharing** — Optional crowdsourced segment library (below)
+- **Hayaa** — Sign this instance in to the Hayaa segment service (below)
 - Profanity wordlist and log level are stored as settings (`profanity_wordlist`, `log_level`)
+
+## Hayaa
+
+Hayaa is a shared segment service that will replace the GitHub library below. Settings → Hayaa takes the service and sign-in URLs (https), then **Sign in to Hayaa** shows a short code: open the link on any phone or computer, sign in with a passkey or an emailed code, and confirm the code. Cleanplex then registers its own signing key with your account. The key and sign-in token stay in `hayaa/` in the data directory, never in the database or its backups. **Unlink** revokes this instance; you can also unlink it from the Hayaa account page. Sharing segments through Hayaa (sync) is not available yet.
 
 ## Segment Library Sharing
 

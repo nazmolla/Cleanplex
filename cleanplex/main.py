@@ -15,6 +15,7 @@ from .logger import setup_logging, get_logger
 from . import database as db
 from .config import Config
 import cleanplex.plex_client as plex_mod
+from cleanplex import hayaa
 from .watcher import session_watcher_loop, library_watcher_loop
 from .scanner import scanner_loop
 from .hover_previews import hover_preview_loop
@@ -193,6 +194,7 @@ async def _amain() -> None:
     for task in [server_task, *loop_tasks]:
         if task.done() and not task.cancelled() and task.exception():
             logger.error("Task %s failed: %r", task.get_name(), task.exception())
+    await hayaa.close()
 
 
 def main() -> None:

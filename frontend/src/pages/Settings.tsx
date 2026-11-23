@@ -6,6 +6,7 @@ import { UsersPanel } from './Users'
 import BulkRescan from '../components/BulkRescan'
 import VerifierPanel from '../components/VerifierPanel'
 import EnforcementPanel from '../components/EnforcementPanel'
+import HayaaPanel from '../components/HayaaPanel'
 import { normalizeRating } from '../utils/ratings'
 
 // A content rating in the libraries as Scan ratings compares it (#219); sources are Plex's spellings.
@@ -46,7 +47,7 @@ interface Settings {
   hover_window_end: string
 }
 
-type SectionId = 'connection' | 'playback' | 'filtering' | 'schedule' | 'nudenet' | 'siglip' | 'segments' | 'sync' | 'users'
+type SectionId = 'connection' | 'playback' | 'filtering' | 'schedule' | 'nudenet' | 'siglip' | 'segments' | 'sync' | 'hayaa' | 'users'
 const SECTION_IDS: SectionId[] = ['connection', 'users', 'playback', 'filtering', 'schedule', 'nudenet', 'siglip', 'segments', 'sync']
 
 interface Library {
@@ -379,6 +380,7 @@ export default function SettingsPage() {
     { id: 'siglip', label: 'SigLIP Fallback' },
     { id: 'segments', label: 'Segments' },
     { id: 'sync', label: 'Sharing' },
+    { id: 'hayaa', label: 'Hayaa' },
   ]
 
   return (
@@ -779,6 +781,13 @@ export default function SettingsPage() {
                             <input type="number" min="1" max="6" step="1" value={form.segment_min_hits} onChange={set('segment_min_hits')} className={inputCls} />
                           </Field>
               </div>
+            </section>
+          )}
+
+          {section === 'hayaa' && (
+            <section>
+              <h2 className={h2Cls}>Hayaa</h2>
+              <HayaaPanel />
             </section>
           )}
 

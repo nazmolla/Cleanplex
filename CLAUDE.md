@@ -59,7 +59,8 @@ Every change, whatever its size, follows these rules; the only exceptions are th
 | `plex_client.py` | All Plex API calls — no `plexapi` imports elsewhere |
 | `filter_engine.py` | Playback position checks and seek decisions (live skipping). Stands down for streams the proxy edited (`db.is_proxied`); seeks to the widened segment end (#185) |
 | `watcher.py` | Polling loops only — no business logic. The library pass runs every 5 min and must look titles up in chunks, never per item. The session loop also runs the enforcement backstop (stops a filtered stream that bypassed the front door, only when `enforcement_enabled`) |
-| `sync.py` / `sync_merge.py` | GitHub sync and segment merge logic |
+| `sync.py` / `sync_merge.py` | GitHub sync and segment merge logic (being replaced by Hayaa) |
+| `hayaa.py` | Client of the Hayaa segment service (#221): device-flow sign-in, refresh-token rotation, the Ed25519 instance key and request signing, content and release keys (pinned to Hayaa's own outputs by test vectors). Key and refresh token live in `<data dir>/hayaa/` (0600), never in the DB or an API response. Design: `docs/SYNC_SERVICE.md` |
 | `bg_jobs.py` | Background job lifecycle — no domain logic |
 | `events.py` | In-process event bus streamed to browsers by `GET /api/events` (SSE). Publish where a change happens; events name what changed, not the new state |
 | `web/routes/` | HTTP surface only — call domain modules, never raw DB |
@@ -296,13 +297,14 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 
 ### 5.7 Sync
 
-- **Sync is always manually triggered.** No background task or watcher may initiate a sync operation automatically.
-- **File hash cache is keyed by `(path, size, mtime)`.** Recompute SHA256 only when any of these change.
+- **Automatic sync is allowed** (opt-in). Shared segments are protected by Hayaa's consensus, holds and the client-side stage/verify/apply step, not by keeping sync manual. An automatic sync must respect the service's daily quotas and stop on 429/503 until its Retry-After, never retry in a loop.
+- **File identity caches are keyed by `(path, size, mtime)`.** Recompute a SHA-256 or Hayaa content key only when any of these change.
 - **Segment merge complexity must be sub-quadratic on practical inputs.** Use time-bucketed or sorted interval matching.
 
 ### 5.8 Security & Resource Hygiene
 
 - **Never return secrets from the API.** `GET /api/settings` masks `plex_token` (`plex_token_set` instead) and a blank token on save means unchanged; CORS is same-origin unless `CLEANPLEX_CORS_ORIGINS` is set.
+- **The Hayaa private key and refresh token never leave `<data dir>/hayaa/`**: not in the database (so not in backups), not in any API response, not in logs.
 - **Close async generators you stop iterating early.** Wrap ffmpeg frame streams in `contextlib.aclosing` so a pause, skip or error closes them at once instead of at shutdown.
 
 
