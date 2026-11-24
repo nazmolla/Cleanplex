@@ -131,6 +131,32 @@ def content_key_for_file(path: Path) -> str:
         return content_key(size, read)
 
 
+PROOF_POSITIONS = 1024  # Hayaa's AbuseConfig.proof_positions
+
+
+def proof_answer(chunk: bytes) -> str:
+    """Answer to one possession challenge (ABUSE_RESISTANCE §2): 32 hex of SHA-256 of the chunk."""
+    return hashlib.sha256(b"hayaa-proof:" + chunk).hexdigest()[:32]
+
+
+def proof_offset(position: int, size: int) -> int:
+    """Byte offset of a challenged position, as Hayaa computes it."""
+    return max(0, size - CHUNK) * position // PROOF_POSITIONS
+
+
+def proofs_for_file(path: Path, positions: list[int]) -> dict[str, str]:
+    """Blocking: answers for the challenged positions of a local file; call via asyncio.to_thread."""
+    size = path.stat().st_size
+    out: dict[str, str] = {}
+    with path.open("rb") as f:
+        for pos in positions:
+            if not 0 <= int(pos) < PROOF_POSITIONS:
+                raise ValueError("challenge position out of range")
+            f.seek(proof_offset(int(pos), size))
+            out[str(int(pos))] = proof_answer(f.read(CHUNK))
+    return out
+
+
 def release_key(file_name: str, size: int) -> str:
     """Hash of the file name (folder dropped, lowercased) and exact size; the name is never sent."""
     if size <= 0:

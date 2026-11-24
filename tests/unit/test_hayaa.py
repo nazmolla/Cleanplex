@@ -215,3 +215,23 @@ async def test_busy_service_raises_hayaa_busy_with_retry_after():
 async def test_link_needs_the_urls_configured():
     with pytest.raises(hayaa.HayaaError, match="URLs"):
         await hayaa.start_link()
+
+
+# Pinned to Hayaa's own outputs (hayaa.sync.guard.proof_answer / proof_offset).
+def test_proof_answer_matches_hayaa():
+    assert hayaa.proof_answer(b"hayaa") == "1e9e514dd591b3d7d06e9d4ce8265103"
+    assert hayaa.proof_answer(bytes(range(256)) * 256) == "216e3407c768c2ac4973ce042b99a306"
+
+
+def test_proof_offset_matches_hayaa():
+    assert [hayaa.proof_offset(p, 10**9) for p in (0, 512, 1023)] == [0, 499967232, 998957965]
+    assert hayaa.proof_offset(5, 1000) == 0
+
+
+def test_proofs_for_file_reject_bad_positions(tmp_path):
+    import pytest
+    f = tmp_path / "a.bin"
+    f.write_bytes(b"y" * 200_000)
+    assert set(hayaa.proofs_for_file(f, [3, 1000])) == {"3", "1000"}
+    with pytest.raises(ValueError):
+        hayaa.proofs_for_file(f, [1024])

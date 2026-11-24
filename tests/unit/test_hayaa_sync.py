@@ -280,9 +280,10 @@ async def test_purging_a_removed_title_drops_its_staged_claims():
 # ── Full sync against a fake Hayaa ────────────────────────────────────────────
 
 class FakeApi:
-    def __init__(self, views=None, busy=False):
-        self.pushed, self.media, self.pulls = [], [], []
+    def __init__(self, views=None, busy=False, challenge=None, deferred=None):
+        self.pushed, self.media, self.pulls, self.proofs = [], [], [], []
         self.views, self.busy = views or {}, busy
+        self.challenge, self.deferred = challenge or {}, deferred or {}
 
     def handler(self, req: httpx.Request) -> httpx.Response:
         if self.busy:
@@ -291,13 +292,21 @@ class FakeApi:
         body = json.loads(req.content)
         if req.url.path == "/api/v1/push":
             self.pushed += body["observations"]
-            return httpx.Response(200, json={"accepted": len(body["observations"])})
+            if body.get("proofs"):
+                self.proofs.append(body["proofs"])
+                return httpx.Response(200, json={"accepted": 0, "challenges": {}})
+            asked = {k: v for k, v in self.challenge.items()
+                     if any(o["title"] == k for o in body["observations"])}
+            return httpx.Response(200, json={"accepted": len(body["observations"]), "challenges": asked})
         if req.url.path == "/api/v1/media":
             self.media += body["media"]
             return httpx.Response(200, json={"stored": len(body["media"])})
         if req.url.path == "/api/v1/pull":
             self.pulls.append(body["have"])
-            return httpx.Response(200, json={"views": {k: v for k, v in self.views.items() if k in body["have"]}})
+            return httpx.Response(200, json={
+                "views": {k: v for k, v in self.views.items() if k in body["have"]},
+                "deferred": {k: v for k, v in self.deferred.items() if k in body["have"]},
+                "pad": "   "})
         return httpx.Response(404, json={"error": "nope"})
 
 
@@ -329,6 +338,35 @@ async def test_sync_describes_pushes_pulls_and_applies(tmp_path):
     fake.pushed.clear()
     await hs.run_sync(manual=True)
     assert fake.pushed == [] and fake.pulls[-1] == {key: "v1"}
+
+
+async def test_sync_answers_possession_challenges_from_the_file(tmp_path):
+    fake = FakeApi()
+    key = await _linked_title(tmp_path, fake)
+    fake.challenge = {key: [0, 512]}
+    await db.insert_segment("g1", "Film", 100_000, 110_000, labels="BUTTOCKS_EXPOSED", severity="medium")
+    result = await hs.run_sync(manual=True)
+    want = {"0": hayaa.proof_answer((b"x" * 5000)[:65536]), "512": hayaa.proof_answer(b"x" * 5000)}
+    assert fake.proofs == [{key: want}] and result["proved"] == 1
+
+
+async def test_sync_reports_titles_hayaa_holds_back(tmp_path):
+    fake = FakeApi()
+    key = await _linked_title(tmp_path, fake)
+    fake.deferred = {key: {"reason": "budget", "retry_after": 3600}}
+    result = await hs.run_sync(manual=True)
+    assert result["deferred"] == {"budget": 1} and result["changed"] == 0
+
+
+async def test_partly_released_titles_are_pulled_first_next_time(tmp_path):
+    fake = FakeApi()
+    key = await _linked_title(tmp_path, fake)
+    fake.views = {key: {**_view(), "complete": False}}
+    await hs.run_sync(manual=True)
+    assert json.loads(await db.get_setting("hayaa_partial")) == [key]
+    fake.views = {key: {**_view(), "version": "v2", "complete": True}}
+    await hs.run_sync(manual=True)
+    assert json.loads(await db.get_setting("hayaa_partial")) == []
 
 
 async def test_deleting_own_segment_retracts_it_on_the_next_sync(tmp_path):

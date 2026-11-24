@@ -14,7 +14,26 @@ interface SyncResult {
   hidden?: number
   held?: number
   skipped_quota: boolean
+  proved?: number
+  deferred?: Record<string, number>
   error: string
+}
+
+// Why Hayaa held titles back (docs/ABUSE_RESISTANCE.md in the Hayaa repo).
+const DEFERRED_TEXT: Record<string, string> = {
+  account_too_new: 'your Hayaa account is still new',
+  contribute_more: 'Hayaa wants more of your own scans first',
+  not_contributed: 'not scanned here yet',
+  scan_time: 'waiting out a scan-length delay',
+  prove_possession: 'file check sent, unlocks next sync',
+  proof_failed: 'file check did not match',
+  budget: "today's viewing allowance is used up",
+  lifetime_cap: 'account title limit reached',
+}
+
+function deferredText(d: Record<string, number> | undefined): string {
+  const parts = Object.entries(d ?? {}).map(([k, n]) => `${n} ${DEFERRED_TEXT[k] ?? k}`)
+  return parts.length ? `; held back: ${parts.join(', ')}` : ''
 }
 
 interface SyncStatus {
@@ -176,7 +195,8 @@ export default function HayaaSync() {
           {r.error ? <span className="text-red-400">{r.error}. </span> : null}
           Sent {r.pushed} observation(s){r.retracted ? `, withdrew ${r.retracted}` : ''}; checked {r.pulled} title(s), {r.changed} updated
           {r.applied ? `; applied ${r.applied} segment(s)` : ''}{r.hidden ? `, hid ${r.hidden}` : ''}
-          {r.skipped_quota ? '; stopped at today\'s quota, the rest goes next time' : ''}.
+          {r.skipped_quota ? '; stopped at today\'s quota, the rest goes next time' : ''}
+          {deferredText(r.deferred)}.
         </p>
       )}
 

@@ -504,7 +504,9 @@ async def run_sync(manual: bool) -> dict[str, Any]:
         if paused_until > time.time():
             raise hayaa.HayaaBusy(int(paused_until - time.time()))
         result: dict[str, Any] = {"pushed": 0, "retracted": 0, "described": 0, "pulled": 0,
-                                  "changed": 0, "skipped_quota": False, "error": ""}
+                                  "changed": 0, "proved": 0, "deferred": {},
+                                  "skipped_quota": False, "error": ""}
+        challenges: dict[str, list[int]] = {}
         try:
             _state["phase"] = "identifying files"
             titles = await db.get_hayaa_sync_titles()
@@ -516,10 +518,12 @@ async def run_sync(manual: bool) -> dict[str, Any]:
             result["described"] = await _describe(by_key, known, manual, result)
 
             _state["phase"] = "pushing"
-            await _push(by_key, manual, result)
+            await _push(by_key, manual, result, challenges)
+            await _prove(by_key, challenges, result)
 
             _state["phase"] = "pulling"
-            changed_guids = await _pull(by_key, known, manual, result)
+            changed_guids = await _pull(by_key, known, manual, result, challenges)
+            await _prove(by_key, challenges, result)  # these unlock on the next sync
 
             _state["phase"] = "applying"
             guids = sorted(set(changed_guids) | {c["plex_guid"] for c in await db.get_hayaa_claims()})
@@ -574,7 +578,8 @@ async def _describe(by_key: dict[str, dict], known: dict[str, dict], manual: boo
     return sent
 
 
-async def _push(by_key: dict[str, dict], manual: bool, result: dict) -> None:
+async def _push(by_key: dict[str, dict], manual: bool, result: dict,
+                challenges: dict[str, list[int]]) -> None:
     guids = [t["plex_guid"] for t in by_key.values()]
     segs: dict[str, list[dict]] = {}
     for s in await db.get_segments_for_hayaa(guids):
@@ -601,7 +606,8 @@ async def _push(by_key: dict[str, dict], manual: bool, result: dict) -> None:
             result["skipped_quota"] = True
             return False
         await _spend("pushes")
-        await hayaa.signed_post("/api/v1/push", {"observations": batch})
+        reply = await hayaa.signed_post("/api/v1/push", {"observations": batch})
+        challenges.update(reply.get("challenges") or {})
         await db.record_hayaa_sent(rows, retracted)
         result["pushed"] += sum(1 for o in batch if o["kind"] != "retract")
         result["retracted"] += len(retracted)
@@ -622,9 +628,38 @@ async def _push(by_key: dict[str, dict], manual: bool, result: dict) -> None:
     await flush()
 
 
-async def _pull(by_key: dict[str, dict], known: dict[str, dict], manual: bool, result: dict) -> list[str]:
-    """Pull changed views, least recently pulled titles first; stage them. Returns changed guids."""
-    order = sorted(by_key, key=lambda k: known.get(k, {}).get("pulled_at") or "")
+async def _prove(by_key: dict[str, dict], challenges: dict[str, list[int]], result: dict) -> None:
+    """Answer Hayaa's possession challenges from the files themselves (ABUSE_RESISTANCE §2).
+
+    Each answer reads one 64 KB chunk; a proofs-only push costs no daily push quota on Hayaa.
+    """
+    proofs: dict[str, dict[str, str]] = {}
+    for key, positions in challenges.items():
+        t = by_key.get(key)
+        if t is None:
+            continue
+        try:
+            proofs[key] = await asyncio.to_thread(hayaa.proofs_for_file, Path(t["file_path"]), list(positions))
+        except (OSError, ValueError) as exc:
+            logger.debug("Cannot prove %s: %s", t.get("title"), exc)
+    keys = list(proofs)
+    for i in range(0, len(keys), PULL_BATCH):
+        chunk = {k: proofs[k] for k in keys[i:i + PULL_BATCH]}
+        await hayaa.signed_post("/api/v1/push", {"observations": [], "proofs": chunk})
+        result["proved"] += len(chunk)
+    challenges.clear()
+
+
+async def _pull(by_key: dict[str, dict], known: dict[str, dict], manual: bool, result: dict,
+                challenges: dict[str, list[int]]) -> list[str]:
+    """Pull changed views, partly released and least recently pulled titles first; stage them.
+
+    Hayaa holds titles back (not scanned here, unproven, over the viewing budget, account too
+    new) and releases long titles a window at a time; held titles and their challenges are
+    reported in `result` and `challenges`. Returns changed guids.
+    """
+    partial = set(json.loads(await db.get_setting("hayaa_partial", "[]") or "[]"))
+    order = sorted(by_key, key=lambda k: (k not in partial, known.get(k, {}).get("pulled_at") or ""))
     changed: list[str] = []
     versions: dict[str, str] = {}
     for i in range(0, len(order), PULL_BATCH):
@@ -647,8 +682,17 @@ async def _pull(by_key: dict[str, dict], known: dict[str, dict], manual: bool, r
             await db.replace_hayaa_claims(key, t["plex_guid"], claims)
             versions[key] = str(view.get("version") or "")
             changed.append(t["plex_guid"])
+            if view.get("complete") is False:
+                partial.add(key)
+            else:
+                partial.discard(key)
+        for key, why in (reply.get("deferred") or {}).items():
+            reason = str((why or {}).get("reason") or "unknown")
+            result["deferred"][reason] = result["deferred"].get(reason, 0) + 1
+        challenges.update(reply.get("challenges") or {})
         # Unchanged titles are still marked as pulled, so the rotation moves on.
         await db.set_hayaa_title_versions({k: versions.get(k, have[k]) for k in chunk})
+    await db.set_setting("hayaa_partial", json.dumps(sorted(partial & set(by_key))))
     result["changed"] = len(changed)
     return changed
 
