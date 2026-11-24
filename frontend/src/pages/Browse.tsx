@@ -14,7 +14,7 @@ import ScanContextMenu, { ScanTarget } from '../components/ScanContextMenu'
 import SegmentsView from '../components/browse/SegmentsView'
 import TitleSegments from '../components/browse/TitleSegments'
 import BrowseRow, { COL, CountCell, GroupStatus, IgnoredBadge, RowImage, StatusBadge, scannedCell } from '../components/browse/BrowseRow'
-import { FilterChips, FilterPanel, NO_TITLE_FILTERS, TitleFilters, titleFiltersActive } from '../components/browse/FilterPanel'
+import { CastSort, castSuggestionsFor, FilterChips, FilterPanel, NO_TITLE_FILTERS, TitleFilters, titleFiltersActive } from '../components/browse/FilterPanel'
 import SafeImg from '../components/browse/SafeImg'
 import { SyncAllBanner, SyncProgress, TitleMarkerPanel, TitleRow } from '../components/browse/markers'
 import {
@@ -305,12 +305,10 @@ export default function Browse() {
   const availableRatings = useMemo(() => Array.from(new Set(scopeTitles
     .filter(t => tf.showIgnored || ratingAllowed(t.content_rating, scanRatings))
     .map(t => normalizeRating(t.content_rating)).filter(Boolean))).sort(), [scopeTitles, scanRatings, tf.showIgnored])
-  // Actors in two or more titles of this level, most frequent first, as suggestions for the cast filter.
-  const castSuggestions = useMemo(() => {
-    const n = new Map<string, number>()
-    for (const t of scopeTitles) for (const a of t.cast ?? []) n.set(a, (n.get(a) ?? 0) + 1)
-    return [...n].filter(([, c]) => c >= 2).sort((a, b) => b[1] - a[1]).slice(0, 2000).map(([a]) => a)
-  }, [scopeTitles])
+  // Suggestions for the cast filter (#227), ordered by castSort: actors in two or more titles of
+  // this level by title count or by name, or every actor whose titles have segments by segment total.
+  const [castSort, setCastSort] = useState<CastSort>('titles')
+  const castSuggestions = useMemo(() => castSuggestionsFor(scopeTitles, castSort), [scopeTitles, castSort])
 
   // While a filter narrows the list, the list shows the matches directly instead of the levels (#208).
   const flat = titleFiltersActive(tf)
@@ -1012,6 +1010,8 @@ export default function Browse() {
             statusCounts={statusCounts}
             ratings={availableRatings}
             castSuggestions={castSuggestions}
+            castSort={castSort}
+            onCastSort={setCastSort}
             showTitleSection={showTitleFilters}
             segments={sf}
             onSegments={setSf}

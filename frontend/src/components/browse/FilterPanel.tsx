@@ -32,13 +32,40 @@ const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 const inputCls = 'w-full min-w-0 px-2 py-1.5 bg-plex-dark border border-plex-border rounded-lg text-sm text-gray-200 placeholder-muted focus:border-plex-orange/50'
 const fieldLabel = 'block text-[11px] uppercase tracking-wide text-muted mb-1'
 
+/** How the actor filter's suggestions are ordered (#227). */
+export type CastSort = 'titles' | 'name' | 'segments'
+export interface CastSuggestion { name: string; titles: number; segments: number }
+
+/** Actor suggestions: actors in two or more titles by title count or by name, or every actor
+ *  whose titles have segments by their segment total. Capped so the datalist stays fast. */
+export function castSuggestionsFor(titles: { cast?: string[]; segment_count: number }[], sort: CastSort): CastSuggestion[] {
+  const n = new Map<string, CastSuggestion>()
+  for (const t of titles) for (const a of t.cast ?? []) {
+    const c = n.get(a) ?? { name: a, titles: 0, segments: 0 }
+    c.titles += 1
+    c.segments += t.segment_count
+    n.set(a, c)
+  }
+  const all = [...n.values()]
+  const byName = (a: CastSuggestion, b: CastSuggestion) => a.name.localeCompare(b.name)
+  const list = sort === 'segments'
+    ? all.filter(c => c.segments > 0).sort((a, b) => b.segments - a.segments || byName(a, b))
+    : all.filter(c => c.titles >= 2).sort(sort === 'name' ? byName : (a, b) => b.titles - a.titles || byName(a, b))
+  return list.slice(0, 2000)
+}
+
+const castHint = (c: CastSuggestion, sort: CastSort) =>
+  sort === 'segments' ? `${c.segments} segment${c.segments === 1 ? '' : 's'}` : `${c.titles} titles`
+
 interface PanelProps {
   titles: TitleFilters
   onTitles: (patch: Partial<TitleFilters>) => void
   /** Matching titles per status at this level, for the status choice. */
   statusCounts: Record<string, number>
   ratings: string[]
-  castSuggestions: string[]
+  castSuggestions: CastSuggestion[]
+  castSort: CastSort
+  onCastSort: (sort: CastSort) => void
   /** False on a single title's page: title filters have nothing to narrow there. */
   showTitleSection: boolean
   segments: SegmentFilters
@@ -77,11 +104,23 @@ export function FilterPanel(p: PanelProps) {
               ))}
             </div>
           </div>
-          <label>
-            <span className={fieldLabel}>Actor</span>
-            <input type="text" list="cast-suggestions" placeholder="Any actor" aria-label="Filter by actor" value={t.actor} onChange={e => p.onTitles({ actor: e.target.value })} className={inputCls} />
-            <datalist id="cast-suggestions">{p.castSuggestions.map(a => <option key={a} value={a} />)}</datalist>
-          </label>
+          <div>
+            <div className="flex items-center justify-between gap-2">
+              <label htmlFor="cast-filter" className={fieldLabel}>Actor</label>
+              <select
+                value={p.castSort}
+                onChange={e => p.onCastSort(e.target.value as CastSort)}
+                aria-label="Order actor suggestions"
+                className="mb-1 bg-transparent text-[11px] text-gray-400 hover:text-gray-200 cursor-pointer"
+              >
+                <option value="titles">Most titles</option>
+                <option value="name">Name</option>
+                <option value="segments">Most segments</option>
+              </select>
+            </div>
+            <input id="cast-filter" type="text" list="cast-suggestions" placeholder="Any actor" aria-label="Filter by actor" value={t.actor} onChange={e => p.onTitles({ actor: e.target.value })} className={inputCls} />
+            <datalist id="cast-suggestions">{p.castSuggestions.map(c => <option key={c.name} value={c.name} label={castHint(c, p.castSort)} />)}</datalist>
+          </div>
           <label>
             <span className={fieldLabel}>Rating</span>
             <select value={t.rating} aria-label="Filter by rating" onChange={e => p.onTitles({ rating: e.target.value })} className={inputCls}>
