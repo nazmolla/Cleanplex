@@ -107,16 +107,9 @@ describe('SkipFileImport', () => {
     })
   })
 
-  it('shows exported EDL in the paste box rather than triggering a download', async () => {
-    mockApi.get.mockResolvedValue({ body: '30.500\t45.000\t0\n' })
-
+  it('offers no export of segments', () => {
     render(<SkipFileImport plexGuid="guid-1" />)
-    fireEvent.click(screen.getByText('EDL'))
-
-    await waitFor(() => {
-      expect(mockApi.get).toHaveBeenCalledWith('/api/segments/export/guid-1?fmt=edl')
-      expect(screen.getByRole('textbox')).toHaveValue('30.500\t45.000\t0\n')
-    })
+    expect(screen.queryByText(/Export/)).toBeNull()
   })
 
   it('notifies the parent so the segment list can refresh', async () => {

@@ -232,8 +232,8 @@ ML-scanned**, so this is by far the cheapest way to fill your library.
 | Format | Extension | Notes |
 |---|---|---|
 | VideoSkip | `.skp` | Categories, 1–3 severity, and skip/mute/blank handling. The VideoSkip Exchange has ~563 movies and ~110 series, free and without an account |
-| Kodi / MPlayer EDL | `.edl` | `start end action`; 0 cut, 1 mute, 2 scene marker, 3 commercial. Also exported |
-| MovieContentFilter | `.mcf` | Spec 1.1.0, ~130 hierarchical categories. Also exported |
+| Kodi / MPlayer EDL | `.edl` | `start end action`; 0 cut, 1 mute, 2 scene marker, 3 commercial. |
+| MovieContentFilter | `.mcf` | Spec 1.1.0, ~130 hierarchical categories. |
 | Pasted list | `.txt` | Loose `00:12:30 - 00:13:05 nudity` lines, for lists that have no machine format |
 
 Two ways in:
@@ -246,7 +246,7 @@ Imported timings are authored against a specific cut of a film. Cleanplex checks
 title's runtime and warns when they do not line up, since an extended edition will throw every
 timestamp out.
 
-Plex itself does not read `.edl` files, so EDL/MCF export is for Kodi, Jellyfin and mpv.
+Cleanplex imports skip files but never exports segments, so its detections and synced segments cannot be redistributed as cutting lists.
 
 ## Profanity Filtering
 
@@ -284,9 +284,9 @@ Titles, segments and Plex markers share one page. The sidebar lists your librari
 
 - **Search and filters** — the search box is always in the toolbar; *Filters* opens the rest below it, and active filters show as chips you can remove. While a filter is active the list shows the matches directly (a show whose name matches as one row, episodes with their show and season beside them). Filters: name, **actor** (the cast is copied from Plex in the background; type a name or pick a suggestion), rating, release-year range, scan-date range, scan status and ignored titles. The numbers in the tree count the titles that pass them
 - **Sort** — date added, scan date, name, release year or segments, with the direction spelled out (*Newest first / Oldest first*); defaults to date added, newest first
-- **Segments at any level** — the Segments view lists every segment of the matching titles as rows with a 240 px frame (hover plays the preview, click opens the player), with segment filters in the same panel: state (active, marked false positive, rejected by the verifier), what found it, and label. Import and export sit behind *Import or export skip files* on a title's page
+- **Segments at any level** — the Segments view lists every segment of the matching titles as rows with a 240 px frame (hover plays the preview, click opens the player), with segment filters in the same panel: state (active, marked false positive, rejected by the verifier), what found it, and label. Import sits behind *Import skip files* on a title's page
 - **Bulk actions** — tick titles, shows or seasons (or *select all filtered*) to scan, ignore, un-ignore or delete the segments of the selection; deleting segments of a whole title, show or selection asks first
-- **Import skip files** — Upload `.skp` / `.edl` / `.mcf`, paste a timestamp list, or export segments as EDL/MCF
+- **Import skip files** — Upload `.skp` / `.edl` / `.mcf`, or paste a timestamp list. There is no export
 - **Browse all titles** with scan status icons
 - **Trigger scans** per title or entire library
 - **"Scan Now"** to prioritize a title — moves it to the front of the scanning queue for immediate processing

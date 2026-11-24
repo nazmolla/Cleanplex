@@ -369,7 +369,7 @@ describe('Browse segments view (#207, #208)', () => {
     renderAt('/browse?title=g1')
     await screen.findByText('2 segments')
     expect(screen.queryByText('Paste list')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Import or export skip files' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Import skip files' }))
     expect(screen.getByText('Paste list')).toBeInTheDocument()
   })
 })

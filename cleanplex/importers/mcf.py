@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import re
 
-from ._common import CATEGORIES, ParseError, to_ms, to_timestamp, validate_segment
+from ._common import CATEGORIES, ParseError, to_ms, validate_segment
 
 SOURCE = "mcf"
 
@@ -128,29 +128,3 @@ def parse(text: str) -> list[dict]:
 
     segments.sort(key=lambda s: s["start_ms"])
     return segments
-
-
-def export(segments: list[dict], title: str = "", year: int | None = None) -> str:
-    """Render segments as a valid MCF 1.1.0 document."""
-    ordered = sorted(segments, key=lambda s: s["start_ms"])
-    out = ["WEBVTT MovieContentFilter 1.1.0", ""]
-
-    if title:
-        out.append("NOTE")
-        out.append(f"TITLE {title}")
-        if year:
-            out.append(f"YEAR {year}")
-        out.append("")
-
-    out.append("NOTE")
-    out.append(f"START {to_timestamp(ordered[0]['start_ms'] if ordered else 0)}")
-    out.append(f"END {to_timestamp(ordered[-1]['end_ms'] if ordered else 0)}")
-    out.append("")
-
-    for seg in ordered:
-        out.append(f"{to_timestamp(seg['start_ms'])} --> {to_timestamp(seg['end_ms'])}")
-        channel = seg.get("channel", "both")
-        out.append(f"{seg.get('category', 'other')}={seg.get('severity', 'high')}={channel}")
-        out.append("")
-
-    return "\n".join(out)

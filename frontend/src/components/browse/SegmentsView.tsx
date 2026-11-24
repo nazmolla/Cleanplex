@@ -137,7 +137,7 @@ export default function SegmentsView({ titles, single, nameOf, onOpenTitle, onIm
         {/* Import and export are occasional, so they stay folded away until asked for. */}
         {single && (
           <button onClick={() => setShowImport(v => !v)} aria-expanded={showImport} className="ml-auto btn-outline text-xs">
-            {showImport ? 'Close import and export' : 'Import or export skip files'}
+            {showImport ? 'Close import' : 'Import skip files'}
           </button>
         )}
       </div>

@@ -157,43 +157,17 @@ async def test_paste_import_requires_plex_guid(http_client):
     assert resp.status_code == 422
 
 
-# ── GET /api/segments/export/{plex_guid} ──────────────────────────────────────
+# ── No export (#226) ──────────────────────────────────────────────────────────
 
-async def test_export_edl_renders_rows(http_client):
+async def test_export_route_no_longer_exists(http_client):
     await _make_job()
     await db.insert_segment("guid-import", "Test Movie", 30500, 45000)
 
     resp = await http_client.get("/api/segments/export/guid-import?fmt=edl")
 
-    assert resp.status_code == 200
-    assert resp.json()["body"].startswith("30.500\t45.000\t0")
-
-
-async def test_export_mcf_renders_a_valid_document(http_client):
-    from cleanplex.importers import mcf
-
-    await _make_job()
-    await db.insert_segment("guid-import", "Test Movie", 30500, 45000, category="violence")
-
-    resp = await http_client.get("/api/segments/export/guid-import?fmt=mcf")
-    body = resp.json()["body"]
-
-    assert body.startswith("WEBVTT MovieContentFilter 1.1.0")
-    assert mcf.parse(body)[0]["category"] == "violence"
-
-
-async def test_export_unknown_format_returns_422(http_client):
-    await _make_job()
-
-    resp = await http_client.get("/api/segments/export/guid-import?fmt=banana")
-
-    assert resp.status_code == 422
-
-
-async def test_export_unknown_guid_returns_404(http_client):
-    resp = await http_client.get("/api/segments/export/nope?fmt=edl")
-
-    assert resp.status_code == 404
+    # Unknown paths may fall through to the SPA page; what matters is no segment data.
+    assert "30.500" not in resp.text
+    assert not resp.headers.get("content-type", "").startswith("application/json")
 
 
 # ── Segment API exposes classification ────────────────────────────────────────
@@ -219,17 +193,6 @@ async def test_scanner_segments_report_scanner_defaults(http_client):
     assert segs[0]["category"] == "nudity"
     assert segs[0]["source"] == "scanner"
     assert segs[0]["action"] == "skip"
-
-
-async def test_export_handles_guids_containing_slashes(http_client):
-    """Plex GUIDs look like imdb://tt123 — the route needs the path converter."""
-    await _make_job(guid="imdb://tt32897959")
-    await db.insert_segment("imdb://tt32897959", "Test Movie", 30500, 45000)
-
-    resp = await http_client.get("/api/segments/export/imdb://tt32897959?fmt=edl")
-
-    assert resp.status_code == 200
-    assert resp.json()["count"] == 1
 
 
 async def test_import_handles_guids_containing_slashes(http_client):

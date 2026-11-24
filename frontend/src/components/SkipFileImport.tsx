@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { api } from '../api/client'
-import { Upload, ClipboardPaste, Download, AlertTriangle, Check } from 'lucide-react'
+import { Upload, ClipboardPaste, AlertTriangle, Check } from 'lucide-react'
 
 interface ImportResult {
   imported: number
@@ -66,16 +66,6 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
     } finally {
       setBusy(false)
     }
-  }
-
-  const exportAs = async (fmt: 'edl' | 'mcf') => {
-    const res = await api.get<{ body: string }>(
-      `/api/segments/export/${encodeURIComponent(plexGuid)}?fmt=${fmt}`,
-    )
-    // Shown rather than downloaded: the viewer sandbox blocks page-initiated
-    // downloads, so copying from a textarea is the reliable path.
-    setPasted(res.body)
-    setMode('paste')
   }
 
   return (
@@ -149,16 +139,6 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
           </button>
         </div>
       )}
-
-      <div className="flex items-center gap-2 pt-1 border-t border-plex-border">
-        <span className="text-[11px] text-muted">Export:</span>
-        <button onClick={() => exportAs('edl')} className="text-[11px] text-gray-400 hover:text-gray-200 flex items-center gap-1">
-          <Download size={11} /> EDL
-        </button>
-        <button onClick={() => exportAs('mcf')} className="text-[11px] text-gray-400 hover:text-gray-200 flex items-center gap-1">
-          <Download size={11} /> MCF
-        </button>
-      </div>
 
       {error && (
         <p className="text-xs text-red-400 flex items-start gap-1.5">
