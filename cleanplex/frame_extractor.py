@@ -481,4 +481,24 @@ async def get_duration_ms(file_path: str) -> int | None:
         duration_s = float(stdout.strip())
         return int(duration_s * 1000)
     except Exception:
+        pass
+    # Some muxers (WEB-DL MKVs) write no duration in the header (#225); the last video
+    # packet's timestamp gives it. This may read the whole file, hence the long timeout.
+    cmd = [
+        ffprobe, "-v", "error", "-select_streams", "v:0",
+        "-read_intervals", "999999", "-show_entries", "packet=pts_time",
+        "-of", "csv=p=0", file_path,
+    ]
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+        times = [float(t) for t in stdout.split() if t.strip(b",") and t != b"N/A"]
+        return int(max(times) * 1000) if times else None
+    except asyncio.TimeoutError:
+        await reap_process(proc)
+        return None
+    except Exception:
         return None
