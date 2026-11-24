@@ -10,11 +10,11 @@ const titles = [
 const names = (s: { name: string }[]) => s.map(c => c.name)
 
 describe('castSuggestionsFor (#227)', () => {
-  it('keeps most titles first by default', () => {
-    expect(names(castSuggestionsFor(titles, 'titles'))).toEqual(['Zoe', 'Adam', 'Mia'])
+  it('lists every actor, most titles first by default', () => {
+    expect(names(castSuggestionsFor(titles, 'titles'))).toEqual(['Zoe', 'Adam', 'Mia', 'Solo'])
   })
   it('orders by name', () => {
-    expect(names(castSuggestionsFor(titles, 'name'))).toEqual(['Adam', 'Mia', 'Zoe'])
+    expect(names(castSuggestionsFor(titles, 'name'))).toEqual(['Adam', 'Mia', 'Solo', 'Zoe'])
   })
   it('orders by segments across all titles, including single-title actors', () => {
     const s = castSuggestionsFor(titles, 'segments')

@@ -1,4 +1,5 @@
 import { X } from 'lucide-react'
+import { ActorPicker } from './ActorPicker'
 import { SegmentFilters, SegmentState, SEGMENT_STATE_LABELS, shortLabel } from './model'
 
 export const STATUS_TABS = ['all', 'pending', 'scanning', 'done', 'failed'] as const
@@ -7,7 +8,9 @@ export type StatusTab = typeof STATUS_TABS[number]
 /** Title-level filters. The name search sits in the toolbar; the rest open in the panel (#208). */
 export interface TitleFilters {
   name: string
-  actor: string
+  /** Exact actor names (#227); a title matches any of them, or all with actorMatch 'all'. */
+  actors: string[]
+  actorMatch: 'any' | 'all'
   /** 'all' or a content rating. */
   rating: string
   status: StatusTab
@@ -20,12 +23,12 @@ export interface TitleFilters {
 }
 
 export const NO_TITLE_FILTERS: TitleFilters = {
-  name: '', actor: '', rating: 'all', status: 'all', yearFrom: '', yearTo: '', scanFrom: '', scanTo: '', showIgnored: false,
+  name: '', actors: [], actorMatch: 'any', rating: 'all', status: 'all', yearFrom: '', yearTo: '', scanFrom: '', scanTo: '', showIgnored: false,
 }
 
 /** Filters that narrow which titles match. The ignored toggle widens instead, so it is not one. */
 export function titleFiltersActive(f: TitleFilters): boolean {
-  return !!(f.name || f.actor || f.rating !== 'all' || f.status !== 'all' || f.yearFrom || f.yearTo || f.scanFrom || f.scanTo)
+  return !!(f.name || f.actors.length || f.rating !== 'all' || f.status !== 'all' || f.yearFrom || f.yearTo || f.scanFrom || f.scanTo)
 }
 
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
@@ -36,8 +39,8 @@ const fieldLabel = 'block text-[11px] uppercase tracking-wide text-muted mb-1'
 export type CastSort = 'titles' | 'name' | 'segments'
 export interface CastSuggestion { name: string; titles: number; segments: number }
 
-/** Actor suggestions: actors in two or more titles by title count or by name, or every actor
- *  whose titles have segments by their segment total. Capped so the datalist stays fast. */
+/** Every actor of the given titles with their title count and segment total, ordered by title
+ *  count, name, or segment total (actors whose titles have no segments drop out of that order). */
 export function castSuggestionsFor(titles: { cast?: string[]; segment_count: number }[], sort: CastSort): CastSuggestion[] {
   const n = new Map<string, CastSuggestion>()
   for (const t of titles) for (const a of t.cast ?? []) {
@@ -48,14 +51,10 @@ export function castSuggestionsFor(titles: { cast?: string[]; segment_count: num
   }
   const all = [...n.values()]
   const byName = (a: CastSuggestion, b: CastSuggestion) => a.name.localeCompare(b.name)
-  const list = sort === 'segments'
+  return sort === 'segments'
     ? all.filter(c => c.segments > 0).sort((a, b) => b.segments - a.segments || byName(a, b))
-    : all.filter(c => c.titles >= 2).sort(sort === 'name' ? byName : (a, b) => b.titles - a.titles || byName(a, b))
-  return list.slice(0, 2000)
+    : all.sort(sort === 'name' ? byName : (a, b) => b.titles - a.titles || byName(a, b))
 }
-
-const castHint = (c: CastSuggestion, sort: CastSort) =>
-  sort === 'segments' ? `${c.segments} segment${c.segments === 1 ? '' : 's'}` : `${c.titles} titles`
 
 interface PanelProps {
   titles: TitleFilters
@@ -66,6 +65,7 @@ interface PanelProps {
   castSuggestions: CastSuggestion[]
   castSort: CastSort
   onCastSort: (sort: CastSort) => void
+  actorPhotos: Record<string, string>
   /** False on a single title's page: title filters have nothing to narrow there. */
   showTitleSection: boolean
   segments: SegmentFilters
@@ -105,21 +105,10 @@ export function FilterPanel(p: PanelProps) {
             </div>
           </div>
           <div>
-            <div className="flex items-center justify-between gap-2">
-              <label htmlFor="cast-filter" className={fieldLabel}>Actor</label>
-              <select
-                value={p.castSort}
-                onChange={e => p.onCastSort(e.target.value as CastSort)}
-                aria-label="Order actor suggestions"
-                className="mb-1 bg-transparent text-[11px] text-gray-400 hover:text-gray-200 cursor-pointer"
-              >
-                <option value="titles">Most titles</option>
-                <option value="name">Name</option>
-                <option value="segments">Most segments</option>
-              </select>
-            </div>
-            <input id="cast-filter" type="text" list="cast-suggestions" placeholder="Any actor" aria-label="Filter by actor" value={t.actor} onChange={e => p.onTitles({ actor: e.target.value })} className={inputCls} />
-            <datalist id="cast-suggestions">{p.castSuggestions.map(c => <option key={c.name} value={c.name} label={castHint(c, p.castSort)} />)}</datalist>
+            <span className={fieldLabel}>Actor</span>
+            <ActorPicker suggestions={p.castSuggestions} sort={p.castSort} onSort={p.onCastSort}
+              selected={t.actors} onChange={actors => p.onTitles({ actors })}
+              match={t.actorMatch} onMatch={actorMatch => p.onTitles({ actorMatch })} photos={p.actorPhotos} />
           </div>
           <label>
             <span className={fieldLabel}>Rating</span>
@@ -215,7 +204,9 @@ interface ChipsProps {
 export function FilterChips({ titles: t, onTitles, segments: s, onSegments, showSegments, onClearAll }: ChipsProps) {
   const chips: { key: string; text: string; clear: () => void }[] = []
   if (t.status !== 'all') chips.push({ key: 'status', text: `Status: ${capital(t.status)}`, clear: () => onTitles({ status: 'all' }) })
-  if (t.actor) chips.push({ key: 'actor', text: `Actor: ${t.actor}`, clear: () => onTitles({ actor: '' }) })
+  for (const a of t.actors) {
+    chips.push({ key: `a:${a}`, text: `Actor: ${a}`, clear: () => onTitles({ actors: t.actors.filter(x => x !== a) }) })
+  }
   if (t.rating !== 'all') chips.push({ key: 'rating', text: `Rating: ${t.rating}`, clear: () => onTitles({ rating: 'all' }) })
   if (t.yearFrom || t.yearTo) chips.push({ key: 'year', text: `Released ${t.yearFrom || '…'} – ${t.yearTo || '…'}`, clear: () => onTitles({ yearFrom: '', yearTo: '' }) })
   if (t.scanFrom || t.scanTo) chips.push({ key: 'scan', text: `Scanned ${t.scanFrom || '…'} – ${t.scanTo || '…'}`, clear: () => onTitles({ scanFrom: '', scanTo: '' }) })

@@ -153,6 +153,18 @@ async def test_get_titles_in_library_returns_jobs(http_client):
     assert titles[0]["plex_guid"] == "title-guid"
     assert titles[0]["segment_count"] == 1
     assert titles[0]["false_positive_count"] == 0
+    assert resp.json()["actor_photos"] == {}
+
+
+async def test_get_titles_in_library_returns_actor_photos_as_plex_image_paths(http_client):
+    await db.upsert_scan_job(plex_guid="g", title="T", file_path="/t.mkv", rating_key="5",
+                             library_id="lib1", library_title="Movies")
+    await db.replace_cast({"5": ["Jane"]})
+    await db.put_actor_photos({"Jane": "https://metadata-static.plex.tv/p/jane.jpg"})
+    with patch("cleanplex.web.routes.segments.plex_mod.get_client", return_value=make_mock_plex_client()):
+        resp = await http_client.get("/api/libraries/lib1/titles")
+    path = resp.json()["actor_photos"]["Jane"]
+    assert path.startswith("/photo/:/transcode?") and "url=https%3A%2F%2Fmetadata-static.plex.tv%2Fp%2Fjane.jpg" in path
 
 
 async def test_get_titles_in_library_counts_false_positives_separately(http_client):

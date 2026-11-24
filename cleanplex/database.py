@@ -219,6 +219,12 @@ CREATE TABLE IF NOT EXISTS title_cast (
     PRIMARY KEY (rating_key, actor)
 );
 CREATE INDEX IF NOT EXISTS idx_title_cast_actor ON title_cast(actor);
+-- Each actor's photo as Plex lists it (#227): usually a metadata-static.plex.tv URL, shown in the
+-- actor filter through Plex's photo transcoder and the /api/plex-image cache.
+CREATE TABLE IF NOT EXISTS actor_photos (
+    actor TEXT PRIMARY KEY,
+    thumb TEXT NOT NULL
+);
 -- Stream proxy sessions (#184), so an edit survives a restart and live skipping can stand down
 -- for streams the proxy already edits.
 CREATE TABLE IF NOT EXISTS proxy_sessions (
@@ -2584,6 +2590,42 @@ async def replace_cast(cast_by_key: dict[str, list[str]]) -> None:
             "ON CONFLICT(rating_key) DO UPDATE SET synced_at=CURRENT_TIMESTAMP",
             [(k,) for k in keys],
         )
+        await conn.commit()
+
+
+async def put_actor_photos(photos: dict[str, str]) -> None:
+    """Store or replace each actor's photo URL ({actor: thumb}); empty input is a no-op."""
+    if not photos:
+        return
+    async with get_connection() as conn:
+        await conn.executemany(
+            "INSERT INTO actor_photos(actor, thumb) VALUES(?,?) ON CONFLICT(actor) DO UPDATE SET thumb=excluded.thumb",
+            list(photos.items()),
+        )
+        await conn.commit()
+
+
+async def get_actor_photos_for_library(library_id: str) -> dict[str, str]:
+    """Return {actor: photo URL} for every actor in a library's titles that has one (single query)."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            """
+            SELECT DISTINCT p.actor, p.thumb FROM scan_jobs j
+            JOIN title_cast c ON c.rating_key =
+                CASE WHEN j.media_type='episode' AND COALESCE(j.show_rating_key,'') != ''
+                     THEN j.show_rating_key ELSE j.rating_key END
+            JOIN actor_photos p ON p.actor = c.actor
+            WHERE j.library_id = ?
+            """,
+            (library_id,),
+        )
+    return {r[0]: r[1] for r in rows}
+
+
+async def reset_cast_synced() -> None:
+    """Forget which titles' cast was synced, so the cast job fetches every title again."""
+    async with get_connection() as conn:
+        await conn.execute("DELETE FROM cast_synced")
         await conn.commit()
 
 

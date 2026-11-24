@@ -171,6 +171,7 @@ async def get_titles_in_library(library_id: str):
     seg_counts = await db.get_segment_counts_for_library(library_id)
     fp_counts = await db.get_false_positive_counts_for_library(library_id)
     cast = await db.get_cast_for_library(library_id)
+    photos = await db.get_actor_photos_for_library(library_id)
 
     try:
         client = plex_mod.get_client()
@@ -241,7 +242,11 @@ async def get_titles_in_library(library_id: str):
             "cast": cast.get(job["plex_guid"], []),
             "ignored": bool(job.get("ignored", 0)),
         })
-    return {"titles": result}
+    # Actor photos for the actor filter (#227), as /api/plex-image paths: Plex's photo transcoder
+    # fetches and shrinks the remote image, and the image proxy caches it and keeps the token server-side.
+    actor_photos = {a: "/photo/:/transcode?width=96&height=96&minSize=1&upscale=1&url=" + quote(t, safe="")
+                    for a, t in photos.items()}
+    return {"titles": result, "actor_photos": actor_photos}
 
 
 def _poster_disk_path(image_path: str) -> Path:

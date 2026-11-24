@@ -96,6 +96,7 @@ export default function Browse() {
   const [params, setParams] = useSearchParams()
   const [libraries, setLibraries] = useState<Library[]>([])
   const [titles, setTitles] = useState<Title[]>([])
+  const [actorPhotos, setActorPhotos] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [scannerStatus, setScannerStatus] = useState<ScannerStatus | null>(null)
   const [machineId, setMachineId] = useState('')
@@ -150,7 +151,8 @@ export default function Browse() {
 
   // ── Loading ───────────────────────────────────────────────────────────────────
   const fetchLibrary = useCallback(async (libId: string, signal?: AbortSignal): Promise<Title[]> => {
-    const d = await api.get<{ titles: Omit<Title, 'library_id'>[] }>(`/api/libraries/${libId}/titles`, { signal })
+    const d = await api.get<{ titles: Omit<Title, 'library_id'>[]; actor_photos?: Record<string, string> }>(`/api/libraries/${libId}/titles`, { signal })
+    if (d.actor_photos) setActorPhotos(prev => ({ ...prev, ...d.actor_photos }))
     return d.titles.map(t => ({ ...t, library_id: libId }))
   }, [])
 
@@ -269,7 +271,10 @@ export default function Browse() {
         && t.status !== 'scanning' && !queuedGuids.has(t.plex_guid)) return false
     // The full title is "<show> – <season> – <episode>" for an episode, so a show or season name matches too.
     if (query && !t.title.toLowerCase().includes(query)) return false
-    if (tf.actor && !(t.cast ?? []).some(a => a.toLowerCase().includes(tf.actor.toLowerCase()))) return false
+    if (tf.actors.length) {
+      const cast = t.cast ?? []
+      if (tf.actorMatch === 'all' ? !tf.actors.every(a => cast.includes(a)) : !tf.actors.some(a => cast.includes(a))) return false
+    }
     if (tf.rating !== 'all' && normalizeRating(t.content_rating) !== tf.rating) return false
     if (tf.yearFrom || tf.yearTo) {
       // Titles Plex has no year for cannot be inside a range.
@@ -312,7 +317,7 @@ export default function Browse() {
 
   // While a filter narrows the list, the list shows the matches directly instead of the levels (#208).
   const flat = titleFiltersActive(tf)
-  const panelFilterCount = [tf.status !== 'all', !!tf.actor, tf.rating !== 'all', !!(tf.yearFrom || tf.yearTo), !!(tf.scanFrom || tf.scanTo), tf.showIgnored].filter(Boolean).length
+  const panelFilterCount = [tf.status !== 'all', tf.actors.length > 0, tf.rating !== 'all', !!(tf.yearFrom || tf.yearTo), !!(tf.scanFrom || tf.scanTo), tf.showIgnored].filter(Boolean).length
     + (view === 'segments' ? [sf.state !== 'all', !!sf.origin, sf.labels.size > 0].filter(Boolean).length : 0)
   const clearFilters = () => { setTf(NO_TITLE_FILTERS); setSf(NO_SEGMENT_FILTERS) }
 
@@ -1012,6 +1017,7 @@ export default function Browse() {
             castSuggestions={castSuggestions}
             castSort={castSort}
             onCastSort={setCastSort}
+            actorPhotos={actorPhotos}
             showTitleSection={showTitleFilters}
             segments={sf}
             onSegments={setSf}

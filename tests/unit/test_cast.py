@@ -68,7 +68,7 @@ async def test_sync_cast_once_stores_what_plex_returns(setup_db):
     await _job("m1", "10")
 
     class FakeClient:
-        async def get_cast(self, keys):
+        async def get_cast(self, keys, photos=None):
             return {k: ["Jane Roe"] for k in keys}
 
     assert await cast_sync.sync_cast_once(lambda: FakeClient()) == 1
@@ -94,3 +94,44 @@ async def test_get_cast_survives_a_rating_key_plex_no_longer_has():
     out = await client.get_cast(["1", "2", "3"])
 
     assert out == {"1": ["A1"], "2": [], "3": ["A3"]}  # the missing key is recorded as having no cast
+
+
+# ── Actor photos (#227) ────────────────────────────────────────────────────────
+
+async def test_get_cast_collects_actor_photos_from_the_same_response():
+    def fetch_items(path):
+        return [SimpleNamespace(ratingKey=1, roles=[SimpleNamespace(tag="Jane", thumb="https://img/jane.jpg"),
+                                                    SimpleNamespace(tag="Joe", thumb=None)])]
+
+    client = PlexClient("http://x", "t")
+    client._server = SimpleNamespace(fetchItems=fetch_items)
+    photos: dict[str, str] = {}
+    out = await client.get_cast(["1"], photos=photos)
+    assert out == {"1": ["Jane", "Joe"]} and photos == {"Jane": "https://img/jane.jpg"}
+
+
+async def test_actor_photos_are_returned_only_for_the_librarys_actors(setup_db):
+    await _job("m1", "10", library="1")
+    await _job("m2", "20", library="2")
+    await db.replace_cast({"10": ["Jane"], "20": ["Ann"]})
+    await db.put_actor_photos({"Jane": "https://img/j1.jpg", "Ann": "https://img/a.jpg"})
+    await db.put_actor_photos({"Jane": "https://img/j2.jpg"})  # a newer photo replaces the old
+    assert await db.get_actor_photos_for_library("1") == {"Jane": "https://img/j2.jpg"}
+    assert await db.get_actor_photos_for_library("9") == {}
+    await db.put_actor_photos({})  # no-op
+
+
+async def test_first_sync_with_photos_refetches_every_title_once(setup_db):
+    await _job("m1", "10")
+    await db.replace_cast({"10": ["Jane"]})  # synced before photos were kept
+    asked = []
+
+    class FakeClient:
+        async def get_cast(self, keys, photos=None):
+            asked.append(list(keys))
+            photos["Jane"] = "https://img/jane.jpg"
+            return {k: ["Jane"] for k in keys}
+
+    assert await cast_sync.sync_cast_once(lambda: FakeClient()) == 1
+    assert asked == [["10"]] and await db.get_actor_photos_for_library("1") == {"Jane": "https://img/jane.jpg"}
+    assert await cast_sync.sync_cast_once(lambda: FakeClient()) == 0  # the reset happens only once
