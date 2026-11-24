@@ -186,6 +186,39 @@ async def _title(guid="g1"):
     await db.upsert_hayaa_titles([(TK, guid)])
 
 
+async def test_label_less_claim_applies_and_takes_labels_from_the_local_recheck():
+    """Hayaa strips labels (ABUSE_RESISTANCE §7). The pulled segment must still apply, and get the
+    labels this server's own re-check finds, without the user's own relabel being overwritten."""
+    await _title()
+    await db.replace_hayaa_claims(TK, "g1", [hs.parse_view(_view(labels=[]), None)[0]])
+    assert (await hs.apply_titles(["g1"]))["applied"] == 1
+    (seg,) = await db.get_segments_for_guid("g1")
+    assert seg["labels"] == "" and seg["false_positive"] == 0
+    await db.update_hayaa_claim(TK, "c1", verify_state="hit", verify_family="nudenet",
+                                verify_labels="BUTTOCKS_EXPOSED")
+    await hs.apply_titles(["g1"])
+    (seg,) = await db.get_segments_for_guid("g1")
+    assert seg["labels"] == "BUTTOCKS_EXPOSED" and seg["false_positive"] == 0
+    await db.update_hayaa_claim(TK, "c1", verify_labels="FEMALE_GENITALIA_EXPOSED")
+    await hs.apply_titles(["g1"])
+    assert (await db.get_segments_for_guid("g1"))[0]["labels"] == "BUTTOCKS_EXPOSED"
+
+
+async def test_fill_hayaa_segment_labels_only_fills_empty_pulled_segments():
+    await _title()
+    own = await db.insert_segment("g1", "Film", 1000, 2000, labels="")
+    assert not await db.fill_hayaa_segment_labels(own, "BUTTOCKS_EXPOSED")  # not a pulled segment
+    assert not await db.fill_hayaa_segment_labels(own, "")
+
+
+def test_threshold_check_uses_recheck_labels_when_hayaa_sends_none():
+    cfg = SimpleNamespace(threshold_for=lambda lbl: 0.95 if lbl == "BUTTOCKS_EXPOSED" else 0.5,
+                          siglip_threshold_for=lambda lbl: 0.5)
+    claim = {"basis": "machine", "machine": json.dumps({"nudenet": 0.7}), "labels": ""}
+    assert hs.threshold_ok(claim, cfg)  # no labels anywhere: the global threshold
+    assert not hs.threshold_ok({**claim, "verify_labels": "BUTTOCKS_EXPOSED"}, cfg)
+
+
 async def test_accepted_claim_becomes_a_pulled_segment_and_a_deleted_one_never_returns():
     await _title()
     await db.replace_hayaa_claims(TK, "g1", [hs.parse_view(_view(), None)[0]])

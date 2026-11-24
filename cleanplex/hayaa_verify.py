@@ -73,7 +73,8 @@ async def verify_claim(claim: dict, config: Config, detectors: tuple[str, str, b
         drop, _score = await scanner._infer(verifier.judge_jpeg, best[4], group, config.verifier_loss_pct)
         fp_drop = 1 if drop else 0
     await db.update_hayaa_claim(claim["title_key"], claim["claim_id"], verify_state="hit", verify_family=family,
-                                verify_conf=round(conf, 4), verify_thumb=str(thumb), verify_fp_drop=fp_drop)
+                                verify_conf=round(conf, 4), verify_thumb=str(thumb), verify_fp_drop=fp_drop,
+                                verify_labels=",".join(best[3]))
     return "hit"
 
 

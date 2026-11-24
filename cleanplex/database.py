@@ -298,6 +298,7 @@ CREATE TABLE IF NOT EXISTS hayaa_claims (
     verify_family  TEXT DEFAULT '',
     verify_fp_drop INTEGER DEFAULT 0,
     verify_thumb   TEXT DEFAULT '',
+    verify_labels  TEXT DEFAULT '',
     decision       TEXT DEFAULT '',
     updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (title_key, claim_id)
@@ -519,6 +520,9 @@ async def init_db() -> None:
             # Scan queue position (#174): NULL = not queued; lower runs first. The queue lives
             # in the database so workers claim from it and every view reads the same order.
             "ALTER TABLE scan_jobs ADD COLUMN queue_pos INTEGER",
+            # Labels the local re-check found for a pulled claim: Hayaa sends none
+            # (ABUSE_RESISTANCE §7), so a pulled segment takes its labels from this server's scan.
+            "ALTER TABLE hayaa_claims ADD COLUMN verify_labels TEXT DEFAULT ''",
             "CREATE INDEX IF NOT EXISTS idx_scan_jobs_queue ON scan_jobs(status, queue_pos)",
         ]
         for stmt in migrations:
@@ -3055,12 +3059,13 @@ async def replace_hayaa_claims(title_key: str, plex_guid: str, claims: list[dict
             await conn.execute(
                 "INSERT INTO hayaa_claims(title_key, claim_id, plex_guid, start_ms, end_ms, status, basis, labels, "
                 "category, severity, machine, supporters, rejecters, verify_state, verify_conf, verify_family, "
-                "verify_fp_drop, verify_thumb, decision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "verify_fp_drop, verify_thumb, verify_labels, decision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (title_key, c["claim_id"], plex_guid, c["start_ms"], c["end_ms"], c["status"], c["basis"],
                  c["labels"], c["category"], c["severity"], c["machine"], c["supporters"], c["rejecters"],
                  prev["verify_state"] if keep else "", prev["verify_conf"] if keep else None,
                  prev["verify_family"] if keep else "", prev["verify_fp_drop"] if keep else 0,
-                 prev["verify_thumb"] if keep else "", prev["decision"] if prev else ""),
+                 prev["verify_thumb"] if keep else "", prev["verify_labels"] if keep else "",
+                 prev["decision"] if prev else ""),
             )
         await conn.commit()
 
@@ -3109,7 +3114,8 @@ async def count_hayaa_claims(verify_state: str | None = None, decision: str | No
 
 async def update_hayaa_claim(title_key: str, claim_id: str, **fields) -> None:
     """Set verify_* or decision fields of one staged claim."""
-    allowed = {"verify_state", "verify_conf", "verify_family", "verify_fp_drop", "verify_thumb", "decision"}
+    allowed = {"verify_state", "verify_conf", "verify_family", "verify_fp_drop", "verify_thumb", "verify_labels",
+               "decision"}
     cols = [k for k in fields if k in allowed]
     if not cols:
         return
@@ -3157,6 +3163,22 @@ async def get_hayaa_title_key(plex_guid: str) -> str | None:
             "SELECT title_key FROM hayaa_titles WHERE plex_guid=? LIMIT 1", (plex_guid,)
         )).fetchone()
     return row[0] if row else None
+
+
+async def fill_hayaa_segment_labels(segment_id: int, labels: str) -> bool:
+    """Give a pulled (source='hayaa') segment without labels the labels its local re-check found.
+
+    Never overwrites labels already set (a user relabel or an earlier fill). Returns True if updated.
+    """
+    if not labels:
+        return False
+    async with get_connection() as conn:
+        cur = await conn.execute(
+            "UPDATE segments SET labels=? WHERE id=? AND source='hayaa' AND COALESCE(labels, '')=''",
+            (labels, segment_id),
+        )
+        await conn.commit()
+        return cur.rowcount > 0
 
 
 async def set_segment_hayaa_claims(pairs: list[tuple[str, int]]) -> None:

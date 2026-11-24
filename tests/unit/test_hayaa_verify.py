@@ -53,6 +53,7 @@ async def test_hit_stores_family_confidence_and_a_thumbnail(staged, config, monk
     (c,) = await db.get_hayaa_claims(["g1"])
     assert c["verify_state"] == "hit" and c["verify_family"] == "nudenet" and c["verify_conf"] == 0.83
     assert c["verify_thumb"].endswith(".jpg")
+    assert c["verify_labels"] == "FEMALE_BREAST_EXPOSED"  # Hayaa sends none; the local scan's stand in
     # The window is the claim plus the margin, and never grows.
     assert seen["start_ms"] == 55_000 and seen["last_ms"] == 75_000 and seen["gap_ms"] == 0
 

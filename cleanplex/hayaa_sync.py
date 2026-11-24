@@ -241,7 +241,7 @@ def threshold_ok(claim: dict, config) -> bool:
     if claim["basis"] != "machine":
         return True
     machine = json.loads(claim.get("machine") or "{}")
-    labels = [lbl for lbl in (claim.get("labels") or "").split(",") if lbl]
+    labels = [lbl for lbl in _claim_labels(claim).split(",") if lbl]
     for fam, conf in machine.items():
         if fam == "subtitles":
             return True
@@ -250,6 +250,12 @@ def threshold_ok(claim: dict, config) -> bool:
         if fam == "siglip" and any(conf >= config.siglip_threshold_for(lbl) for lbl in labels or [""]):
             return True
     return not machine
+
+
+def _claim_labels(claim: dict) -> str:
+    """A claim's labels: Hayaa sends none any more (ABUSE_RESISTANCE §7), so the labels this
+    server's own re-check found stand in. Without them the global thresholds apply."""
+    return claim.get("labels") or claim.get("verify_labels") or ""
 
 
 def decide(claim: dict, override: str | None, preset: str, thresholds_pass: bool) -> str:
@@ -354,8 +360,11 @@ async def apply_titles(plex_guids: list[str], config=None) -> dict[str, int]:
             else:
                 decision = decide(c, ov, preset, threshold_ok(c, config))
                 existing = pulled.get(cid)
+                if decision == "apply" and existing is not None and _claim_labels(c) and \
+                        await db.fill_hayaa_segment_labels(existing["id"], _claim_labels(c)):
+                    changed.add(guid)
                 if decision == "apply" and existing is None:
-                    labels = c.get("labels") or ""
+                    labels = _claim_labels(c)
                     machine = json.loads(c.get("machine") or "{}")
                     language = c.get("category") == "language"
                     seg_id = await db.insert_segment(
