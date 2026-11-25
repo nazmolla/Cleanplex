@@ -15,11 +15,12 @@ def reset_state():
     hayaa._access, hayaa._link, hayaa._link_task, hayaa._http = None, None, None, None
 
 
-async def test_status_starts_unconfigured_and_unlinked(http_client):
+async def test_status_starts_on_the_default_service_and_unlinked(http_client):
     resp = await http_client.get("/api/hayaa/status")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["configured"] is False and body["linked"] is False and body["link"] is None
+    assert body["configured"] is True and body["linked"] is False and body["link"] is None
+    assert body["api_url"] == hayaa.DEFAULT_API_URL and body["auth_url"] == hayaa.DEFAULT_AUTH_URL
 
 
 async def test_settings_save_https_urls(http_client):
@@ -38,11 +39,6 @@ async def test_settings_reject_plain_http_to_another_host(http_client):
 async def test_settings_require_both_fields(http_client):
     resp = await http_client.put("/api/hayaa/settings", json={"api_url": "https://api.test"})
     assert resp.status_code == 422
-
-
-async def test_link_without_urls_is_a_400(http_client):
-    resp = await http_client.post("/api/hayaa/link")
-    assert resp.status_code == 400
 
 
 async def test_unlink_when_not_linked_is_harmless(http_client):

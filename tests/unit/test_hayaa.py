@@ -212,9 +212,11 @@ async def test_busy_service_raises_hayaa_busy_with_retry_after():
     assert exc.value.retry_after == 120
 
 
-async def test_link_needs_the_urls_configured():
-    with pytest.raises(hayaa.HayaaError, match="URLs"):
-        await hayaa.start_link()
+async def test_urls_default_to_this_builds_service_and_settings_override_them():
+    assert await hayaa.get_urls() == (hayaa.DEFAULT_API_URL, hayaa.DEFAULT_AUTH_URL)
+    await db.set_setting("hayaa_api_url", "https://api.test")
+    await db.set_setting("hayaa_auth_url", "")
+    assert await hayaa.get_urls() == ("https://api.test", hayaa.DEFAULT_AUTH_URL)
 
 
 # Pinned to Hayaa's own outputs (hayaa.sync.guard.proof_answer / proof_offset).
