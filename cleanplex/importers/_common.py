@@ -20,6 +20,9 @@ CATEGORIES = (
 )
 
 SEVERITIES = ("low", "medium", "high")
+# Imported files use the MovieContentFilter severities above; detector labels add a lowest
+# tier, "minimal", for incidental body parts (#230).
+ALL_SEVERITIES = ("minimal", "low", "medium", "high")
 
 # NudeNet's label vocabulary: the labels a scanner segment can carry, and what a user
 # may relabel one to.
@@ -45,18 +48,23 @@ DETECTOR_LABELS = (
     "FACE_MALE",
 )
 
-# Severity of a detected label, which sets what each viewer level skips: a segment
-# fires when level + rank > 3, so level 3 skips everything, 2 skips medium and high
-# (exposed nudity), 1 only high (genitalia and anus), 0 nothing (#126). Labels not
-# listed (covered parts, belly, feet, faces) are low.
+# Severity of a detected label, which sets what each viewer level skips: a segment fires
+# when level + rank > 4 (SEVERITY_RANK), so level 4 skips everything, 3 low and up, 2
+# medium and up, 1 only high, 0 nothing (#126, #230). Labels not listed are minimal
+# (covered buttocks, anus and belly, feet, armpits, faces, male breast).
 LABEL_SEVERITY = {
     "FEMALE_GENITALIA_EXPOSED": "high",
     "MALE_GENITALIA_EXPOSED": "high",
-    "ANUS_EXPOSED": "high",
-    "FEMALE_BREAST_EXPOSED": "medium",
+    "FEMALE_BREAST_EXPOSED": "high",
     "BUTTOCKS_EXPOSED": "medium",
+    "ANUS_EXPOSED": "medium",
+    "BELLY_EXPOSED": "medium",
+    "FEMALE_GENITALIA_COVERED": "low",
+    "FEMALE_BREAST_COVERED": "low",
 }
-_SEVERITY_ORDER = {"low": 1, "medium": 2, "high": 3}
+SEVERITY_RANK = {"minimal": 1, "low": 2, "medium": 3, "high": 4}
+MAX_LEVEL = 4
+_SEVERITY_ORDER = SEVERITY_RANK
 
 
 def severity_for_labels(labels: str, default: str = "high") -> str:
@@ -67,7 +75,7 @@ def severity_for_labels(labels: str, default: str = "high") -> str:
     found = [lbl.strip() for lbl in (labels or "").split(",") if lbl.strip()]
     if not found:
         return default
-    return max((LABEL_SEVERITY.get(lbl, "low") for lbl in found), key=_SEVERITY_ORDER.__getitem__)
+    return max((LABEL_SEVERITY.get(lbl, "minimal") for lbl in found), key=_SEVERITY_ORDER.__getitem__)
 ACTIONS = ("skip", "mute", "blank", "blur", "fast")
 CHANNELS = ("both", "video", "audio")
 

@@ -200,9 +200,10 @@ Segments carry a **category** (nudity, sex, violence, language, drugs, fear, com
 | `skip` | Seeks past the segment |
 | `mute` | Drops the volume for the segment and restores it after — used for profanity |
 
-Each user gets a 0–3 level per category. A segment fires when *level + severity* exceeds 3, so
-level 3 filters everything in that category and level 0 filters nothing. Every category starts
-at level 3 when filtering is on; lowering or turning one off is always an explicit choice, and
+Each user gets a 0–4 level per category (Off, Severe only, Moderate and up, Mild and up,
+Everything). A segment fires when *level + severity* exceeds 4 (minimal 1, low 2, medium 3,
+high 4), so level 4 filters everything in that category and level 0 filters nothing. Every
+category starts at level 4 when filtering is on; lowering or turning one off is always an explicit choice, and
 changing one category never affects the others.
 
 **Scanner segments get their severity from the detected label**, so a level has a concrete meaning
@@ -210,9 +211,12 @@ for nudity:
 
 | Detected | Severity | Skipped at level |
 |---|---|---|
-| Exposed genitalia, anus | high | 1, 2, 3 |
-| Exposed breast, exposed buttocks | medium | 2, 3 |
-| Covered body parts, belly, feet, faces | low | 3 |
+| Exposed genitalia, exposed female breast | high | 1, 2, 3, 4 |
+| Exposed buttocks, anus, belly | medium | 2, 3, 4 |
+| Covered genitalia, covered female breast | low | 3, 4 |
+| Everything else: other covered parts, feet, armpits, faces, male chest | minimal | 4 |
+
+Imported skip files use MovieContentFilter's low, medium and high, which keep their order.
 
 A segment with several labels takes the highest. Covered labels are not scanned by default; enable
 them under Detector Labels if level 3 should skip them. Imported segments keep the severity their
@@ -319,7 +323,7 @@ Tabs (linkable with `?tab=`), and sections that can be minimised (remembered per
 
 #### Users (under Settings)
 - **Toggle filtering per Plex account** — Turn skipping on/off for specific user accounts
-- **Category preferences** — Expand a user to set a 0–3 strictness level per content category, with an optional skip/mute override
+- **Category preferences** — Expand a user to set a 0–4 strictness level per content category, with an optional skip/mute override
 
 #### Settings
 - **Plex Connection** — Server URL and token, with a connection test

@@ -17,23 +17,23 @@ async function openEditor(labels = 'BUTTOCKS_EXPOSED') {
   const onChange = vi.fn()
   render(<RelabelButton seg={{ id: 7, labels }} onChange={onChange} />)
   fireEvent.click(screen.getByLabelText('Edit labels'))
-  await screen.findByLabelText('buttocks exposed')
+  await screen.findByLabelText('Buttocks exposed')
   return onChange
 }
 
 describe('RelabelButton (#125)', () => {
   it('opens with the segment current labels ticked', async () => {
     await openEditor('BUTTOCKS_EXPOSED')
-    expect(screen.getByLabelText('buttocks exposed')).toBeChecked()
-    expect(screen.getByLabelText('female breast exposed')).not.toBeChecked()
+    expect(screen.getByLabelText('Buttocks exposed')).toBeChecked()
+    expect(screen.getByLabelText('Female breast exposed')).not.toBeChecked()
   })
 
   it('saves the corrected labels and reports them', async () => {
     mockPut.mockResolvedValue({ labels: 'MALE_GENITALIA_EXPOSED' })
     const onChange = await openEditor()
 
-    fireEvent.click(screen.getByLabelText('buttocks exposed'))
-    fireEvent.click(screen.getByLabelText('male genitalia exposed'))
+    fireEvent.click(screen.getByLabelText('Buttocks exposed'))
+    fireEvent.click(screen.getByLabelText('Male genitalia exposed'))
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => expect(onChange).toHaveBeenCalledWith(7, 'MALE_GENITALIA_EXPOSED'))
@@ -43,7 +43,7 @@ describe('RelabelButton (#125)', () => {
 
   it('cannot save with no label picked', async () => {
     await openEditor()
-    fireEvent.click(screen.getByLabelText('buttocks exposed'))
+    fireEvent.click(screen.getByLabelText('Buttocks exposed'))
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 
@@ -81,11 +81,11 @@ describe('RelabelButton label list shared across cards (#142)', () => {
               <Button seg={{ id: 2, labels: 'FEMALE_BREAST_EXPOSED' }} onChange={vi.fn()} /></>)
 
     fireEvent.click(screen.getAllByLabelText('Edit labels')[0])
-    await screen.findByLabelText('buttocks exposed')
+    await screen.findByLabelText('Buttocks exposed')
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
     fireEvent.click(screen.getAllByLabelText('Edit labels')[1])
-    expect(await screen.findByLabelText('female breast exposed')).toBeChecked()
+    expect(await screen.findByLabelText('Female breast exposed')).toBeChecked()
     expect(screen.getAllByRole('checkbox')).toHaveLength(LABELS.length)
     expect(get).toHaveBeenCalledTimes(1)
   })
@@ -97,7 +97,7 @@ describe('RelabelButton label list shared across cards (#142)', () => {
               <Button seg={{ id: 2, labels: 'BUTTOCKS_EXPOSED' }} onChange={vi.fn()} /></>)
 
     fireEvent.click(screen.getAllByLabelText('Edit labels')[0])
-    await screen.findByLabelText('buttocks exposed')
+    await screen.findByLabelText('Buttocks exposed')
 
     expect(get).toHaveBeenCalledTimes(1)
   })
@@ -112,7 +112,7 @@ describe('RelabelButton label list shared across cards (#142)', () => {
     expect(await screen.findByText(/Could not load the label list/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
 
-    expect(await screen.findByLabelText('buttocks exposed')).toBeInTheDocument()
+    expect(await screen.findByLabelText('Buttocks exposed')).toBeInTheDocument()
     expect(get).toHaveBeenCalledTimes(2)
   })
 
@@ -127,6 +127,22 @@ describe('RelabelButton label list shared across cards (#142)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     fireEvent.click(screen.getByLabelText('Edit labels'))
 
-    expect(await screen.findByLabelText('buttocks exposed')).toBeInTheDocument()
+    expect(await screen.findByLabelText('Buttocks exposed')).toBeInTheDocument()
+  })
+})
+
+describe('RelabelButton tiers (#230)', () => {
+  // The label list is cached per page load, so this uses the same LABELS as the tests above.
+  it('groups labels under their severity tier and shows the resulting severity', async () => {
+    await openEditor('BUTTOCKS_EXPOSED')
+    const sectionOf = (label: string) => screen.getByLabelText(label).closest('section')?.querySelector('h3')?.textContent
+    expect(sectionOf('Female breast exposed')).toMatch(/^High/)
+    expect(sectionOf('Male genitalia exposed')).toMatch(/^High/)
+    expect(sectionOf('Buttocks exposed')).toMatch(/^Medium/)
+    expect(screen.queryByText('Low')).not.toBeInTheDocument()  // empty tiers are left out
+    expect(screen.getByText(/Severity:/).textContent).toBe('Severity: Medium')
+
+    fireEvent.click(screen.getByLabelText('Female breast exposed'))
+    expect(screen.getByText(/Severity:/).textContent).toBe('Severity: High')
   })
 })

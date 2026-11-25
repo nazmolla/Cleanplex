@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 _DB_PATH: Path | None = None
 # Level a category filters at when a user has no row for it: 3 is "Everything".
 # Turning a category down is always an explicit user choice.
-DEFAULT_CATEGORY_LEVEL = 3
+DEFAULT_CATEGORY_LEVEL = 4  # importers._common.MAX_LEVEL: everything
 # Serializes concurrent upsert_plex_markers calls so DELETE+INSERT never interleave.
 _marker_upsert_lock = asyncio.Lock()
 
@@ -606,6 +606,24 @@ async def init_db() -> None:
                 )
             await conn.execute("INSERT INTO settings(key, value) VALUES('label_severity_migrated', '1')")
 
+        # Four detector tiers and five viewer levels (#230): re-derive detector severities from
+        # labels, and move level 3 (was "everything") to 4 so nobody's filtering loosens.
+        tiers = await (await conn.execute(
+            "SELECT 1 FROM settings WHERE key='severity_tiers_v2'"
+        )).fetchone()
+        if not tiers:
+            for table in ("segments", "removed_segments"):
+                label_sets = await conn.execute_fetchall(
+                    f"SELECT DISTINCT labels FROM {table} WHERE source IN ('scanner','siglip','hayaa') AND labels != ''"
+                )
+                for row in label_sets:
+                    await conn.execute(
+                        f"UPDATE {table} SET severity=? WHERE source IN ('scanner','siglip','hayaa') AND labels=?",
+                        (severity_for_labels(row["labels"]), row["labels"]),
+                    )
+            await conn.execute("UPDATE user_category_prefs SET level = 4 WHERE level = 3")
+            await conn.execute("INSERT INTO settings(key, value) VALUES('severity_tiers_v2', '1')")
+
         for key, value in DEFAULT_SETTINGS.items():
             await conn.execute(
                 "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
@@ -803,7 +821,7 @@ async def get_user_category_prefs(username: str) -> dict[str, dict]:
 
 
 async def upsert_user_category_pref(username: str, category: str, level: int, action: str = "") -> None:
-    """Set one user's filtering level (0-3) and optional action override for a category."""
+    """Set one user's filtering level (0-4) and optional action override for a category."""
     async with get_connection() as conn:
         await conn.execute(
             "INSERT INTO user_category_prefs(plex_username, category, level, action) VALUES(?,?,?,?) "

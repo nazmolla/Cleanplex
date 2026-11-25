@@ -21,8 +21,8 @@ const defaults = {
   username: 'alice',
   uses_defaults: true,
   categories: [
-    { category: 'nudity', level: 3, action: '', has_segments: true },
-    { category: 'violence', level: 3, action: '', has_segments: false },
+    { category: 'nudity', level: 4, action: '', has_segments: true },
+    { category: 'violence', level: 4, action: '', has_segments: false },
   ],
 }
 
@@ -49,21 +49,22 @@ describe('CategoryMatrix', () => {
 
     const row = (label: RegExp) => screen.getByText(label).closest('tr') as HTMLElement
     const cells = (tr: HTMLElement) => Array.from(tr.querySelectorAll('td')).slice(1).map(td => td.textContent)
-    expect(cells(row(/^0 · Off/))).toEqual(['allowed', 'allowed', 'allowed'])
-    expect(cells(row(/^1 · Severe only/))).toEqual(['skipped', 'allowed', 'allowed'])
-    expect(cells(row(/^2 · Moderate and up/))).toEqual(['skipped', 'skipped', 'allowed'])
-    expect(cells(row(/^3 · Everything/))).toEqual(['skipped', 'skipped', 'skipped'])
+    expect(cells(row(/^0 · Off/))).toEqual(['allowed', 'allowed', 'allowed', 'allowed'])
+    expect(cells(row(/^1 · Severe only/))).toEqual(['skipped', 'allowed', 'allowed', 'allowed'])
+    expect(cells(row(/^2 · Moderate and up/))).toEqual(['skipped', 'skipped', 'allowed', 'allowed'])
+    expect(cells(row(/^3 · Mild and up/))).toEqual(['skipped', 'skipped', 'skipped', 'allowed'])
+    expect(cells(row(/^4 · Everything/))).toEqual(['skipped', 'skipped', 'skipped', 'skipped'])
   })
 
   it('says exactly what the nudity level skips, following the level (#126)', async () => {
     mockApi.get.mockResolvedValue(defaults)
     const { rerender } = render(<CategoryMatrix username="alice" enabled={true} />)
-    expect(await screen.findByText('Skips everything detected, including covered body parts.')).toBeInTheDocument()
+    expect(await screen.findByText('Skips everything detected, including feet, faces and male chests.')).toBeInTheDocument()
 
     mockApi.get.mockResolvedValue(customised)
     rerender(<CategoryMatrix username="bob" enabled={true} />)
-    expect(await screen.findByText('Skips exposed nudity: genitalia, anus, breasts and buttocks.')).toBeInTheDocument()
-    expect(screen.queryByText(/including covered body parts/)).not.toBeInTheDocument()
+    expect(await screen.findByText('Skips exposed genitalia, female breasts, buttocks, anus and belly.')).toBeInTheDocument()
+    expect(screen.queryByText(/including feet, faces/)).not.toBeInTheDocument()
   })
 
   it('renders defaults rather than blank controls for a new user', async () => {
@@ -75,7 +76,7 @@ describe('CategoryMatrix', () => {
       expect(screen.getByText(/Using defaults/)).toBeInTheDocument()
     })
     const sliders = screen.getAllByRole('slider') as HTMLInputElement[]
-    expect(sliders.every(s => s.value === '3')).toBe(true)
+    expect(sliders.every(s => s.value === '4')).toBe(true)
   })
 
   it('marks categories that have no segments yet', async () => {

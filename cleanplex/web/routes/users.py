@@ -58,8 +58,8 @@ async def update_user_filter(username: str, payload: UserFilterUpdate):
 
 
 class CategoryPrefUpdate(BaseModel):
-    """One category's strictness (0-3) and optional action override."""
-    level: int = Field(0, ge=0, le=3)
+    """One category's strictness (0-4) and optional action override."""
+    level: int = Field(0, ge=0, le=4)
     action: str = ""
 
 

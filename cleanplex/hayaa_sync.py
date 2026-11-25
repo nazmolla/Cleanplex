@@ -24,7 +24,7 @@ from typing import Any
 
 from . import database as db
 from . import events, hayaa, plex_summary, segment_files
-from .importers._common import CATEGORIES, DETECTOR_LABELS, severity_for_labels
+from .importers._common import ALL_SEVERITIES, CATEGORIES, DETECTOR_LABELS, severity_for_labels
 from .logger import get_logger
 
 logger = get_logger(__name__)
@@ -217,7 +217,7 @@ def parse_view(view: Any, runtime_ms: int | None) -> list[dict] | None:
                     c.get("basis") not in ("machine", "human", "both") or \
                     any(lbl not in _KNOWN_LABELS for lbl in labels) or \
                     c.get("category", "nudity") not in CATEGORIES or \
-                    c.get("severity", "high") not in ("low", "medium", "high"):
+                    c.get("severity", "high") not in ALL_SEVERITIES:
                 return None
             machine = {str(k): float(v) for k, v in (c.get("machine") or {}).items()}
             out.append({
@@ -344,7 +344,7 @@ async def apply_titles(plex_guids: list[str], config=None) -> dict[str, int]:
                     counts["removed"] += 1
                     changed.add(guid)
                 hide = c["status"] == "rejected" and preset != "cautious" and ov != "restore" and \
-                    (c["severity"] in ("low", "medium") or c.get("verify_fp_drop"))
+                    (c["severity"] in ("minimal", "low", "medium") or c.get("verify_fp_drop"))
                 ids_on = [s["id"] for s in local if (s.get("false_positive") or 0) == 0 and s.get("source") in FAMILY_OF_SOURCE]
                 ids_hidden = [s["id"] for s in local if s.get("false_positive") == db.FP_COMMUNITY]
                 if hide and ids_on:

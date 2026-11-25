@@ -98,8 +98,8 @@ async def test_cluster_with_a_nudenet_hit_stays_a_scanner_segment(tmp_path):
 
     assert len(segs) == 1
     assert segs[0]["source"] == "scanner"
-    # Severity follows the label (#126): exposed breast is medium.
-    assert segs[0]["severity"] == "medium"
+    # Severity follows the label (#126, #230): exposed female breast is high.
+    assert segs[0]["severity"] == "high"
     assert segs[0]["labels"] == "FEMALE_BREAST_EXPOSED"
     assert segs[0]["start_ms"] == 5 * STEP
     # Records the NudeNet model in use (#92); Config() defaults to 320n.

@@ -595,7 +595,7 @@ export default function SettingsPage() {
               <p className="text-xs text-muted mb-4">
                 A light whole-frame check that only looks at frames NudeNet did not flag, to catch scenes it misses.
                 It follows the Detector Labels: enabled labels count as hits, the others as counter-examples.
-                Its segments are marked <span className="text-gray-300">siglip</span> with medium severity.
+                Its segments are marked <span className="text-gray-300">siglip</span>; their severity follows their labels.
                 Turning it on downloads about 815 MB of model files on the next scan.
               </p>
               <div className="grid gap-4 lg:grid-cols-2 items-start">

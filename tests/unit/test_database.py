@@ -420,7 +420,7 @@ async def test_backfill_adds_missing_categories_at_everything():
     assert added == len(CATEGORIES) - 1
     assert set(prefs) == set(CATEGORIES)
     assert prefs["language"] == {"level": 1, "action": "mute"}
-    assert all(p["level"] == 3 for c, p in prefs.items() if c != "language")
+    assert all(p["level"] == 4 for c, p in prefs.items() if c != "language")
 
 
 async def test_backfill_keeps_explicit_off_rows():

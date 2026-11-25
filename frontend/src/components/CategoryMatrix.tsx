@@ -17,25 +17,28 @@ interface CategoriesResponse {
 }
 
 // Levels follow the threshold model the filter engine uses: a segment fires when
-// the viewer's level plus its severity rank exceeds 3. Labelling them by what
+// the viewer's level plus its severity rank exceeds 4 (#230). Labelling them by what
 // they let through is far clearer than showing the raw number.
-const LEVEL_LABELS = ['Off', 'Severe only', 'Moderate and up', 'Everything']
+const LEVEL_LABELS = ['Off', 'Severe only', 'Moderate and up', 'Mild and up', 'Everything']
+const MAX_LEVEL = LEVEL_LABELS.length - 1
 
 // What each level skips for detector (scanner) segments, whose severity follows the
 // detected label (#126). Imported segments carry their author's own severities.
 const NUDITY_LEVEL_HINTS = [
   'Skips nothing.',
-  'Skips exposed genitalia and anus only.',
-  'Skips exposed nudity: genitalia, anus, breasts and buttocks.',
-  'Skips everything detected, including covered body parts.',
+  'Skips exposed genitalia and female breasts.',
+  'Skips exposed genitalia, female breasts, buttocks, anus and belly.',
+  'Skips all exposed nudity, plus covered genitalia and female breasts.',
+  'Skips everything detected, including feet, faces and male chests.',
 ]
 
 // Detector severities and the labels behind them (kept in step with LABEL_SEVERITY in
 // importers/_common.py). Rank is what the filter adds to the viewer's level.
 const SEVERITY_COLUMNS = [
-  { rank: 3, name: 'High', examples: 'Exposed genitalia, anus' },
-  { rank: 2, name: 'Medium', examples: 'Exposed breast, buttocks' },
-  { rank: 1, name: 'Low', examples: 'Covered parts, belly, feet, faces' },
+  { rank: 4, name: 'High', examples: 'Exposed genitalia, female breast' },
+  { rank: 3, name: 'Medium', examples: 'Exposed buttocks, anus, belly' },
+  { rank: 2, name: 'Low', examples: 'Covered genitalia, female breast' },
+  { rank: 1, name: 'Minimal', examples: 'Everything else: feet, faces, male chest' },
 ]
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -153,12 +156,12 @@ export default function CategoryMatrix({ username, enabled }: Props) {
         )}
       </div>
 
-      {/* The levels, spelled out, so nobody has to work out level + severity > 3. */}
+      {/* The levels, spelled out, so nobody has to work out level + severity > 4. */}
       <details className="px-5 py-3 border-b border-plex-border text-xs text-gray-400">
         <summary className="cursor-pointer text-gray-300">What does each level skip?</summary>
         <p className="mt-2 mb-2 text-muted">
-          A detected segment is skipped when the level plus its severity (low 1, medium 2, high 3) is more than 3.
-          Imported segments use the severity their author set.
+          A detected segment is skipped when the level plus its severity (minimal 1, low 2, medium 3, high 4) is
+          more than 4. Imported segments use the severity their author set (low, medium or high).
         </p>
         <table className="w-full text-left">
           <thead>
@@ -177,8 +180,8 @@ export default function CategoryMatrix({ username, enabled }: Props) {
               <tr key={level} className="border-t border-plex-border/60">
                 <td className="py-1 pr-3 text-gray-300">{level} · {name}</td>
                 {SEVERITY_COLUMNS.map(col => (
-                  <td key={col.name} className={`py-1 pr-3 ${level + col.rank > 3 ? 'text-red-300' : 'text-muted'}`}>
-                    {level + col.rank > 3 ? 'skipped' : 'allowed'}
+                  <td key={col.name} className={`py-1 pr-3 ${level + col.rank > MAX_LEVEL ? 'text-red-300' : 'text-muted'}`}>
+                    {level + col.rank > MAX_LEVEL ? 'skipped' : 'allowed'}
                   </td>
                 ))}
               </tr>
@@ -208,7 +211,7 @@ export default function CategoryMatrix({ username, enabled }: Props) {
               <input
                 type="range"
                 min={0}
-                max={3}
+                max={MAX_LEVEL}
                 step={1}
                 value={cat.level}
                 disabled={saving[cat.category]}
