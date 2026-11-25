@@ -44,6 +44,12 @@ AUTO_BUDGET = 0.8
 OBS_PER_PUSH = 2000
 MEDIA_PER_PUSH = 2000
 PULL_BATCH = 500
+# Hayaa refuses a body over 256 KB, whatever the item count; batches stay well under it.
+BODY_BUDGET = 192 * 1024
+
+
+def _size(item: dict) -> int:
+    return len(json.dumps(item, separators=(",", ":"))) + 1
 DEFAULT_PAUSE_S = 3600  # when a 429/503 carries no Retry-After
 
 PRESETS = ("balanced", "cautious", "verify_first")
@@ -576,7 +582,7 @@ async def _describe(by_key: dict[str, dict], known: dict[str, dict], manual: boo
             result["skipped_quota"] = True
             break
         chunk = todo[i:i + MEDIA_PER_PUSH]
-        media = []
+        media: list[dict] = []
         for k in chunk:
             t = by_key[k]
             try:
@@ -587,13 +593,29 @@ async def _describe(by_key: dict[str, dict], known: dict[str, dict], manual: boo
             if t.get("duration_ms"):
                 d["runtime"] = round(t["duration_ms"] / 1000.0, 3)
             media.append(d)
-        if not media:
-            continue
-        await _spend("pushes")
-        await hayaa.signed_post("/api/v1/media", {"media": media})
-        await db.mark_hayaa_described([m["title"] for m in media])
-        sent += len(media)
+        for part in _by_size(media):
+            if _allowance(await _quota(), "pushes", manual) <= 0:
+                result["skipped_quota"] = True
+                return sent
+            await _spend("pushes")
+            await hayaa.signed_post("/api/v1/media", {"media": part})
+            await db.mark_hayaa_described([m["title"] for m in part])
+            sent += len(part)
     return sent
+
+
+def _by_size(items: list[dict]) -> list[list[dict]]:
+    """Split items into runs whose JSON stays under BODY_BUDGET."""
+    out: list[list[dict]] = [[]]
+    size = 0
+    for it in items:
+        n = _size(it)
+        if out[-1] and size + n > BODY_BUDGET:
+            out.append([])
+            size = 0
+        out[-1].append(it)
+        size += n
+    return [p for p in out if p]
 
 
 async def _push(by_key: dict[str, dict], manual: bool, result: dict,
@@ -640,7 +662,8 @@ async def _push(by_key: dict[str, dict], manual: bool, result: dict,
         obs, new_rows, gone = plan_push(want, ledger.get(key, []), key)
         if not obs:
             continue
-        if len(batch) + len(obs) > OBS_PER_PUSH and not await flush():
+        if batch and (len(batch) + len(obs) > OBS_PER_PUSH or
+                      sum(map(_size, batch)) + sum(map(_size, obs)) > BODY_BUDGET) and not await flush():
             return
         batch += obs
         rows += new_rows

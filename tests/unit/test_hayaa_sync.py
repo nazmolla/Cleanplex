@@ -517,3 +517,10 @@ async def test_a_new_file_at_a_removed_path_is_not_treated_as_removed(tmp_path):
     await db.upsert_scan_jobs_batch([{"plex_guid": "g2", "title": "Film", "file_path": str(tmp_path / "film.mkv"),
                                       "rating_key": "2", "library_id": "1", "library_title": "Movies"}])
     assert await db.get_hayaa_removed_titles() == []
+
+
+def test_batches_stay_under_hayaas_body_limit():
+    items = [{"title": "a" * 64, "release_key": "b" * 64, "runtime": 6000.0} for _ in range(3000)]
+    parts = hs._by_size(items)
+    assert sum(len(p) for p in parts) == 3000 and len(parts) > 1
+    assert all(len(json.dumps({"media": p})) < 256 * 1024 for p in parts)
