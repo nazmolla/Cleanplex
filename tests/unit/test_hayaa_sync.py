@@ -455,3 +455,65 @@ async def test_local_rechecks_that_disagree_switch_to_verify_first():
         await db.update_hayaa_claim(TK, f"c{i}", verify_state="hit", verify_family="nudenet")
     await hs._check_disagreement()
     assert await hs.get_preset() == "verify_first"
+
+
+# ── Removed titles are pushed upload-only (#228) ──────────────────────────────
+
+async def _scanned_then_deleted(tmp_path, fake: FakeApi, *, purge: bool):
+    """A title scanned (key cached during the scan), then deleted from disk and dropped by Plex."""
+    key = await _linked_title(tmp_path, fake)
+    await db.update_scan_job_status("g1", "done", progress=1.0, scan_version=3)
+    (tmp_path / "film.mkv").unlink()
+    assert await db.remove_titles_not_in("1", ["other"]) == 1
+    if purge:
+        async with db.get_connection() as conn:
+            await conn.execute("UPDATE removed_titles SET removed_at = datetime('now','-60 days')")
+            await conn.commit()
+        await db.purge_removed_titles(30)
+    return key
+
+
+@pytest.mark.parametrize("purge", [False, True])
+async def test_removed_title_detections_are_pushed_but_never_pulled_or_proved(tmp_path, purge):
+    fake = FakeApi()
+    await _linked_title(tmp_path, fake)
+    await db.insert_segment("g1", "Film", 100_000, 110_000, labels="BUTTOCKS_EXPOSED", severity="medium",
+                            detector="nudenet-320n", confidence=0.7)
+    key = await _scanned_then_deleted(tmp_path, fake, purge=purge)
+    fake.challenge = {key: [0]}
+    result = await hs.run_sync(manual=True)
+    assert [(o["kind"], o["title"]) for o in fake.pushed] == [("detect", key)]
+    assert fake.media[0]["release_key"] == hayaa.release_key("film.mkv", 5000)
+    assert fake.pulls == [] and fake.proofs == [] and result["proved"] == 0
+
+    fake.pushed.clear()  # sent once: the next sync has nothing new for it
+    await hs.run_sync(manual=True)
+    assert fake.pushed == []
+
+
+async def test_removed_clean_scan_is_pushed_as_clean(tmp_path):
+    fake = FakeApi()
+    key = await _scanned_then_deleted(tmp_path, fake, purge=True)
+    await hs.run_sync(manual=True)
+    assert [(o["kind"], o["title"]) for o in fake.pushed] == [("clean", key)]
+
+
+async def test_purge_keeps_an_unsent_content_key_and_drops_a_sent_one(tmp_path):
+    fake = FakeApi()
+    await _scanned_then_deleted(tmp_path, fake, purge=True)
+    assert [t["plex_guid"] for t in await db.get_hayaa_removed_titles()] == ["g1"]
+
+    await hs.run_sync(manual=True)  # sends the clean result
+    async with db.get_connection() as conn:
+        await conn.execute("UPDATE removed_titles SET purged_at = NULL")
+        await conn.commit()
+    await db.purge_removed_titles(30)
+    assert await db.get_hayaa_removed_titles() == []
+
+
+async def test_a_new_file_at_a_removed_path_is_not_treated_as_removed(tmp_path):
+    fake = FakeApi()
+    await _scanned_then_deleted(tmp_path, fake, purge=False)
+    await db.upsert_scan_jobs_batch([{"plex_guid": "g2", "title": "Film", "file_path": str(tmp_path / "film.mkv"),
+                                      "rating_key": "2", "library_id": "1", "library_title": "Movies"}])
+    assert await db.get_hayaa_removed_titles() == []

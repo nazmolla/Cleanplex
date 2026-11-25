@@ -1100,6 +1100,14 @@ async def scan_video(plex_guid: str, config) -> None:
             part_time_offset_ms += part_duration_ms
 
         await db.update_scan_job_status(plex_guid, "done", progress=1.0, scan_version=SCAN_VERSION)
+        if len(all_parts) == 1:
+            # Hayaa names a file by its content key, which only the file can produce: compute it
+            # now so the scan can still be shared if the file is deleted before a sync (#228).
+            try:
+                from . import hayaa
+                await hayaa.content_key_for(all_parts[0])
+            except Exception as exc:
+                logger.debug("No Hayaa content key for %s: %s", title, exc)
         # A rescan rewrote the title's segments: put pulled Hayaa segments back and match the new
         # local ones to their claims (#222). Best effort; the next sync does the same.
         try:

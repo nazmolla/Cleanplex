@@ -340,6 +340,8 @@ Hayaa is a shared segment service: Cleanplex servers share what their scans foun
 
 **Syncing.** **Sync with Hayaa** sends what changed since the last sync and fetches updated titles. Turn on **Sync automatically** to do this every few hours (3 to 48); automatic syncs use at most four fifths of Hayaa's daily quota, so a manual sync always fits. When Hayaa asks to wait (busy or over quota), syncing pauses until the time it gives.
 
+**Deleted files.** A finished scan remembers the file's fingerprint, so you can delete a file you only downloaded to scan and its scan is still shared on the next sync. Such titles are upload-only: nothing comes back for a file you no longer have. Files deleted before this change have no fingerprint and cannot be shared.
+
 **What you get back, and when.** Hayaa guards its data against people who would use it to cut scenes out of films. It returns segments only for files this server has scanned itself, after Hayaa has checked that the file is really here (Cleanplex answers by reading a few small parts of the file), and only once your account is 14 days old with 25 titles scanned. Each day's titles count against a viewing allowance (about 8 hours of runtime a day), long films arrive a part at a time at about playback speed, and times are rounded outward by a few seconds. The sync summary says how many titles were held back and why; they come on later syncs.
 
 **What your actions share.** Marking a segment a false positive is a vote that nothing is there; to stop skipping a kind of scene, lower the viewer's category level instead (nothing is shared). Deleting your own segment withdraws your support; a relabel is a label vote. Deleting a segment that came from Hayaa only hides it here, for good.

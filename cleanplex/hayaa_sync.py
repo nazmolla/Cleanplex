@@ -500,6 +500,12 @@ async def _content_keys(titles: list[dict]) -> dict[str, dict]:
     return out
 
 
+async def _removed_keys(live: set[str]) -> dict[str, dict]:
+    """Content key -> removed title, for removed titles whose key was kept (#228)."""
+    return {t["content_key"]: {**t, "removed": True}
+            for t in await db.get_hayaa_removed_titles() if t["content_key"] not in live}
+
+
 async def run_sync(manual: bool) -> dict[str, Any]:
     """One sync: describe new files, push what changed, pull changed consensus, apply it.
 
@@ -520,14 +526,17 @@ async def run_sync(manual: bool) -> dict[str, Any]:
             _state["phase"] = "identifying files"
             titles = await db.get_hayaa_sync_titles()
             by_key = await _content_keys(titles)
-            await db.upsert_hayaa_titles([(k, t["plex_guid"]) for k, t in by_key.items()])
+            # Removed titles whose key was kept are pushed but never pulled or proved: the file
+            # is gone, and Hayaa only asks for the file before it hands segments out (#228).
+            gone = await _removed_keys(set(by_key))
+            await db.upsert_hayaa_titles([(k, t["plex_guid"]) for k, t in {**gone, **by_key}.items()])
             known = await db.get_hayaa_titles()
 
             _state["phase"] = "describing files"
-            result["described"] = await _describe(by_key, known, manual, result)
+            result["described"] = await _describe({**gone, **by_key}, known, manual, result)
 
             _state["phase"] = "pushing"
-            await _push(by_key, manual, result, challenges)
+            await _push({**gone, **by_key}, manual, result, challenges)
             await _prove(by_key, challenges, result)
 
             _state["phase"] = "pulling"
@@ -571,7 +580,7 @@ async def _describe(by_key: dict[str, dict], known: dict[str, dict], manual: boo
         for k in chunk:
             t = by_key[k]
             try:
-                size = (await asyncio.to_thread(os.stat, t["file_path"])).st_size
+                size = t["size"] if t.get("removed") else (await asyncio.to_thread(os.stat, t["file_path"])).st_size
             except OSError:
                 continue
             d: dict[str, Any] = {"title": k, "release_key": hayaa.release_key(Path(t["file_path"]).name, size)}
@@ -590,8 +599,9 @@ async def _describe(by_key: dict[str, dict], known: dict[str, dict], manual: boo
 async def _push(by_key: dict[str, dict], manual: bool, result: dict,
                 challenges: dict[str, list[int]]) -> None:
     guids = [t["plex_guid"] for t in by_key.values()]
+    removed = [t["plex_guid"] for t in by_key.values() if t.get("removed")]
     segs: dict[str, list[dict]] = {}
-    for s in await db.get_segments_for_hayaa(guids):
+    for s in await db.get_segments_for_hayaa(guids) + await db.get_removed_segments_for_hayaa(removed):
         segs.setdefault(s["plex_guid"], []).append(s)
     claims: dict[str, list[dict]] = {}
     for c in await db.get_hayaa_claims(guids):
@@ -616,7 +626,8 @@ async def _push(by_key: dict[str, dict], manual: bool, result: dict,
             return False
         await _spend("pushes")
         reply = await hayaa.signed_post("/api/v1/push", {"observations": batch})
-        challenges.update(reply.get("challenges") or {})
+        challenges.update({k: v for k, v in (reply.get("challenges") or {}).items()
+                           if not by_key.get(k, {}).get("removed")})
         await db.record_hayaa_sent(rows, retracted)
         result["pushed"] += sum(1 for o in batch if o["kind"] != "retract")
         result["retracted"] += len(retracted)
@@ -752,8 +763,6 @@ async def auto_sync_due(now: float | None = None) -> bool:
     if await db.get_setting("hayaa_auto_sync", "0") != "1" or not hayaa.is_linked() or running():
         return False
     settings = await db.get_all_settings()
-    if not settings.get("hayaa_api_url") or not settings.get("hayaa_auth_url"):
-        return False
     if float(settings.get("hayaa_paused_until") or 0) > now:
         return False
     interval_s = max(1, int(settings.get("hayaa_sync_interval_h") or 12)) * 3600

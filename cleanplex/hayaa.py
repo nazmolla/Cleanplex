@@ -239,12 +239,21 @@ def _check_url(url: str, what: str) -> str:
     return url
 
 
+# The Hayaa service this build talks to. Not shown in the UI; the hayaa_api_url / hayaa_auth_url
+# settings still override them (a local Hayaa dev server, for instance).
+DEFAULT_API_URL = "https://hayaa-api-oxc7hijrqqqmk.azurewebsites.net"
+DEFAULT_AUTH_URL = "https://hayaa-auth-oxc7hijrqqqmk.azurewebsites.net"
+
+
+def urls_from(settings: dict[str, str]) -> tuple[str, str]:
+    """(api_url, auth_url): the saved settings, else this build's defaults."""
+    return ((settings.get("hayaa_api_url") or "").strip() or DEFAULT_API_URL,
+            (settings.get("hayaa_auth_url") or "").strip() or DEFAULT_AUTH_URL)
+
+
 async def get_urls() -> tuple[str, str]:
-    """(api_url, auth_url) from settings; raises HayaaError when either is unset or not https."""
-    settings = await db.get_all_settings()
-    api, auth = settings.get("hayaa_api_url", "").strip(), settings.get("hayaa_auth_url", "").strip()
-    if not api or not auth:
-        raise HayaaError("Set the Hayaa service and sign-in URLs first")
+    """(api_url, auth_url) from settings or the defaults; raises HayaaError when not https."""
+    api, auth = urls_from(await db.get_all_settings())
     return _check_url(api, "service"), _check_url(auth, "sign-in")
 
 
@@ -463,9 +472,9 @@ async def status() -> dict[str, Any]:
     if link and _link is not None and link["status"] == "pending":
         link["expires_in_s"] = max(0, int(_link["expires_at"] - time.monotonic()))
     return {
-        "api_url": settings.get("hayaa_api_url", ""),
-        "auth_url": settings.get("hayaa_auth_url", ""),
-        "configured": bool(settings.get("hayaa_api_url") and settings.get("hayaa_auth_url")),
+        "api_url": urls_from(settings)[0],
+        "auth_url": urls_from(settings)[1],
+        "configured": True,
         "linked": linked,
         "device_label": device_label(),
         "key_id": key_id(key) if key else "",

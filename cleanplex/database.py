@@ -526,6 +526,11 @@ async def init_db() -> None:
             # Scan queue position (#174): NULL = not queued; lower runs first. The queue lives
             # in the database so workers claim from it and every view reads the same order.
             "ALTER TABLE scan_jobs ADD COLUMN queue_pos INTEGER",
+            # What Hayaa sync needs to push the scan of a removed title (#228).
+            "ALTER TABLE removed_titles ADD COLUMN duration_ms INTEGER DEFAULT 0",
+            "ALTER TABLE removed_titles ADD COLUMN status TEXT DEFAULT ''",
+            "ALTER TABLE removed_titles ADD COLUMN scan_version INTEGER DEFAULT 0",
+            "ALTER TABLE removed_titles ADD COLUMN finished_at TIMESTAMP",
             # Labels the local re-check found for a pulled claim: Hayaa sends none
             # (ABUSE_RESISTANCE §7), so a pulled segment takes its labels from this server's scan.
             "ALTER TABLE hayaa_claims ADD COLUMN verify_labels TEXT DEFAULT ''",
@@ -1132,15 +1137,18 @@ async def remove_titles_not_in(library_id: str, keep_guids: list[str]) -> int:
         return 0
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            f"SELECT plex_guid, title, rating_key, file_path, part_files FROM scan_jobs "
+            f"SELECT plex_guid, title, rating_key, file_path, part_files, COALESCE(duration_ms, 0) AS duration_ms, "
+            f"status, COALESCE(scan_version, 0) AS scan_version, finished_at FROM scan_jobs "
             f"WHERE library_id=? AND plex_guid NOT IN ({_in(keep_guids)})",
             [library_id, *keep_guids],
         )
         if not rows:
             return 0
         await conn.executemany(
-            "INSERT OR REPLACE INTO removed_titles(plex_guid, title, rating_key, file_path, part_files) VALUES(?,?,?,?,?)",
-            [(r["plex_guid"], r["title"], r["rating_key"], r["file_path"], r["part_files"] or "") for r in rows],
+            "INSERT OR REPLACE INTO removed_titles(plex_guid, title, rating_key, file_path, part_files, "
+            "duration_ms, status, scan_version, finished_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            [(r["plex_guid"], r["title"], r["rating_key"], r["file_path"], r["part_files"] or "",
+              r["duration_ms"], r["status"] or "", r["scan_version"], r["finished_at"]) for r in rows],
         )
         guids = [r["plex_guid"] for r in rows]
         await archive_segments(conn, guids)
@@ -1272,8 +1280,14 @@ async def purge_removed_titles(older_than_days: int) -> list[tuple[int, str]]:
                 await conn.execute(f"DELETE FROM {table} WHERE rating_key IN ({_in(chunk)})", chunk)
         for i in range(0, len(files), 500):
             chunk = files[i:i + 500]
-            for table in ("keyframe_index", "hayaa_content_keys"):
-                await conn.execute(f"DELETE FROM {table} WHERE file_path IN ({_in(chunk)})", chunk)
+            await conn.execute(f"DELETE FROM keyframe_index WHERE file_path IN ({_in(chunk)})", chunk)
+            # A content key nothing was sent for yet is kept: Hayaa sync can still push the
+            # removed title's scan under it (#228).
+            await conn.execute(
+                f"DELETE FROM hayaa_content_keys WHERE file_path IN ({_in(chunk)}) "
+                "AND EXISTS (SELECT 1 FROM hayaa_sent s WHERE s.title_key = hayaa_content_keys.content_key)",
+                chunk,
+            )
         for i in range(0, len(guids), 500):
             chunk = guids[i:i + 500]
             await conn.execute(f"UPDATE removed_titles SET purged_at=CURRENT_TIMESTAMP WHERE plex_guid IN ({_in(chunk)})", chunk)
@@ -2991,6 +3005,46 @@ async def get_hayaa_sync_titles() -> list[dict]:
             "AND COALESCE(json_array_length(NULLIF(part_files, '')), 0) <= 1"
         )
     return [dict(r) for r in rows]
+
+
+async def get_hayaa_removed_titles() -> list[dict]:
+    """Return removed single-file titles whose content key is still cached, for upload-only sync.
+
+    Same shape as get_hayaa_sync_titles plus `content_key` and `size`. A path a live title now
+    uses is left out: its cached key may belong to the new file.
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT r.plex_guid, r.title, r.file_path, COALESCE(r.duration_ms, 0) AS duration_ms, "
+            "COALESCE(r.status, '') AS status, COALESCE(r.scan_version, 0) AS scan_version, r.finished_at, "
+            "k.content_key, k.size FROM removed_titles r "
+            "JOIN hayaa_content_keys k ON k.file_path = r.file_path "
+            "WHERE COALESCE(r.file_path, '') != '' "
+            "AND COALESCE(json_array_length(NULLIF(r.part_files, '')), 0) <= 1 "
+            "AND NOT EXISTS (SELECT 1 FROM scan_jobs j WHERE j.file_path = r.file_path)"
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_removed_segments_for_hayaa(guids: list[str]) -> list[dict]:
+    """get_segments_for_hayaa for removed titles: their segments live in removed_segments."""
+    out: list[dict] = []
+    async with get_connection() as conn:
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            rows = await conn.execute_fetchall(
+                f"""
+                SELECT s.*, COALESCE(f.labels, s.labels) AS detected_labels,
+                       COALESCE(f.corrected_labels, '') AS corrected_labels
+                FROM removed_segments s
+                LEFT JOIN segment_feedback f ON f.segment_id = s.id AND f.verdict = 'relabeled'
+                WHERE s.plex_guid IN ({_in(chunk)})
+                ORDER BY s.plex_guid, s.start_ms
+                """,
+                chunk,
+            )
+            out += [dict(r) for r in rows]
+    return out
 
 
 async def get_hayaa_titles() -> dict[str, dict]:
