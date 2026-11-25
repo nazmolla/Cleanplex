@@ -42,6 +42,7 @@ async def export(db_path: Path, since: str) -> tuple[list[dict], dict[str, int]]
         segs.setdefault(s["plex_guid"], []).append(s)
 
     items, stats = [], {"titles": len(titles), "exported": 0, "no_detections": 0, "observations": 0}
+    by_rk: dict[str, dict[str, dict]] = {}
     for t in titles:
         rk = hayaa.release_key(Path(t["file_path"]).name, int(t["size"]))
         job = {"plex_guid": t["plex_guid"], "duration_ms": t["duration_ms"], "status": "", "scan_version": 0}
@@ -51,9 +52,14 @@ async def export(db_path: Path, since: str) -> tuple[list[dict], dict[str, int]]
         if not obs:
             stats["no_detections"] += 1
             continue
-        items.append({"release_key": rk, "observations": obs})
-        stats["exported"] += 1
-        stats["observations"] += len(obs)
+        # The same file can come back under another Plex entry and be scanned again: one
+        # release key then gathers both scans' detections (ids are distinct per detection).
+        merged = by_rk.setdefault(rk, {})
+        merged.update({o["id"]: o for o in obs})
+    for rk, obs_by_id in by_rk.items():
+        items.append({"release_key": rk, "observations": list(obs_by_id.values())})
+        stats["observations"] += len(obs_by_id)
+    stats["exported"] = len(items)
     return items, stats
 
 
