@@ -46,7 +46,11 @@ AUTO_BUDGET = 0.8
 OBS_PER_PUSH = 500
 MEDIA_PER_PUSH = 200
 PULL_BATCH = 500
-PULL_JOB_POLLS = 90  # about three minutes of retry_after waits for a large pull job
+PULL_JOB_POLLS = 300  # about ten minutes of retry_after waits for a large pull job
+
+
+class PullPending(Exception):
+    """Hayaa is still preparing a large pull; its titles come on the next sync."""
 # Hayaa refuses a body over 256 KB, whatever the item count; batches stay well under it.
 BODY_BUDGET = 192 * 1024
 
@@ -741,8 +745,10 @@ async def _pull_batch(have: dict[str, str]) -> dict[str, Any]:
             break
         await asyncio.sleep(float(reply.get("retry_after", 2)))
         _, reply = await hayaa.signed_get("/api/v1/pull/result", {"job": str(reply["job"])})
+    if "error" in reply and "views" not in reply:
+        raise hayaa.HayaaError(str(reply["error"]))
     if "views" not in reply:
-        raise hayaa.HayaaError(str(reply.get("error") or "Hayaa did not finish the pull in time"))
+        raise PullPending()
     return reply
 
 
@@ -766,7 +772,12 @@ async def _pull(by_key: dict[str, dict], known: dict[str, dict], manual: bool, r
         chunk = order[i:i + PULL_BATCH]
         have = {k: (known.get(k, {}).get("version") or "")[:16] for k in chunk}
         await _spend("pulls")
-        reply = await _pull_batch(have)
+        try:
+            reply = await _pull_batch(have)
+        except PullPending:
+            result["pull_pending"] = len(order) - i
+            deferred_keys.update(order[i:])  # retried next sync, whatever the feed says
+            break
         result["pulled"] += len(chunk)
         for key, view in (reply.get("views") or {}).items():
             if key not in by_key:

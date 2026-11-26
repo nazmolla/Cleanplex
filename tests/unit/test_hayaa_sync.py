@@ -640,3 +640,18 @@ async def test_a_large_pull_is_collected_from_its_job(tmp_path, monkeypatch):
     hayaa._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     result = await hs.run_sync(manual=True)
     assert polls == ["j1", "j1"] and result["changed"] == 1
+
+
+async def test_a_pull_job_not_ready_in_time_waits_for_the_next_sync(tmp_path, monkeypatch):
+    fake = FakeApi()
+    await _linked_title(tmp_path, fake)
+    monkeypatch.setattr(hs, "PULL_JOB_POLLS", 2)
+    base = fake.handler
+
+    def handler(req):
+        if req.url.path in ("/api/v1/pull", "/api/v1/pull/result"):
+            return httpx.Response(202, json={"job": "j1", "retry_after": 0})
+        return base(req)
+    hayaa._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    result = await hs.run_sync(manual=True)
+    assert result["pull_pending"] == 1 and not result["error"]

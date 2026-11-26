@@ -17,6 +17,7 @@ interface SyncResult {
   proved?: number
   deferred?: Record<string, number>
   error: string
+  pull_pending?: number
 }
 
 // Why Hayaa held titles back (docs/ABUSE_RESISTANCE.md in the Hayaa repo).
@@ -201,6 +202,7 @@ export default function HayaaSync() {
           Uploaded {r.pushed} observation(s){r.retracted ? `, withdrew ${r.retracted}` : ''} (Hayaa adds them in the background); checked {r.pulled} title(s), {r.changed} updated
           {r.applied ? `; applied ${r.applied} segment(s)` : ''}{r.hidden ? `, hid ${r.hidden}` : ''}
           {r.skipped_quota ? '; stopped at today\'s quota, the rest goes next time' : ''}
+          {r.pull_pending ? `; Hayaa is still preparing ${r.pull_pending} title(s), they arrive on the next sync` : ''}
           {deferredText(r.deferred)}.
         </p>
       )}
