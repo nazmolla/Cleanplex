@@ -795,7 +795,11 @@ async def _pull(by_key: dict[str, dict], known: dict[str, dict], manual: bool, r
             else:
                 partial.discard(key)
         for key, why in (reply.get("deferred") or {}).items():
-            deferred_keys.add(key)
+            # Retried next sync only when time alone can release it (budget, scan time, window).
+            # Possession is proven by matching another holder, so that waits for the change
+            # feed to say someone else contributed.
+            if str((why or {}).get("reason")) not in ("prove_possession", "not_contributed"):
+                deferred_keys.add(key)
             reason = str((why or {}).get("reason") or "unknown")
             result["deferred"][reason] = result["deferred"].get(reason, 0) + 1
         challenges.update(reply.get("challenges") or {})

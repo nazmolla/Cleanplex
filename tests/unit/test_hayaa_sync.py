@@ -655,3 +655,16 @@ async def test_a_pull_job_not_ready_in_time_waits_for_the_next_sync(tmp_path, mo
     hayaa._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     result = await hs.run_sync(manual=True)
     assert result["pull_pending"] == 1 and not result["error"]
+
+
+async def test_titles_waiting_for_another_holder_are_not_pulled_every_sync(tmp_path):
+    fake = FakeApi()
+    key = await _linked_title(tmp_path, fake)
+    fake.deferred = {key: {"reason": "prove_possession", "retry_after": None}}
+    await hs.run_sync(manual=True)
+    pulls = len(fake.pulls)
+    await hs.run_sync(manual=True)
+    assert len(fake.pulls) == pulls  # not retried on its own...
+    fake.feed = [key]
+    await hs.run_sync(manual=True)
+    assert len(fake.pulls) == pulls + 1  # ...only when the feed says the title changed
