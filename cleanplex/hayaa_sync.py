@@ -471,9 +471,13 @@ async def _spend(kind: str) -> None:
 
 
 def _allowance(q: dict[str, Any], kind: str, manual: bool) -> int:
+    """Requests left for this sync. A manual sync asks Hayaa until Hayaa itself says stop (its
+    limits differ per account: the maintainer's has none); automatic syncs keep to a share of
+    the default quota so a manual sync still fits."""
+    if manual:
+        return 1 << 30
     limit = PUSHES_PER_DAY if kind == "pushes" else PULLS_PER_DAY
-    cap = limit if manual else int(limit * AUTO_BUDGET)
-    return max(0, cap - q.get(kind, 0))
+    return max(0, int(limit * AUTO_BUDGET) - q.get(kind, 0))
 
 
 _lock = asyncio.Lock()
@@ -556,7 +560,9 @@ async def run_sync(manual: bool) -> dict[str, Any]:
         except hayaa.HayaaBusy as exc:
             pause = exc.retry_after or DEFAULT_PAUSE_S
             await db.set_setting("hayaa_paused_until", str(time.time() + pause))
-            result["error"] = f"Hayaa is busy; paused for {pause // 60} min"
+            until = time.strftime("%H:%M", time.localtime(time.time() + pause))
+            result["error"] = (f"Daily upload limit reached; continues after {until}" if exc.quota
+                               else f"Hayaa is busy; paused for {pause // 60} min")
             raise
         except hayaa.HayaaError as exc:
             result["error"] = str(exc)
@@ -577,10 +583,9 @@ async def _describe(by_key: dict[str, dict], known: dict[str, dict], manual: boo
     """Send media descriptors (release key, runtime) for files Hayaa has not been told about."""
     todo = [k for k in by_key if not known.get(k, {}).get("described")]
     sent = 0
+    # Describing files is not a push on Hayaa's side (it has its own daily media quota), so it
+    # spends none of the local push allowance.
     for i in range(0, len(todo), MEDIA_PER_PUSH):
-        if _allowance(await _quota(), "pushes", manual) <= 0:
-            result["skipped_quota"] = True
-            break
         chunk = todo[i:i + MEDIA_PER_PUSH]
         media: list[dict] = []
         for k in chunk:
@@ -594,10 +599,6 @@ async def _describe(by_key: dict[str, dict], known: dict[str, dict], manual: boo
                 d["runtime"] = round(t["duration_ms"] / 1000.0, 3)
             media.append(d)
         for part in _by_size(media):
-            if _allowance(await _quota(), "pushes", manual) <= 0:
-                result["skipped_quota"] = True
-                return sent
-            await _spend("pushes")
             await hayaa.signed_post("/api/v1/media", {"media": part})
             await db.mark_hayaa_described([m["title"] for m in part])
             sent += len(part)

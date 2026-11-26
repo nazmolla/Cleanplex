@@ -61,9 +61,10 @@ class NotLinked(HayaaError):
 class HayaaBusy(HayaaError):
     """Quota or flood breaker (429/503): stop and try later, never retry in a loop."""
 
-    def __init__(self, retry_after: int | None) -> None:
-        super().__init__("Hayaa is busy; try again later")
+    def __init__(self, retry_after: int | None, quota: bool = False) -> None:
+        super().__init__("Daily upload limit reached" if quota else "Hayaa is busy; try again later")
         self.retry_after = retry_after
+        self.quota = quota  # a daily quota (resets at midnight UTC), not an overloaded service
 
 
 # ── Protocol (mirrors hayaa.protocol) ──────────────────────────────────────────
@@ -278,7 +279,12 @@ async def close() -> None:
 def _json(resp: httpx.Response) -> Any:
     if resp.status_code in (429, 503):
         ra = resp.headers.get("retry-after", "")
-        raise HayaaBusy(int(ra) if ra.isdigit() else None)
+        try:
+            body = resp.json() if resp.content else {}
+        except ValueError:
+            body = {}
+        quota = "quota" in str((body or {}).get("error", "") if isinstance(body, dict) else "")
+        raise HayaaBusy(int(ra) if ra.isdigit() else None, quota=quota)
     try:
         return resp.json() if resp.content else None
     except ValueError:

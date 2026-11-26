@@ -431,7 +431,28 @@ async def test_automatic_sync_stays_inside_its_share_of_the_quota(tmp_path):
     await _linked_title(tmp_path, fake)
     await db.set_setting("hayaa_quota", json.dumps({"day": hs._utc_day(), "pushes": 16, "pulls": 48}))
     result = await hs.run_sync(manual=False)
-    assert result["skipped_quota"] and fake.media == [] and fake.pulls == []
+    # Describing files is not a push, so it still happens; pushes and pulls wait.
+    assert result["skipped_quota"] and len(fake.media) == 1 and fake.pulls == []
+
+
+async def test_manual_sync_asks_hayaa_whatever_the_local_count(tmp_path):
+    fake = FakeApi()
+    await _linked_title(tmp_path, fake)
+    await db.insert_segment("g1", "Film", 100_000, 110_000, labels="BUTTOCKS_EXPOSED", severity="medium")
+    await db.set_setting("hayaa_quota", json.dumps({"day": hs._utc_day(), "pushes": 99, "pulls": 99}))
+    result = await hs.run_sync(manual=True)
+    assert not result["skipped_quota"] and fake.pushed and fake.pulls
+
+
+async def test_a_daily_quota_refusal_says_so_and_when_it_resumes(tmp_path):
+    fake = FakeApi()
+    await _linked_title(tmp_path, fake)
+    hayaa._http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(
+        429, headers={"Retry-After": "600"}, json={"error": "daily media quota"})))
+    with pytest.raises(hayaa.HayaaBusy):
+        await hs.run_sync(manual=True)
+    last = json.loads(await db.get_setting("hayaa_last_result", "{}"))
+    assert last["error"].startswith("Daily upload limit reached; continues after")
 
 
 async def test_auto_sync_due_needs_opt_in_link_and_interval(tmp_path):
