@@ -32,6 +32,7 @@ class PastePayload(BaseModel):
     plex_guid: str
     text: str
     replace: bool = False
+    version_id: int | None = None
 
 
 def _runtime_warning(segments: list[dict], duration_ms: int) -> str | None:
@@ -48,16 +49,34 @@ def _runtime_warning(segments: list[dict], duration_ms: int) -> str | None:
     return None
 
 
-async def _store(plex_guid: str, segments: list[dict], source: str, replace: bool) -> dict:
-    """Persist parsed segments against a known scan job."""
+async def _store(
+    plex_guid: str,
+    segments: list[dict],
+    source: str,
+    replace: bool,
+    version_id: int | None = None,
+) -> dict:
+    """Persist parsed segments against a known scan job (or specific version)."""
     job = await db.get_scan_job_by_guid(plex_guid)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Unknown title: {plex_guid}")
 
-    if replace:
-        await segment_files.delete_segments_for_guid(plex_guid)
+    duration_ms = int(job.get("duration_ms") or 0)
+    if version_id is not None:
+        vjob = await db.get_title_version(version_id)
+        if vjob is None or vjob["plex_guid"] != plex_guid:
+            raise HTTPException(status_code=404, detail=f"Unknown title version: {version_id}")
+        duration_ms = int(vjob.get("duration_ms") or duration_ms)
 
-    count = await db.insert_segments_bulk(plex_guid, job.get("title") or "", segments, source)
+    if replace:
+        if version_id is not None:
+            await segment_files.delete_segments_for_version(version_id)
+        else:
+            await segment_files.delete_segments_for_guid(plex_guid)
+
+    count = await db.insert_segments_bulk(
+        plex_guid, job.get("title") or "", segments, source, version_id=version_id
+    )
     events.publish("segments_changed", guid=plex_guid)
     plex_summary.refresh_soon(plex_guid)
     logger.info("Imported %d segment(s) for '%s' from %s", count, job.get("title"), source)
@@ -66,7 +85,7 @@ async def _store(plex_guid: str, segments: list[dict], source: str, replace: boo
         "imported": count,
         "source": source,
         "title": job.get("title") or "",
-        "warning": _runtime_warning(segments, int(job.get("duration_ms") or 0)),
+        "warning": _runtime_warning(segments, duration_ms),
     }
 
 
@@ -75,8 +94,9 @@ async def import_skip_file(
     plex_guid: str = Form(...),
     file: UploadFile = File(...),
     replace: bool = Form(False),
+    version_id: int | None = Form(None),
 ):
-    """Import a .skp, .edl, .mcf or .txt skip file for one title."""
+    """Import a .skp, .edl, .mcf or .txt skip file for one title (or one version)."""
     raw = await file.read()
     if len(raw) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=422, detail="Skip file is too large to be one.")
@@ -95,7 +115,7 @@ async def import_skip_file(
     except ParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    return await _store(plex_guid, segments, module.SOURCE, replace)
+    return await _store(plex_guid, segments, module.SOURCE, replace, version_id=version_id)
 
 
 @router.post("/import/paste")
@@ -106,30 +126,42 @@ async def import_pasted_list(payload: PastePayload):
     except ParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    return await _store(payload.plex_guid, segments, "paste", payload.replace)
+    return await _store(payload.plex_guid, segments, "paste", payload.replace, version_id=payload.version_id)
 
 
 class SubtitleScanPayload(BaseModel):
     plex_guid: str
     replace: bool = False
+    version_id: int | None = None
 
 
 @router.post("/scan-subtitles")
 async def scan_subtitles(payload: SubtitleScanPayload):
-    """Scan a title's subtitles for profanity and store mute segments."""
+    """Scan a title's (or version's) subtitles for profanity and store mute segments."""
     from ... import subtitle_scanner
 
     job = await db.get_scan_job_by_guid(payload.plex_guid)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Unknown title: {payload.plex_guid}")
-    if not job.get("file_path"):
+
+    file_path = job.get("file_path") or ""
+    if payload.version_id is not None:
+        vjob = await db.get_title_version(payload.version_id)
+        if vjob is None or vjob["plex_guid"] != payload.plex_guid:
+            raise HTTPException(status_code=404, detail=f"Unknown title version: {payload.version_id}")
+        file_path = vjob.get("file_path") or file_path
+
+    if not file_path:
         raise HTTPException(status_code=422, detail="This title has no file path on disk.")
 
     if payload.replace:
-        await segment_files.delete_segments_for_guid(payload.plex_guid)
+        if payload.version_id is not None:
+            await segment_files.delete_segments_for_version(payload.version_id)
+        else:
+            await segment_files.delete_segments_for_guid(payload.plex_guid)
 
     count = await subtitle_scanner.scan_title(
-        payload.plex_guid, job.get("title") or "", job["file_path"]
+        payload.plex_guid, job.get("title") or "", file_path, version_id=payload.version_id
     )
     plex_summary.refresh_soon(payload.plex_guid)
     return {"imported": count, "source": "subtitles", "title": job.get("title") or ""}

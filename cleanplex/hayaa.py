@@ -169,15 +169,15 @@ def release_key(file_name: str, size: int) -> str:
     return hashlib.sha256(f"cprk1|{base}|{size}".encode()).hexdigest()
 
 
-async def content_key_for(file_path: str) -> str:
-    """Content key of a media file, cached by (path, size, mtime) in the database."""
+async def content_key_for(file_path: str, version_id: int | None = None) -> str:
+    """Content key of a media file, cached by (path, size, mtime) on its version row (#233, #235)."""
     st = await asyncio.to_thread(os.stat, file_path)
     size, mtime = st.st_size, int(st.st_mtime)
-    cached = await db.get_hayaa_content_key(file_path, size, mtime)
+    cached = await db.get_file_content_key(file_path, size, mtime)
     if cached:
         return cached
     key = await asyncio.to_thread(content_key_for_file, Path(file_path))
-    await db.put_hayaa_content_key(file_path, size, mtime, key)
+    await db.set_file_content_key(file_path, size, mtime, key, version_id=version_id)
     return key
 
 

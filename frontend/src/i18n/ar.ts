@@ -40,6 +40,11 @@ export const ar: DictionarySchema<typeof en> = {
   ver_training_desc: 'يتعلم من المقاطع التي حددتها كإيجابيات كاذبة. أعد التدريب بعد تحديد المزيد.',
   ver_training_title: 'تدريب مرشّح الإيجابيات الكاذبة',
   ver_untrained_hint: 'درّب المرشّح أولًا من قسم الصيانة، ثم اختر مدى صرامته في استبعاد الاكتشافات.',
+  versions_tablist_aria: 'نسخ الوسائط',
+  versions_scan: 'فحص النسخة',
+  versions_delete_segments: 'حذف مقاطع النسخة',
+  versions_segs_empty: 'لا توجد مقاطع لهذه النسخة.',
+  versions_fallback: 'النسخة {id}',
   lang_toggle_label: 'اللغة',
   lang_english: 'English',
   lang_arabic: 'العربية',
@@ -71,6 +76,7 @@ export const ar: DictionarySchema<typeof en> = {
   common_unknown: 'غير معروف',
 
   // Units / Plurals
+  versions_count: { one: 'نسخة واحدة', two: 'نسختان', few: '{count} نسخ', many: '{count} نسخة', other: '{count} نسخة' },
   unit_title: { zero: '{count} عنوان', one: 'عنوان واحد', two: 'عنوانان', few: '{count} عناوين', many: '{count} عنوانًا', other: '{count} عنوان' },
   unit_selected_title: { zero: '{count} عنوان محدّد', one: 'عنوان واحد محدّد', two: 'عنوانان محدّدان', few: '{count} عناوين محدّدة', many: '{count} عنوانًا محدّدًا', other: '{count} عنوان محدّد' },
   unit_failed_title: { zero: '{count} عنوان فاشل', one: 'عنوان فاشل واحد', two: 'عنوانان فاشلان', few: '{count} عناوين فاشلة', many: '{count} عنوانًا فاشلًا', other: '{count} عنوان فاشل' },

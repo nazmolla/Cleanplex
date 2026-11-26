@@ -60,7 +60,7 @@ Every change, whatever its size, follows these rules; the only exceptions are th
 | `filter_engine.py` | Playback position checks and seek decisions (live skipping). Stands down for streams the proxy edited (`db.is_proxied`); seeks to the widened segment end (#185) |
 | `watcher.py` | Polling loops only — no business logic. The library pass runs every 5 min and must look titles up in chunks, never per item. The session loop also runs the enforcement backstop (stops a filtered stream that bypassed the front door, only when `enforcement_enabled`) |
 | `hayaa.py` | Client of the Hayaa segment service (#221): device-flow sign-in, refresh-token rotation, the Ed25519 instance key and request signing, content and release keys (pinned to Hayaa's own outputs by test vectors). Key and refresh token live in `<data dir>/hayaa/` (0600), never in the DB or an API response. Design: `docs/SYNC_SERVICE.md` |
-| `hayaa_sync.py` | Hayaa sync (#222): derives each synced title's observations from its segments, verdicts and verify results and diffs them against the sent-ledger (`hayaa_sent`); pushes, answers Hayaa's possession challenges from the file (`hayaa.proofs_for_file`), pulls changed views into `hayaa_claims` (Hayaa may hold titles back or release them a window at a time; partly released titles are re-pulled first), and applies them through the apply matrix (`decide`) with the user's `hayaa_overrides` first. Manual sync and the opt-in automatic loop, within the daily quotas |
+| `hayaa_sync/` | Typed Hayaa sync package (#222, #234): `ContentKeyStore` (`content_keys.py`), `PushPlanner` (`planner.py`), `HayaaPusher` (`pusher.py`), `HayaaPuller` (`puller.py`), `ClaimApplier` (`applier.py`), `QuotaTracker` (`quota.py`), `SyncStatusReader` (`status.py`) orchestrated by a startup-owned `HayaaSyncService` (`service.py`), plus typed dataclasses in `models.py`. Each single-file version (`title_versions`, #233) syncs as its own Hayaa title under its own content key (#235). Manual sync and the opt-in automatic loop, within the daily quotas |
 | `hayaa_verify.py` | Background job re-checking pulled claims locally inside the scan window (refinement sampler, claim ± 5 s, never grown); the false-positive model judges disputed claims |
 | `bg_jobs.py` | Background job records: stale-job recovery and status — no domain logic |
 | `events.py` | In-process event bus streamed to browsers by `GET /api/events` (SSE). Publish where a change happens; events name what changed, not the new state |
@@ -276,10 +276,10 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 
 ### 5.5a Scan Queue
 
-- **The scan queue lives in the database** (`scan_jobs.queue_pos`: NULL = not queued, lower runs first, `force_scan` first). Never keep queue membership or order in process memory.
-- **Workers take work only through `db.claim_next_scan_job`**, one atomic `UPDATE ... RETURNING` that sets `status='scanning'`. Never select-then-update, so two workers cannot claim the same title and a scanning title cannot be claimed.
-- **Every queue change writes the DB** (`enqueue`, `enqueue_many`, `force_scan_job`, `db.release_scan_job`, `db.dequeue_scan_jobs`, `db.set_ignored`); `done`/`failed`/reset clear the position. `scanner._queue_cond` is only a wake-up hint.
-- **Views read the DB**: queue size, order and "currently scanning" come from `db.count_queued_scan_jobs`, `db.get_queued_scan_jobs`, `db.get_scanning_guids`. A new insert path needs no enqueue call to be correct: idle workers run `sync_queue()`, which queues every pending, eligible, unqueued title.
+- **The scan queue lives in the database** (`title_versions.queue_pos`: NULL = not queued, lower runs first, `force_scan` first; `scan_jobs` holds title-level metadata and summary status, #233). Never keep queue membership or order in process memory.
+- **Workers take work only through `db.claim_next_scan_job`**, one atomic `UPDATE ... RETURNING` on `title_versions` that sets `status='scanning'`. Never select-then-update, so two workers cannot claim the same version and a scanning version cannot be claimed.
+- **Every queue change writes the DB** (`enqueue`, `enqueue_many`, `enqueue_versions`, `force_scan_job`, `db.release_scan_job`, `db.dequeue_scan_jobs`, `db.set_ignored`); `done`/`failed`/reset clear the position. `scanner._queue_cond` is only a wake-up hint.
+- **Views read the DB**: queue size, order and "currently scanning" come from `db.count_queued_scan_jobs`, `db.get_queued_scan_jobs`, `db.get_scanning_guids`, `db.get_scanning_version_ids`. A new insert path needs no enqueue call to be correct: idle workers run `sync_queue()`, which queues every pending, eligible, unqueued version.
 
 ### 5.6 Frontend
 

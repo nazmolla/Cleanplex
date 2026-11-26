@@ -89,7 +89,7 @@ async def test_the_thumbnail_is_the_peak_frame_between_samples(tmp_path):
     seg = segs[0]
     assert seg["thumbnail_ms"] == 11_000
     assert seg["confidence"] == pytest.approx(0.95)
-    assert (thumbs / "g_10000.jpg").read_bytes() == b"frame-11000"
+    assert scanner.Path(seg["thumbnail_path"]).read_bytes() == b"frame-11000"
 
 
 async def test_the_segment_starts_at_the_first_dense_hit(tmp_path):

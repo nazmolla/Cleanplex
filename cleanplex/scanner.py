@@ -126,14 +126,16 @@ def _valid_model_file(path: Path) -> bool:
     return not head.startswith(b"<")
 
 _paused: bool = False
-# Guids this process's workers are scanning right now. Only used for in-process skip
-# requests; what the UI shows as "scanning" is read from the database (#174).
+# Guids and version_ids this process's workers are scanning right now. Only used for in-process skip
+# requests; what the UI shows as "scanning" is read from the database (#174, #233).
 _current_guids: set[str] = set()
-# The queue itself lives in scan_jobs.queue_pos. Idle workers sleep on this until a producer
+_current_versions: dict[int, str] = {}
+# The queue itself lives in title_versions.queue_pos. Idle workers sleep on this until a producer
 # says the queue changed (a wake-up hint only: they also poll, so a missed notify costs
 # at most the poll interval).
 _queue_cond = asyncio.Condition()
 _skip_requested_guids: set[str] = set()
+_skip_requested_version_ids: set[int] = set()
 _worker_pool_size: int = 1
 _restart_requested: bool = False
 
@@ -256,6 +258,11 @@ async def get_current_scans() -> list[str]:
     return await db.get_scanning_guids()
 
 
+async def get_current_version_scans() -> list[int]:
+    """Version IDs being scanned right now, from the database."""
+    return await db.get_scanning_version_ids()
+
+
 async def get_current_scan() -> str | None:
     """The first guid being scanned, or None."""
     guids = await get_current_scans()
@@ -276,17 +283,24 @@ def resume_scanner() -> None:
     events.publish("scanner_changed")
 
 
-async def force_scan_job(plex_guid: str) -> None:
-    """Prioritize a title: set its force flag and move it to the end of the force group.
+async def force_scan_job(plex_guid: str, version_id: int | None = None) -> None:
+    """Prioritize a title or specific version: set its force flag and move it to the end of the force group.
 
     Force jobs are claimed before normal ones and may run outside the scan window.
     """
-    await db.set_force_scan(plex_guid, True)
-    job = await db.get_scan_job_by_guid(plex_guid)
-    if job and job["status"] == "scanning":
-        logger.info("Force scan requested for %s, already scanning", plex_guid)
-        return
-    await db.queue_scan_jobs([plex_guid], to_end=True)
+    await db.set_force_scan(plex_guid, True, version_id=version_id)
+    if version_id is not None:
+        vjob = await db.get_title_version(version_id)
+        if vjob and vjob["status"] == "scanning":
+            logger.info("Force scan requested for %s (version %d), already scanning", plex_guid, version_id)
+            return
+        await db.queue_version_jobs([version_id], to_end=True)
+    else:
+        job = await db.get_scan_job_by_guid(plex_guid)
+        if job and job["status"] == "scanning":
+            logger.info("Force scan requested for %s, already scanning", plex_guid)
+            return
+        await db.queue_scan_jobs([plex_guid], to_end=True)
     await _notify_workers()
     events.publish("scanner_changed")
     logger.warning("Force scan activated for %s — will scan immediately", plex_guid)
@@ -318,8 +332,14 @@ async def enqueue(plex_guid: str) -> None:
 
 
 async def enqueue_many(plex_guids: list[str]) -> None:
-    """Queue several pending titles, in the order given, in one transaction."""
+    """Queue all pending versions for several titles, in the order given, in one transaction."""
     if await db.queue_scan_jobs(plex_guids):
+        await _notify_workers()
+
+
+async def enqueue_versions(version_ids: list[int]) -> None:
+    """Queue specific pending version IDs, in the order given, in one transaction."""
+    if await db.queue_version_jobs(version_ids):
         await _notify_workers()
 
 
@@ -363,7 +383,7 @@ async def _queueable_jobs(jobs: list[dict]) -> list[dict]:
 
 
 async def sync_queue() -> int:
-    """Queue every pending, eligible title that is not queued yet; returns how many were added.
+    """Queue every pending, eligible version that is not queued yet; returns how many were added.
 
     The database is the queue, so this is what keeps it complete: it runs when workers are idle,
     after library syncs and when a title is un-ignored. Existing positions are untouched.
@@ -371,7 +391,11 @@ async def sync_queue() -> int:
     jobs = await _queueable_jobs(await db.get_unqueued_pending_scan_jobs())
     if not jobs:
         return 0
-    added = await db.queue_scan_jobs([j["plex_guid"] for j in _priority_order(jobs)])
+    ordered = _priority_order(jobs)
+    if "version_id" in ordered[0]:
+        added = await db.queue_version_jobs([j["version_id"] for j in ordered])
+    else:
+        added = await db.queue_scan_jobs([j["plex_guid"] for j in ordered])
     if added:
         logger.info("Queued %d pending scan job(s)", added)
         await _notify_workers()
@@ -382,7 +406,7 @@ async def sync_queue() -> int:
 async def rebuild_queue() -> None:
     """Recompute the whole queue from the database in priority order (see _priority_order).
 
-    Safe to call at any time (startup, reorder-queue API, rescans). Titles being scanned are not
+    Safe to call at any time (startup, reorder-queue API, rescans). Versions being scanned are not
     affected. Ignored titles stay pending in the database so they can be un-ignored later.
     """
     jobs = await db.get_scan_jobs(status="pending")
@@ -390,7 +414,10 @@ async def rebuild_queue() -> None:
     ordered = _priority_order(active)
     # Force jobs run first whatever their position; ordering them first keeps the list readable.
     ordered.sort(key=lambda j: not j.get("force_scan"))
-    await db.set_scan_queue_order([j["plex_guid"] for j in ordered])
+    if ordered and "version_id" in ordered[0]:
+        await db.set_version_queue_order([j["version_id"] for j in ordered])
+    else:
+        await db.set_scan_queue_order([j["plex_guid"] for j in ordered])
     if ordered:
         logger.info(
             "Queued %d pending scan jobs (%d movies, %d episodes, %d not queued)",
@@ -658,8 +685,14 @@ async def skip_current_scan() -> None:
     request_skip_scan(current)
 
 
-def request_skip_scan(plex_guid: str) -> bool:
-    """Request that a specific active scan title (one of this process's workers) be aborted and requeued."""
+def request_skip_scan(plex_guid: str, version_id: int | None = None) -> bool:
+    """Request that a specific active scan (one of this process's workers) be aborted and requeued."""
+    if version_id is not None:
+        if version_id not in _current_versions:
+            return False
+        _skip_requested_version_ids.add(version_id)
+        logger.info("Skip requested for active scan: %s (version %d)", plex_guid, version_id)
+        return True
     if plex_guid not in _current_guids:
         return False
     _skip_requested_guids.add(plex_guid)
@@ -728,13 +761,24 @@ def make_judge(config, nudenet_model: str, nudenet_model_path: str, siglip_on: b
     return judge
 
 
-async def scan_video(plex_guid: str, config) -> None:
+async def scan_video(plex_guid: str, config, version_id: int | None = None) -> None:
     _skip_requested_guids.discard(plex_guid)
+    if version_id is not None:
+        _skip_requested_version_ids.discard(version_id)
 
-    job = await db.get_scan_job_by_guid(plex_guid)
+    job = await db.get_title_version(version_id) if version_id is not None else None
+    if job is None:
+        versions = await db.get_title_versions(plex_guid)
+        if versions:
+            chosen = next((v for v in versions if v["status"] in ("scanning", "pending")), versions[0])
+            job = await db.get_title_version(chosen["id"])
+        if job is None:
+            job = await db.get_scan_job_by_guid(plex_guid)
     if not job:
-        logger.warning("No scan job found for guid %s", plex_guid)
+        logger.warning("No scan job found for guid %s (version %s)", plex_guid, version_id)
         return
+
+    vid = int(job.get("version_id") or 0) or None
 
     # force_scan overrides every gate below — the user explicitly requested this scan.
     is_force_scan = bool(job.get("force_scan", 0))
@@ -749,13 +793,13 @@ async def scan_video(plex_guid: str, config) -> None:
                 job["title"],
                 job.get("library_id"),
             )
-            await db.release_scan_job(plex_guid, requeue=False)
+            await db.release_scan_job(plex_guid, requeue=False, version_id=vid)
             return
 
         # Check if title is marked as ignored
         if bool(job.get("ignored", 0)):
             logger.info("Skipping ignored title: %s", job["title"])
-            await db.release_scan_job(plex_guid, requeue=False)
+            await db.release_scan_job(plex_guid, requeue=False, version_id=vid)
             return
 
         # Safety-net gate: rebuild_queue(), sync_queue() and scan_library() pre-filter using
@@ -771,13 +815,13 @@ async def scan_video(plex_guid: str, config) -> None:
                     job_rating,
                     scan_ratings,
                 )
-                await db.release_scan_job(plex_guid, requeue=False)
+                await db.release_scan_job(plex_guid, requeue=False, version_id=vid)
                 return
 
         # Don't scan outside the configured time window unless force-scanned.
         if not config.is_scan_window():
             logger.warning("Attempted to scan outside scan window (not force-scanned): %s. Re-queueing.", job["title"])
-            await db.release_scan_job(plex_guid, requeue=True)
+            await db.release_scan_job(plex_guid, requeue=True, version_id=vid)
             return
 
     file_path = job["file_path"]
@@ -797,17 +841,24 @@ async def scan_video(plex_guid: str, config) -> None:
     for p in all_parts:
         if not os.path.isfile(p):
             logger.error("Video file not found: %s", p)
-            await db.update_scan_job_status(plex_guid, "failed", error_msg=f"File not found: {p}")
+            await db.update_scan_job_status(plex_guid, "failed", error_msg=f"File not found: {p}", version_id=vid)
             return
 
     async with _state_lock:
         _current_guids.add(plex_guid)
-    # Fresh scan run: clear prior segments so retries/re-scans do not duplicate entries.
-    deleted = await segment_files.delete_segments_for_guid(plex_guid)
+        if vid is not None:
+            _current_versions[vid] = plex_guid
+    # Fresh scan run: clear prior segments for this version only so retries/re-scans do not duplicate
+    # and sibling versions' segments remain intact.
+    deleted = (
+        await segment_files.delete_segments_for_version(vid)
+        if vid is not None
+        else await segment_files.delete_segments_for_guid(plex_guid)
+    )
     if deleted:
         logger.info("Cleared %d previous segment(s) for %s", deleted, title)
         events.publish("segments_changed", guid=plex_guid)
-    await db.update_scan_job_status(plex_guid, "scanning", progress=0.0)
+    await db.update_scan_job_status(plex_guid, "scanning", progress=0.0, version_id=vid)
     logger.info("Scanning: %s (%d part(s))", title, len(all_parts))
     events.publish("scan_started", guid=plex_guid)
     # Progress events are throttled by wall time, not frames: frame rate varies with
@@ -967,7 +1018,11 @@ async def scan_video(plex_guid: str, config) -> None:
                     # plex_guid values like "imdb://tt123" would otherwise produce "imdb:__tt123"
                     # which raises [Errno 22] on Windows when used as a filename.
                     safe_guid = re.sub(r"[^\w\-]", "_", plex_guid)
-                    thumb_filename = f"{safe_guid}_{cluster_start_ms}.jpg"
+                    thumb_filename = (
+                        f"{safe_guid}_v{vid}_{cluster_start_ms}.jpg"
+                        if vid is not None
+                        else f"{safe_guid}_{cluster_start_ms}.jpg"
+                    )
                     thumb_full = THUMBNAILS_DIR / thumb_filename
                     thumb_full.write_bytes(cluster_best_jpeg)
                     thumb_path = str(thumb_full)
@@ -990,6 +1045,7 @@ async def scan_video(plex_guid: str, config) -> None:
                     detector=nudenet_detector if source == "scanner" else siglip_detector.DETECTOR_ID,
                     thumbnail_ms=cluster_best_ms,
                     false_positive=db.FP_VERIFIER if rejected else 0,
+                    version_id=vid,
                 )
                 if not rejected:
                     segments_inserted += 1
@@ -1030,11 +1086,13 @@ async def scan_video(plex_guid: str, config) -> None:
                     offset_ms = part_time_offset_ms + frame_offset_ms
                     idx = offset_ms // step_ms
 
-                    # User requested skip of this title — leave it as pending (not re-scanned).
-                    if plex_guid in _skip_requested_guids:
+                    # User requested skip of this title/version — leave it as pending (requeued).
+                    if plex_guid in _skip_requested_guids or (vid is not None and vid in _skip_requested_version_ids):
                         _skip_requested_guids.discard(plex_guid)
+                        if vid is not None:
+                            _skip_requested_version_ids.discard(vid)
                         logger.info("Scan of '%s' skipped by user request", title)
-                        await db.release_scan_job(plex_guid, requeue=True)
+                        await db.release_scan_job(plex_guid, requeue=True, version_id=vid)
                         await _notify_workers()
                         return
 
@@ -1042,14 +1100,14 @@ async def scan_video(plex_guid: str, config) -> None:
                     # too: otherwise an idle worker's pause_scanner() aborts it (#201).
                     if _paused and not is_force_scan:
                         # Re-queue for later
-                        await db.release_scan_job(plex_guid, requeue=True, progress=idx / total_steps)
+                        await db.release_scan_job(plex_guid, requeue=True, progress=idx / total_steps, version_id=vid)
                         await _notify_workers()
                         logger.info("Scan paused mid-way through %s, re-queued", title)
                         return
 
                     # Periodically check the scan window; abort if it has ended.
                     if idx % 5 == 0 and not is_force_scan and not config.is_scan_window():
-                        await db.release_scan_job(plex_guid, requeue=True, progress=idx / total_steps)
+                        await db.release_scan_job(plex_guid, requeue=True, progress=idx / total_steps, version_id=vid)
                         await _notify_workers()
                         logger.info("Scan window ended during scan of '%s', re-queued", title)
                         if not _paused:
@@ -1088,7 +1146,7 @@ async def scan_video(plex_guid: str, config) -> None:
 
                     progress = (idx + 1) / total_steps
                     if idx % 30 == 0:  # Update DB every ~2.5 min of video at 5 s steps
-                        await db.update_scan_job_status(plex_guid, "scanning", progress=progress)
+                        await db.update_scan_job_status(plex_guid, "scanning", progress=progress, version_id=vid)
                     now = time.monotonic()
                     if now - last_progress_event >= PROGRESS_EVENT_INTERVAL_S:
                         last_progress_event = now
@@ -1099,16 +1157,16 @@ async def scan_video(plex_guid: str, config) -> None:
             await _flush_cluster()
             part_time_offset_ms += part_duration_ms
 
-        await db.update_scan_job_status(plex_guid, "done", progress=1.0, scan_version=SCAN_VERSION)
+        await db.update_scan_job_status(plex_guid, "done", progress=1.0, scan_version=SCAN_VERSION, version_id=vid)
         if len(all_parts) == 1:
             # Hayaa names a file by its content key, which only the file can produce: compute it
-            # now so the scan can still be shared if the file is deleted before a sync (#228).
+            # now so the scan can still be shared if the file is deleted before a sync (#228, #233).
             try:
                 from . import hayaa
-                await hayaa.content_key_for(all_parts[0])
+                await hayaa.content_key_for(all_parts[0], version_id=vid)
             except Exception as exc:
                 logger.debug("No Hayaa content key for %s: %s", title, exc)
-        # A rescan rewrote the title's segments: put pulled Hayaa segments back and match the new
+        # A rescan rewrote the version's segments: put pulled Hayaa segments back and match the new
         # local ones to their claims (#222). Best effort; the next sync does the same.
         try:
             from . import hayaa_sync
@@ -1122,16 +1180,21 @@ async def scan_video(plex_guid: str, config) -> None:
         logger.info("Scan complete: %s — found %d segment(s)", title, segments_inserted)
 
     except asyncio.CancelledError:
-        # A pool restart or shutdown cut the scan short: hand the claim back so the title is
+        # A pool restart or shutdown cut the scan short: hand the claim back so the version is
         # not left 'scanning' (and so unclaimable) until the next process start.
-        await asyncio.shield(db.release_scan_job(plex_guid, requeue=True))
+        await asyncio.shield(db.release_scan_job(plex_guid, requeue=True, version_id=vid))
         raise
     except Exception as exc:
         logger.error("Scan failed for %s: %s", title, exc)
-        await db.update_scan_job_status(plex_guid, "failed", error_msg=str(exc))
+        await db.update_scan_job_status(plex_guid, "failed", error_msg=str(exc), version_id=vid)
     finally:
         async with _state_lock:
-            _current_guids.discard(plex_guid)
+            if vid is not None:
+                _current_versions.pop(vid, None)
+                if plex_guid not in _current_versions.values():
+                    _current_guids.discard(plex_guid)
+            else:
+                _current_guids.discard(plex_guid)
         # Covers every exit (done, failed, skipped, paused, window ended): the UI
         # refetches the job to learn which.
         events.publish("scan_finished", guid=plex_guid)
@@ -1161,24 +1224,26 @@ async def _scanner_worker_loop(worker_id: int, get_config_fn) -> None:
             continue
 
         plex_guid = job["plex_guid"]
+        vid = job.get("version_id")
         is_force_scan = bool(job.get("force_scan", 0))
 
         if _paused:
             resume_scanner()
 
         logger.info(
-            "Worker %d starting scan of %s (force_scan=%s, in_window=%s)",
+            "Worker %d starting scan of %s (version=%s, force_scan=%s, in_window=%s)",
             worker_id,
             plex_guid,
+            vid,
             is_force_scan,
             in_window,
         )
-        await scan_video(plex_guid, config)
+        await scan_video(plex_guid, config, version_id=vid)
 
         # Clear force_scan flag after job completes
         if is_force_scan:
-            await db.set_force_scan(plex_guid, False)
-            logger.info(f"Cleared force_scan for {plex_guid}")
+            await db.set_force_scan(plex_guid, False, version_id=vid)
+            logger.info(f"Cleared force_scan for {plex_guid} (version={vid})")
 
         await asyncio.sleep(1)  # Brief pause between scans
 

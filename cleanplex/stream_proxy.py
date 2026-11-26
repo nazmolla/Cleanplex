@@ -316,6 +316,21 @@ async def db_part_lookup(part_id: int) -> str | None:
     return await db.get_rating_key_for_part(part_id)
 
 
+async def db_part_version_lookup(part_id: int) -> tuple[str, int] | None:
+    """Resolve (rating_key, version_id) for a Plex part id."""
+    from . import database as db
+
+    return await db.get_part_info(part_id)
+
+
+async def db_media_version_lookup(rating_key: str, media_index: int) -> int | None:
+    """Resolve title_versions.id for a (rating_key, mediaIndex) pair."""
+    from . import database as db
+
+    row = await db.get_version_by_media_index(rating_key, media_index)
+    return int(row["version_id"]) if row else None
+
+
 @dataclass
 class _Session:
     rating_key: str
@@ -331,9 +346,11 @@ class _Session:
     after_cut: dict[int, int] = field(default_factory=dict)
     recorded: set[int] = field(default_factory=set)  # cut indexes already recorded
     keyframes: list[int] | None = None  # set when the stream is a copy (see edit_playlist)
+    version_id: int = 0
 
 
 RangesProvider = Callable[[str, str | None], Awaitable[list[Range]]]  # (rating_key, username) -> ranges
+VersionRangesProvider = Callable[[str, str | None, int | None], Awaitable[list[Range]]]
 
 
 @dataclass
@@ -344,6 +361,7 @@ class Decision:
     reason: str
     ranges: list[Range] = field(default_factory=list)
     username: str | None = None
+    version_id: int = 0
 
 
 @dataclass
@@ -366,6 +384,7 @@ class Policy:
     # Filtering is the safe default: a viewer who cannot be identified is treated as filtered.
     unknown_user_filtered: bool = True
     closers: list[Callable[[], Awaitable[None]]] = field(default_factory=list)
+    version_ranges_for: VersionRangesProvider | None = None
 
 
 def cut_boundaries(removed: list[int]) -> dict[int, int]:
@@ -380,7 +399,7 @@ def cut_boundaries(removed: list[int]) -> dict[int, int]:
 
 
 async def record_cut_played(session: "_Session", span: Range) -> int:
-    """Record a skip event for each segment of the title inside *span* that this viewer's settings skip.
+    """Record a skip event for each segment of the title/version inside *span* that this viewer's settings skip.
 
     The proxy removes time, not segments, so the segments are looked up by overlap. Called
     when the client fetches the first segment after the cut, i.e. when the viewer really
@@ -390,7 +409,10 @@ async def record_cut_played(session: "_Session", span: Range) -> int:
     from . import events
     from .filter_engine import _is_filtered, _resolve_action
 
-    segments = await db.get_active_segments_for_rating_key(session.rating_key)
+    if session.version_id:
+        segments = await db.get_segments_for_version(session.version_id)
+    else:
+        segments = await db.get_active_segments_for_rating_key(session.rating_key)
     prefs = await db.get_user_category_prefs(session.username) if session.username else {}
     recorded = 0
     for seg in segments:
@@ -416,7 +438,13 @@ NEVER_CONTROLLABLE_PRODUCTS = {"Plex Web"}
 
 
 async def decide(
-    policy: Policy, rating_key: str, client_id: str, remote_ip: str, token: str, product: str = ""
+    policy: Policy,
+    rating_key: str,
+    client_id: str,
+    remote_ip: str,
+    token: str,
+    product: str = "",
+    version_id: int | None = None,
 ) -> Decision:
     """Apply the policy's conditions in order and return the outcome with the reason."""
     if (
@@ -431,10 +459,13 @@ async def decide(
             return Decision(False, "viewer could not be identified")
         if username is not None and not await policy.filter_enabled(username):
             return Decision(False, f"filtering is off for {username}", username=username)
-    ranges = await policy.ranges_for(rating_key, username)
+    if version_id is not None and version_id > 0 and policy.version_ranges_for is not None:
+        ranges = await policy.version_ranges_for(rating_key, username, version_id)
+    else:
+        ranges = await policy.ranges_for(rating_key, username)
     if not ranges:
-        return Decision(False, "no eligible segments for this title", username=username)
-    return Decision(True, f"{len(ranges)} range(s) to cut", ranges, username)
+        return Decision(False, "no eligible segments for this title", username=username, version_id=version_id or 0)
+    return Decision(True, f"{len(ranges)} range(s) to cut", ranges, username, version_id=version_id or 0)
 
 
 def static_ranges(ranges: list[Range]) -> RangesProvider:
@@ -446,17 +477,19 @@ def static_ranges(ranges: list[Range]) -> RangesProvider:
     return provider
 
 
-def eligible_ranges(pre_ms: int = 3000, post_ms: int = 3000) -> RangesProvider:
+def eligible_ranges(pre_ms: int = 3000, post_ms: int = 3000) -> VersionRangesProvider:
     """Provider of the ranges this viewer's settings would skip, widened by the usual buffers.
 
-    A segment counts when the viewer's category level makes it fire and the action that
-    results (their override, else the segment's own) is skip, exactly the live-skip rule.
+    When *version_id* is given, only that media version's segments are consulted.
     """
     from . import database as db
     from .filter_engine import _is_filtered, _resolve_action
 
-    async def provider(rating_key: str, username: str | None) -> list[Range]:
-        segments = await db.get_active_segments_for_rating_key(rating_key)
+    async def provider(rating_key: str, username: str | None, version_id: int | None = None) -> list[Range]:
+        if version_id is not None and version_id > 0:
+            segments = await db.get_segments_for_version(version_id)
+        else:
+            segments = await db.get_active_segments_for_rating_key(rating_key)
         prefs = await db.get_user_category_prefs(username) if username else {}
         # A playlist cannot lower the volume: mute segments are either cut or left alone (#184).
         cut_mutes = (await db.get_setting("enforcement_mute_mode", "leave")) == "cut"
@@ -541,13 +574,19 @@ class PlexTvUsers:
         await self._client.aclose()
 
 
-async def db_keyframes(rating_key: str) -> list[int] | None:
-    """Keyframes of a title's single media file, if indexed and unchanged; None means re-encode."""
+async def db_keyframes(rating_key: str, version_id: int | None = None) -> list[int] | None:
+    """Keyframes of a version's (or single-file title's) media file, if indexed and unchanged; None means re-encode."""
     from . import database as db
     from .keyframe_index import keyframes_for
 
-    # Copy mode only for a title with exactly one file: with several versions Plex may play a
-    # different one than the file that was indexed, and its keyframes would not match.
+    if version_id is not None and version_id > 0:
+        if await db.count_parts_for_version(version_id) != 1:
+            return None
+        path = await db.get_file_for_rating_key(rating_key, version_id=version_id)
+        return (await keyframes_for(path) or None) if path else None
+
+    # Copy mode only for a title with exactly one file across parts: with several versions and no
+    # version_id known, Plex could play a different version than the indexed one.
     if not rating_key or await db.count_parts_for_rating_key(rating_key) != 1:
         return None
     path = await db.get_file_for_rating_key(rating_key)
@@ -564,8 +603,10 @@ def db_policy(
     reason to leave a stream alone. ignore_client=False restores that check.
     """
     users = PlexTvUsers()
+    provider = eligible_ranges(pre_ms, post_ms)
     return Policy(
-        ranges_for=eligible_ranges(pre_ms, post_ms),
+        ranges_for=provider,
+        version_ranges_for=provider,
         client_controllable=None if ignore_client else lan_client_controllable,
         resolve_user=users,
         filter_enabled=db_filter_enabled,
@@ -581,9 +622,11 @@ def create_proxy_app(
     transport: httpx.AsyncBaseTransport | None = None,
     trust_forwarded_for: bool = False,
     ws_connect=None,
-    keyframes_provider: Callable[[str], Awaitable[list[int] | None]] | None = None,
+    keyframes_provider: Callable[..., Awaitable[list[int] | None]] | None = None,
     session_store: "SessionStore | None" = None,
     part_lookup: Callable[[int], Awaitable[str | None]] | None = None,
+    part_version_lookup: Callable[[int], Awaitable[tuple[str, int] | None]] | None = None,
+    media_version_lookup: Callable[[str, int], Awaitable[int | None]] | None = None,
 ) -> FastAPI:
     """Build the proxy app. *token* is added to requests that carry none (local testing only).
 
@@ -597,8 +640,18 @@ def create_proxy_app(
         "by_client": {},  # (client identifier, rating key) -> transcode session id, for progress reports
         "requests": deque(maxlen=5000),  # segment fetches: what the client really asked for
         "telemetry": deque(maxlen=2000),  # reports posted by the test page
-        "part_decisions": {},  # (token, rating key) -> (expires, Decision)
+        "part_decisions": {},  # (token, rating key, version_id) -> (expires, Decision)
     }
+
+    async def _keyframes_for(rating_key: str, version_id: int | None = None) -> list[int] | None:
+        if not keyframes_provider:
+            return None
+        if version_id:
+            try:
+                return await keyframes_provider(rating_key, version_id=version_id)
+            except TypeError:
+                return await keyframes_provider(rating_key)
+        return await keyframes_provider(rating_key)
 
     async def _get_session(session_id: str) -> "_Session | None":
         """The edit state of a transcode session, reloaded from the store after a restart."""
@@ -608,11 +661,13 @@ def create_proxy_app(
         stored = await session_store.load(session_id)
         if not stored:
             return None
+        vid = int(stored.get("version_id") or 0)
         found = _Session(
             stored["rating_key"], stored["offset_ms"], spans=stored["spans"], removed=stored["removed"],
             ranges=stored["ranges"], username=stored["username"] or None, client_id=stored["client_id"],
             client_title=stored["client_title"],
-            keyframes=(await keyframes_provider(stored["rating_key"])) if keyframes_provider else None,
+            keyframes=await _keyframes_for(stored["rating_key"], vid or None),
+            version_id=vid,
         )
         found.after_cut = cut_boundaries(found.removed)
         state["sessions"][session_id] = found
@@ -622,7 +677,8 @@ def create_proxy_app(
         if session_store:
             try:
                 await session_store.save(session_id, {
-                    "rating_key": sess.rating_key, "username": sess.username, "client_id": sess.client_id,
+                    "rating_key": sess.rating_key, "version_id": sess.version_id,
+                    "username": sess.username, "client_id": sess.client_id,
                     "client_title": sess.client_title, "offset_ms": sess.offset_ms, "ranges": sess.ranges,
                     "spans": sess.spans, "removed": sess.removed,
                 })
@@ -673,12 +729,20 @@ def create_proxy_app(
         known = state["decisions"].get(session_id)
         if known:
             return known
+        version_id: int | None = None
+        if media_version_lookup is not None:
+            raw_idx = params.get("mediaIndex")
+            media_idx = int(raw_idx) if raw_idx is not None and raw_idx.lstrip("-").isdigit() else 0
+            version_id = await media_version_lookup(rating_key, media_idx)
         client_id = params.get("X-Plex-Client-Identifier") or request.headers.get("x-plex-client-identifier", "")
         plex_token = params.get("X-Plex-Token") or request.headers.get("x-plex-token", "")
         product = params.get("X-Plex-Product") or request.headers.get("x-plex-product", "")
-        decision = await decide(policy, rating_key, client_id, _remote_ip(request), plex_token, product)
-        logger.info("Stream decision for session %s (rating key %s, client %s): %s: %s",
-                    session_id, rating_key, client_id or "?", "EDIT" if decision.inject else "leave alone", decision.reason)
+        decision = await decide(
+            policy, rating_key, client_id, _remote_ip(request), plex_token, product, version_id=version_id
+        )
+        logger.info("Stream decision for session %s (rating key %s, version %s, client %s): %s: %s",
+                    session_id, rating_key, version_id, client_id or "?",
+                    "EDIT" if decision.inject else "leave alone", decision.reason)
         state["decisions"][session_id] = decision
         while len(state["decisions"]) > 2000:
             state["decisions"].popitem(last=False)
@@ -709,25 +773,35 @@ def create_proxy_app(
         params["time"] = str(edited_to_original(int(raw), session.spans))
 
     async def _refuse_part(part_id: int, request: Request, params: dict[str, str]) -> bool:
-        """True when a direct file request must be refused: its title is flagged for this viewer (#184)."""
-        if not part_lookup:
+        """True when a direct file request must be refused: its version/title is flagged for this viewer (#184, #233)."""
+        rating_key: str | None = None
+        version_id: int | None = None
+        if part_version_lookup is not None:
+            info = await part_version_lookup(part_id)
+            if info:
+                rating_key, version_id = info[0], (info[1] or None)
+        elif part_lookup is not None:
+            rating_key = await part_lookup(part_id)
+        else:
             return False
-        rating_key = await part_lookup(part_id)
         if not rating_key:
             return False
         plex_token = params.get("X-Plex-Token") or request.headers.get("x-plex-token", "")
-        key = (plex_token, rating_key)
+        key = (plex_token, rating_key, version_id or 0)
         cached = state["part_decisions"].get(key)
         if cached and cached[0] > time.monotonic():
             decision = cached[1]
         else:
             client_id = params.get("X-Plex-Client-Identifier") or request.headers.get("x-plex-client-identifier", "")
             product = params.get("X-Plex-Product") or request.headers.get("x-plex-product", "")
-            decision = await decide(policy, rating_key, client_id, _remote_ip(request), plex_token, product)
+            decision = await decide(
+                policy, rating_key, client_id, _remote_ip(request), plex_token, product, version_id=version_id
+            )
             state["part_decisions"][key] = (time.monotonic() + _PART_DECISION_TTL_S, decision)
         if decision.inject:
-            # Fail closed: the original file of a flagged title cannot be edited.
-            logger.info("Refused direct file request for rating key %s: %s", rating_key, decision.reason)
+            # Fail closed: the original file of a flagged version cannot be edited.
+            logger.info("Refused direct file request for rating key %s (version %s): %s",
+                        rating_key, version_id, decision.reason)
         return decision.inject
 
     async def _note_segment(session_id: str, index: int) -> None:
@@ -869,7 +943,7 @@ def create_proxy_app(
                 # file's keyframes known the video is copied, keeping 4K/HDR intact; otherwise it is
                 # re-encoded, whose segments fall on an exact grid.
                 _, rk = _playback_ids(request, params)
-                keyframes = await keyframes_provider(rk) if keyframes_provider else None
+                keyframes = await _keyframes_for(rk, decision.version_id or None)
                 params.update({"directPlay": "0", "directStream": "1" if keyframes else "0"})
                 if full_path in _START_PATHS:
                     session_id, rating_key = _playback_ids(request, params)
@@ -879,6 +953,7 @@ def create_proxy_app(
                         rating_key, offset_ms, ranges=decision.ranges, username=decision.username, client_id=client_id,
                         client_title=params.get("X-Plex-Device-Name") or params.get("X-Plex-Product", ""),
                         keyframes=keyframes or None,
+                        version_id=decision.version_id,
                     )
                     if client_id:
                         state["by_client"][(client_id, rating_key)] = session_id

@@ -29,7 +29,7 @@ async def test_library_watcher_pass_queues_new_items_with_one_lookup_per_section
     async def stop(_):
         raise asyncio.CancelledError
 
-    with patch.object(watcher, "enqueue_many", enqueue), \
+    with patch.object(watcher, "enqueue_versions", enqueue), \
          patch.object(watcher, "_import_sidecar", new=AsyncMock(return_value=False)), \
          patch.object(db, "get_scan_job_by_guid", new=AsyncMock()) as per_item, \
          patch.object(watcher.asyncio, "sleep", stop), \
@@ -37,5 +37,8 @@ async def test_library_watcher_pass_queues_new_items_with_one_lookup_per_section
         await watcher.library_watcher_loop(AsyncMock(return_value=config), lambda: client)
 
     per_item.assert_not_called()
-    assert sorted(enqueue.call_args_list[0].args[0]) == ["new1", "new2"]
+    queued_vids = enqueue.call_args_list[0].args[0]
+    vmap = await db.get_title_versions_for_guids(["new1", "new2"])
+    expected_vids = [v["id"] for g in ("new1", "new2") for v in vmap[g]]
+    assert sorted(queued_vids) == sorted(expected_vids)
     assert set(await db.get_scan_jobs_by_guids(["known", "new1", "new2"])) == {"known", "new1", "new2"}

@@ -4,7 +4,7 @@ import Modal from '../Modal'
 import SegmentPlayer from '../SegmentPlayer'
 import SkipFileImport from '../SkipFileImport'
 import SegmentRow from './SegmentRow'
-import { Segment, SegmentFilters, Title, msToTimecode, segmentLabels, segmentOrigin, segmentPasses } from './model'
+import { Segment, SegmentFilters, Title, msToTimecode, segmentLabels, segmentOrigin, segmentPasses, versionLabel } from './model'
 import { useT } from '../../i18n'
 
 // Guids per batch request: keeps one request's SQL parameter list and reply size bounded.
@@ -12,7 +12,8 @@ const BATCH_GUIDS = 300
 // Segment rows rendered at first and added per "Show more": each row holds a frame.
 const PAGE = 80
 
-const countKey = (t: Title) => `${t.segment_count}:${t.false_positive_count ?? 0}`
+const countKey = (t: Title) =>
+  `${t.segment_count}:${t.false_positive_count ?? 0}:${(t.versions ?? []).map(v => `${v.id}:${v.segment_count}`).join(',')}`
 
 interface Props {
   /** The titles in scope that pass Browse's filters, in display order. */
@@ -27,6 +28,8 @@ interface Props {
   filters: SegmentFilters
   /** The labels and detectors present in scope, for the filter panel's choices. */
   onOptions: (labels: string[], origins: string[]) => void
+  selectedVersionId?: number
+  onSelectVersion?: (versionId: number) => void
 }
 
 /**
@@ -34,7 +37,9 @@ interface Props {
  * Lists are fetched through the batch endpoint and cached per title against the counts they were
  * fetched at, so a scan, import or delete elsewhere refetches only the titles it touched.
  */
-export default function SegmentsView({ titles, single, nameOf, onOpenTitle, onImported, filters, onOptions }: Props) {
+export default function SegmentsView({
+  titles, single, nameOf, onOpenTitle, onImported, filters, onOptions, selectedVersionId, onSelectVersion,
+}: Props) {
   const { t: tr } = useT()
   const [segs, setSegs] = useState<Record<string, Segment[]>>({})
   // The title's counts when its list was fetched. Compared with later counts rather than
@@ -45,6 +50,11 @@ export default function SegmentsView({ titles, single, nameOf, onOpenTitle, onIm
   const [limit, setLimit] = useState(PAGE)
   const [previewSeg, setPreviewSeg] = useState<Segment | null>(null)
   const [showImport, setShowImport] = useState(false)
+  const singleVersions = single ? (titles[0]?.versions ?? []) : []
+  const multiSingle = singleVersions.length > 1
+  const [localVersionId, setLocalVersionId] = useState<number>(() => singleVersions[0]?.id ?? 0)
+  const activeVersionId = multiSingle ? (selectedVersionId || localVersionId || singleVersions[0]?.id || 0) : undefined
+  const dupRes = multiSingle && new Set(singleVersions.map(v => v.resolution || '')).size < singleVersions.length
 
   const withSegments = useMemo(
     () => titles.filter(t => t.segment_count > 0 || (t.false_positive_count ?? 0) > 0),
@@ -85,7 +95,12 @@ export default function SegmentsView({ titles, single, nameOf, onOpenTitle, onIm
   const scopeKey = withSegments.map(t => t.plex_guid).join('|')
   useEffect(() => { setLimit(PAGE) }, [scopeKey, filters])
 
-  const inScope = useMemo(() => withSegments.flatMap(t => segs[t.plex_guid] ?? []), [withSegments, segs])
+  const inScope = useMemo(() => {
+    const raw = withSegments.flatMap(t => segs[t.plex_guid] ?? [])
+    return multiSingle && activeVersionId
+      ? raw.filter(s => !s.version_id || s.version_id === activeVersionId)
+      : raw
+  }, [withSegments, segs, multiSingle, activeVersionId])
 
   // Report the choices for the filter panel when they change.
   const labelKey = useMemo(() => Array.from(new Set(inScope.flatMap(segmentLabels))).sort().join('\n'), [inScope])
@@ -95,7 +110,13 @@ export default function SegmentsView({ titles, single, nameOf, onOpenTitle, onIm
   }, [labelKey, originKey])
 
   const groups = withSegments
-    .map(t => ({ title: t, segments: (segs[t.plex_guid] ?? []).filter(s => segmentPasses(s, filters)) }))
+    .map(t => ({
+      title: t,
+      segments: (segs[t.plex_guid] ?? []).filter(s =>
+        (!multiSingle || !activeVersionId || !s.version_id || s.version_id === activeVersionId)
+        && segmentPasses(s, filters),
+      ),
+    }))
     .filter(g => g.segments.length > 0)
   const total = groups.reduce((n, g) => n + g.segments.length, 0)
 
@@ -118,9 +139,37 @@ export default function SegmentsView({ titles, single, nameOf, onOpenTitle, onIm
 
   return (
     <div className="space-y-5">
+      {multiSingle && (
+        <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label={tr('versions_tablist_aria')}>
+          {singleVersions.map(v => {
+            const active = v.id === activeVersionId
+            return (
+              <button
+                key={v.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => { setLocalVersionId(v.id); onSelectVersion?.(v.id) }}
+                title={v.file_path}
+                className={`px-2.5 py-1 rounded text-xs flex items-center gap-1.5 border ${
+                  active
+                    ? 'bg-plex-orange/15 border-plex-orange text-plex-orange'
+                    : 'border-plex-border text-gray-300 hover:text-white'
+                }`}
+              >
+                <span className="font-medium">{versionLabel(v, dupRes, tr)}</span>
+                <span className="text-[11px] text-muted">{v.status}</span>
+                <span className="text-[11px] tabular-nums text-muted">({v.segment_count})</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
       {single && titles[0] && showImport && (
         <SkipFileImport
           plexGuid={titles[0].plex_guid}
+          versionId={activeVersionId}
           onImported={() => {
             // Drop the cached list: the counts Browse reloads will differ and trigger a refetch,
             // and an import that changes no count is still picked up.

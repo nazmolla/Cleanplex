@@ -119,7 +119,9 @@ export default function Browse() {
   const [notice, setNotice] = useState('')
   const [limit, setLimit] = useState(PAGE)
   const [scanMenu, setScanMenu] = useState<ScanTarget | null>(null)
-  const [pendingDelete, setPendingDelete] = useState<{ label: string; guids: string[]; count: number; busy: boolean } | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<{ label: string; guids: string[]; versionId?: number; count: number; busy: boolean } | null>(null)
+  // Selected media version per title when a title has multiple versions (#233).
+  const [selectedVersions, setSelectedVersions] = useState<Record<string, number>>({})
   const [skipDeleteConfirm, setSkipDeleteConfirm] = useState(() => {
     // Storage can be unavailable (private mode, blocked site data); the confirmation then always shows (#117).
     try { return localStorage.getItem('skipDeleteConfirm') === 'true' } catch { return false }
@@ -486,8 +488,11 @@ export default function Browse() {
   }
   const reloadLibsOf = (list: Title[]) => Promise.all(Array.from(new Set(list.map(t => t.library_id))).map(reloadLibrary))
 
-  const scanTitles = (list: Title[], now: boolean) => withBusy(`scan:${list.map(t => t.plex_guid).join(',')}`, async () => {
-    const errors = await pool(list, t => api.post('/api/scan/title', { plex_guid: t.plex_guid, now, library_id: t.library_id }))
+  const scanTitles = (list: Title[], now: boolean, versionId?: number) => withBusy(`scan:${list.map(t => t.plex_guid).join(',')}`, async () => {
+    const errors = await pool(list, t => {
+      const vid = versionId ?? (list.length === 1 && (t.versions?.length ?? 0) > 1 ? selectedVersions[t.plex_guid] : undefined)
+      return api.post('/api/scan/title', { plex_guid: t.plex_guid, now, library_id: t.library_id, ...(vid ? { version_id: vid } : {}) })
+    })
     await reloadLibsOf(list)
     if (errors.length > 0) toast.error(tr('browse_err_queue_titles', { titles: tr('unit_title', { count: errors.length }), errors: errors.slice(0, 5).join('\n') }))
     else if (list.length > 1) setNotice(tr(now ? 'browse_notice_titles_queued_now' : 'browse_notice_titles_queued_tonight', { titles: tr('unit_title', { count: list.length }) }))
@@ -559,23 +564,30 @@ export default function Browse() {
     }
   }
 
-  const runDelete = async (label: string, list: Title[]) => {
-    const errors = await pool(list, t => api.delete(`/api/titles/${encodeURIComponent(t.plex_guid)}/segments`))
+  const runDelete = async (label: string, list: Title[], versionId?: number) => {
+    const errors = await pool(list, t => {
+      const vid = versionId ?? (list.length === 1 && (t.versions?.length ?? 0) > 1 ? selectedVersions[t.plex_guid] : undefined)
+      const q = vid ? `?version_id=${vid}` : ''
+      return api.delete(`/api/titles/${encodeURIComponent(t.plex_guid)}/segments${q}`)
+    })
     await reloadLibsOf(list)
     if (errors.length > 0) toast.error(tr('browse_err_delete_segs', { label, error: errors[0] }))
     else toast.success(tr('browse_ok_delete_segs', { label }))
   }
-  const deleteSegments = (label: string, list: Title[]) => {
+  const deleteSegments = (label: string, list: Title[], versionId?: number) => {
     const withSegs = list.filter(t => t.segment_count > 0 || fpOf(t) > 0)
     if (withSegs.length === 0) return
-    if (skipDeleteConfirm) { runDelete(label, withSegs); return }
-    setPendingDelete({ label, guids: withSegs.map(t => t.plex_guid), count: sum(withSegs, t => t.segment_count + fpOf(t)), busy: false })
+    const scopedVid = versionId ?? (withSegs.length === 1 && (withSegs[0].versions?.length ?? 0) > 1 ? selectedVersions[withSegs[0].plex_guid] : undefined)
+    const ver = scopedVid ? withSegs[0].versions?.find(v => v.id === scopedVid) : undefined
+    const count = ver ? ver.segment_count + (ver.false_positive_count ?? 0) : sum(withSegs, t => t.segment_count + fpOf(t))
+    if (skipDeleteConfirm) { runDelete(label, withSegs, scopedVid); return }
+    setPendingDelete({ label, guids: withSegs.map(t => t.plex_guid), versionId: scopedVid, count, busy: false })
   }
   const confirmDelete = async () => {
     if (!pendingDelete) return
     setPendingDelete({ ...pendingDelete, busy: true })
     const guids = new Set(pendingDelete.guids)
-    await runDelete(pendingDelete.label, titles.filter(t => guids.has(t.plex_guid)))
+    await runDelete(pendingDelete.label, titles.filter(t => guids.has(t.plex_guid)), pendingDelete.versionId)
     setPendingDelete(null)
   }
   const toggleSkipConfirm = (on: boolean) => {
@@ -831,7 +843,16 @@ export default function Browse() {
         context={context}
         // The reason a title failed, so a Failed title never stands unexplained (#190).
         note={t.status === 'failed' && t.error_msg ? <p className="text-xs text-red-400/80 truncate" title={t.error_msg}>{failureText(t.error_msg)}</p> : undefined}
-        badges={t.ignored ? <span className="text-xs bg-yellow-500/15 text-yellow-300 px-2 py-0.5 rounded-full flex-shrink-0">{tr('browse_ignored')}</span> : undefined}
+        badges={
+          <>
+            {(t.versions?.length ?? 0) > 1 && (
+              <span className="text-xs bg-white/10 text-gray-300 px-2 py-0.5 rounded-full flex-shrink-0">
+                {tr('versions_count', { count: t.versions!.length })}
+              </span>
+            )}
+            {t.ignored && <span className="text-xs bg-yellow-500/15 text-yellow-300 px-2 py-0.5 rounded-full flex-shrink-0">{tr('browse_ignored')}</span>}
+          </>
+        }
         status={<StatusBadge status={t.status} progress={t.progress} />}
         scanned={scannedCell([t], tr, formatDate, formatDateTime)}
         count={countFor([t])}
@@ -844,7 +865,16 @@ export default function Browse() {
         onContextMenu={e => openScanMenu(e, { guid: t.plex_guid })}
         ignored={t.ignored}
       />
-      {open && <TitleSegments title={t} onChanged={x => reloadLibrary(x.library_id)} />}
+      {open && (
+        <TitleSegments
+          title={t}
+          onChanged={x => reloadLibrary(x.library_id)}
+          selectedVersionId={selectedVersions[t.plex_guid]}
+          onSelectVersion={vid => setSelectedVersions(prev => ({ ...prev, [t.plex_guid]: vid }))}
+          onScanVersion={(title, vid, now) => scanTitles([title], now, vid)}
+          onDeleteVersionSegments={(title, vid) => deleteSegments(name, [title], vid)}
+        />
+      )}
       </div>
     )
   }
@@ -1088,7 +1118,17 @@ export default function Browse() {
                 />
               </div>
             ) : (
-              <SegmentsView titles={[scopeTitle]} single nameOf={nameOf} onOpenTitle={t => go({ guid: t.plex_guid })} onImported={t => reloadLibrary(t.library_id)} filters={sf} onOptions={onSegOptions} />
+              <SegmentsView
+                titles={[scopeTitle]}
+                single
+                nameOf={nameOf}
+                onOpenTitle={t => go({ guid: t.plex_guid })}
+                onImported={t => reloadLibrary(t.library_id)}
+                filters={sf}
+                onOptions={onSegOptions}
+                selectedVersionId={selectedVersions[scopeTitle.plex_guid]}
+                onSelectVersion={vid => setSelectedVersions(prev => ({ ...prev, [scopeTitle.plex_guid]: vid }))}
+              />
             )
           ) : view === 'segments' ? (
             <SegmentsView titles={sorted} single={false} nameOf={nameOf} onOpenTitle={t => go({ guid: t.plex_guid })} onImported={t => reloadLibrary(t.library_id)} filters={sf} onOptions={onSegOptions} />

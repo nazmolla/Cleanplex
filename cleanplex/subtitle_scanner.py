@@ -182,7 +182,13 @@ async def load_wordlist() -> list[str]:
     return DEFAULT_WORDLIST
 
 
-async def scan_title(plex_guid: str, title: str, file_path: str, language: str = "eng") -> int:
+async def scan_title(
+    plex_guid: str,
+    title: str,
+    file_path: str,
+    language: str = "eng",
+    version_id: int | None = None,
+) -> int:
     """Scan one title's subtitles and store language segments. Returns the count."""
     sidecar = find_sidecar_subtitle(file_path)
     if sidecar is not None:
@@ -203,7 +209,7 @@ async def scan_title(plex_guid: str, title: str, file_path: str, language: str =
         logger.info("No listed words found in subtitles for '%s'", title)
         return 0
 
-    count = await db.insert_segments_bulk(plex_guid, title, segments, source="subtitles")
+    count = await db.insert_segments_bulk(plex_guid, title, segments, source="subtitles", version_id=version_id)
     events.publish("segments_changed", guid=plex_guid)
     logger.info("Found %d language segment(s) in '%s'", count, title)
     return count

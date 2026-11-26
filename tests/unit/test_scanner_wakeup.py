@@ -33,7 +33,7 @@ def fresh_state(monkeypatch):
 async def _run_workers(monkeypatch, n, in_window, action):
     started: dict[str, float] = {}
 
-    async def fake_scan(guid, config):
+    async def fake_scan(guid, config, version_id=None):
         started[guid] = time.monotonic()
         await asyncio.sleep(3600)
 
@@ -94,7 +94,7 @@ async def test_outside_window_only_force_scans_start(monkeypatch):
 async def test_a_worker_claims_a_queued_job_from_the_database(monkeypatch):
     claimed = []
 
-    async def fake_scan(guid, config):
+    async def fake_scan(guid, config, version_id=None):
         claimed.append(guid)
         await asyncio.sleep(3600)
 

@@ -427,3 +427,65 @@ describe('Browse live updates (#89)', () => {
     expect(await screen.findByText('42%')).toBeInTheDocument()
   })
 })
+
+describe('Multi-version titles (#233)', () => {
+  it('lists a multi-version title once and scopes segments and actions to the selected version', async () => {
+    movieList = [
+      {
+        ...movies[0],
+        versions: [
+          { id: 101, plex_media_id: 'm1', resolution: '1080', file_path: '/media/Film.1080p.mkv', status: 'done', progress: 1, duration_ms: 600000, segment_count: 1, false_positive_count: 0 },
+          { id: 102, plex_media_id: 'm2', resolution: '4k', file_path: '/media/Film.2160p.mkv', status: 'done', progress: 1, duration_ms: 600000, segment_count: 1, false_positive_count: 0 },
+        ],
+      } as any,
+    ]
+    mockApi.post.mockImplementation((path: string) => {
+      if (path === '/api/titles/segments/batch') {
+        return Promise.resolve({
+          segments: [
+            { ...seg(1, 'g1', 'Movie A'), version_id: 101 },
+            { ...seg(2, 'g1', 'Movie A', 'BUTTOCKS_EXPOSED'), version_id: 102 },
+          ],
+        })
+      }
+      return Promise.resolve({ ok: true })
+    })
+
+    renderAt('/browse?lib=lib1')
+    await waitFor(() => expect(screen.getByText('2 versions')).toBeInTheDocument())
+    expect(screen.getAllByTitle('Show segments of Movie A')).toHaveLength(1)
+
+    fireEvent.click(screen.getByTitle('Show segments of Movie A'))
+    await waitFor(() => expect(screen.getByRole('tab', { name: /1080p/i })).toBeInTheDocument())
+    expect(screen.getByRole('tab', { name: /4K/i })).toBeInTheDocument()
+
+    // First version (1080p) active by default -> only segment 1 (00:01:00) visible
+    await waitFor(() => expect(screen.getByText('00:01:00')).toBeInTheDocument())
+    expect(screen.queryByText('00:02:00')).not.toBeInTheDocument()
+
+    // Selecting 4K filters segments to 4K only (00:02:00)
+    fireEvent.click(screen.getByRole('tab', { name: /4K/i }))
+    expect(screen.queryByText('00:01:00')).not.toBeInTheDocument()
+    expect(screen.getByText('00:02:00')).toBeInTheDocument()
+
+    // Version scan button calls /api/scan/title with version_id=102
+    fireEvent.click(screen.getByRole('button', { name: 'Scan version' }))
+    await waitFor(() =>
+      expect(mockApi.post).toHaveBeenCalledWith('/api/scan/title', {
+        plex_guid: 'g1',
+        now: true,
+        library_id: 'lib1',
+        version_id: 102,
+      }),
+    )
+
+    // Delete version segments scopes DELETE to version_id=102
+    fireEvent.click(screen.getByRole('button', { name: 'Delete version segments' }))
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /^Delete/ }).length).toBeGreaterThan(0))
+    const confirmBtns = screen.getAllByRole('button', { name: /^Delete/ })
+    fireEvent.click(confirmBtns[confirmBtns.length - 1])
+    await waitFor(() =>
+      expect(mockApi.delete).toHaveBeenCalledWith('/api/titles/g1/segments?version_id=102'),
+    )
+  })
+})

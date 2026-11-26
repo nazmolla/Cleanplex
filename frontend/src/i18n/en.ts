@@ -51,6 +51,11 @@ export const en = {
   ver_training_desc: 'Learns from the segments you marked as false positives. Retrain after marking more.',
   ver_training_title: 'False-positive filter training',
   ver_untrained_hint: 'Train the filter under Maintenance first; then choose how strictly it drops detections.',
+  versions_tablist_aria: 'Media versions',
+  versions_scan: 'Scan version',
+  versions_delete_segments: 'Delete version segments',
+  versions_segs_empty: 'No segments for this version.',
+  versions_fallback: 'Version {id}',
   lang_toggle_label: 'Language',
   lang_english: 'English',
   lang_arabic: 'العربية',
@@ -82,6 +87,7 @@ export const en = {
   common_unknown: 'unknown',
 
   // Units / Plurals
+  versions_count: { one: '{count} version', other: '{count} versions' },
   unit_title: { one: '{count} title', other: '{count} titles' },
   unit_selected_title: { one: '{count} selected title', other: '{count} selected titles' },
   unit_failed_title: { one: '{count} failed title', other: '{count} failed titles' },

@@ -76,6 +76,15 @@ async def delete_segments_for_guid(plex_guid: str) -> int:
     return deleted
 
 
+async def delete_segments_for_version(version_id: int) -> int:
+    """Delete all segments of one media version and their files; return the row count."""
+    refs = await db.get_segment_file_refs_for_version(version_id)
+    deleted = await db.delete_segments_for_version(version_id)
+    if refs:
+        await remove_files(refs)
+    return deleted
+
+
 def _sweep_directory(directory: Path, referenced: set[str], grace_s: float) -> tuple[int, int]:
     """Delete files in *directory* that are not in *referenced* and are older than *grace_s*."""
     if not directory.is_dir():

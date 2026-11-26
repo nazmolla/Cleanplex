@@ -12,12 +12,13 @@ interface ImportResult {
 
 interface Props {
   plexGuid: string
+  versionId?: number
   onImported?: (count: number) => void
 }
 
 type Mode = 'file' | 'paste'
 
-export default function SkipFileImport({ plexGuid, onImported }: Props) {
+export default function SkipFileImport({ plexGuid, versionId, onImported }: Props) {
   const { t } = useT()
   const [mode, setMode] = useState<Mode>('file')
   const [busy, setBusy] = useState(false)
@@ -39,6 +40,7 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
     try {
       const form = new FormData()
       form.append('plex_guid', plexGuid)
+      if (versionId) form.append('version_id', String(versionId))
       form.append('file', file)
       form.append('replace', String(replace))
       finish(await api.upload<ImportResult>('/api/segments/import', form))
@@ -58,6 +60,7 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
       finish(
         await api.post<ImportResult>('/api/segments/import/paste', {
           plex_guid: plexGuid,
+          ...(versionId ? { version_id: versionId } : {}),
           text: pasted,
           replace,
         }),

@@ -151,6 +151,39 @@ CREATE TABLE IF NOT EXISTS scan_jobs (
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Per-version state (#233): a Plex title (scan_jobs) can have several media versions (1080p, 4K),
+-- each scanned, hashed, indexed and synced with Hayaa independently.
+CREATE TABLE IF NOT EXISTS title_versions (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    plex_guid        TEXT    NOT NULL,
+    plex_media_id    TEXT    DEFAULT '',
+    media_index      INTEGER DEFAULT 0,
+    resolution       TEXT    DEFAULT '',
+    file_path        TEXT    NOT NULL DEFAULT '',
+    part_files       TEXT    DEFAULT '',
+    part_ids         TEXT    DEFAULT '',
+    file_size        INTEGER DEFAULT 0,
+    duration_ms      INTEGER DEFAULT 0,
+    content_key      TEXT    DEFAULT '',
+    content_size     INTEGER DEFAULT 0,
+    content_mtime    INTEGER DEFAULT 0,
+    status           TEXT    DEFAULT 'pending',
+    progress         REAL    DEFAULT 0,
+    force_scan       INTEGER DEFAULT 0,
+    queue_pos        INTEGER,
+    scan_version     INTEGER DEFAULT 0,
+    started_at       TIMESTAMP,
+    finished_at      TIMESTAMP,
+    error_msg        TEXT,
+    hayaa_sync_state TEXT    DEFAULT 'pending',
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_title_versions_guid ON title_versions(plex_guid);
+CREATE INDEX IF NOT EXISTS idx_title_versions_media ON title_versions(plex_guid, plex_media_id);
+CREATE INDEX IF NOT EXISTS idx_title_versions_status ON title_versions(status, queue_pos);
+CREATE INDEX IF NOT EXISTS idx_title_versions_content_key ON title_versions(content_key);
+CREATE INDEX IF NOT EXISTS idx_title_versions_sync_state ON title_versions(hayaa_sync_state);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -251,17 +284,7 @@ CREATE TABLE IF NOT EXISTS keyframe_index (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Hayaa content keys per media file (#221): reading 16 sampled chunks is cheap but not free,
--- so a key is recomputed only when the file's path, size or mtime changes (§5.7).
-CREATE TABLE IF NOT EXISTS hayaa_content_keys (
-    file_path   TEXT PRIMARY KEY,
-    size        INTEGER NOT NULL,
-    mtime       INTEGER NOT NULL,
-    content_key TEXT NOT NULL,
-    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Hayaa sync (#222). Titles are identified by their content key (see hayaa_content_keys).
+-- Hayaa sync (#222). Titles are identified by their content key (stored on scan_jobs, #235).
 -- hayaa_titles: which local title a key belongs to, the consensus version last pulled, and
 -- whether its media descriptor was sent.
 CREATE TABLE IF NOT EXISTS hayaa_titles (
@@ -320,20 +343,33 @@ CREATE TABLE IF NOT EXISTS hayaa_overrides (
     PRIMARY KEY (title_key, claim_id)
 );
 
--- Titles Plex no longer reports (#191). Their segments (the marks) move to removed_segments, which
--- every live query ignores; everything else saved for the title is purged after a retention period.
+-- Titles or individual versions Plex no longer reports (#191, #233). Their segments (the marks)
+-- move to removed_segments, which every live query ignores; everything else is purged after a
+-- retention period.
 CREATE TABLE IF NOT EXISTS removed_titles (
-    plex_guid  TEXT PRIMARY KEY,
-    title      TEXT,
-    rating_key TEXT,
-    file_path  TEXT,
-    part_files TEXT DEFAULT '',
-    removed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    purged_at  TIMESTAMP
+    version_id    INTEGER PRIMARY KEY,
+    plex_guid     TEXT NOT NULL,
+    plex_media_id TEXT DEFAULT '',
+    resolution    TEXT DEFAULT '',
+    title         TEXT,
+    rating_key    TEXT,
+    file_path     TEXT,
+    part_files    TEXT DEFAULT '',
+    duration_ms   INTEGER DEFAULT 0,
+    status        TEXT DEFAULT '',
+    scan_version  INTEGER DEFAULT 0,
+    finished_at   TIMESTAMP,
+    content_key   TEXT DEFAULT '',
+    content_size  INTEGER DEFAULT 0,
+    content_mtime INTEGER DEFAULT 0,
+    removed_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    purged_at     TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_removed_titles_guid ON removed_titles(plex_guid);
 CREATE TABLE IF NOT EXISTS removed_segments (
     id            INTEGER PRIMARY KEY,
     plex_guid     TEXT    NOT NULL,
+    version_id    INTEGER DEFAULT 0,
     title         TEXT,
     start_ms      INTEGER NOT NULL,
     end_ms        INTEGER NOT NULL,
@@ -355,10 +391,11 @@ CREATE TABLE IF NOT EXISTS removed_segments (
 );
 CREATE INDEX IF NOT EXISTS idx_removed_segments_guid ON removed_segments(plex_guid);
 
--- Plex part id -> rating key, so a direct file request can be tied to its title (#184).
+-- Plex part id -> rating key & version, so a direct file request ties to its exact version (#184, #233).
 CREATE TABLE IF NOT EXISTS title_parts (
     part_id    INTEGER PRIMARY KEY,
-    rating_key TEXT NOT NULL
+    rating_key TEXT NOT NULL,
+    version_id INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS cast_synced (
     rating_key TEXT PRIMARY KEY,
@@ -526,42 +563,42 @@ async def init_db() -> None:
             # Scan queue position (#174): NULL = not queued; lower runs first. The queue lives
             # in the database so workers claim from it and every view reads the same order.
             "ALTER TABLE scan_jobs ADD COLUMN queue_pos INTEGER",
-            # Hayaa sync per title (#231): the file's content key, computed once (scan end or first
-            # sync) so sync never reads media files, and whether what it shares changed since the
-            # last accepted push. Triggers below set 'pending'; a sync sets 'synced'.
+            # Hayaa sync per title (#231, #235): kept on scan_jobs for legacy compatibility; Step #233
+            # moves live sync state and content keys onto title_versions.
             "ALTER TABLE scan_jobs ADD COLUMN content_key TEXT DEFAULT ''",
             "ALTER TABLE scan_jobs ADD COLUMN content_size INTEGER DEFAULT 0",
+            "ALTER TABLE scan_jobs ADD COLUMN content_mtime INTEGER DEFAULT 0",
             "ALTER TABLE scan_jobs ADD COLUMN hayaa_sync_state TEXT DEFAULT 'pending'",
-            "UPDATE scan_jobs SET content_key = (SELECT k.content_key FROM hayaa_content_keys k WHERE k.file_path = scan_jobs.file_path), "
-            "content_size = (SELECT k.size FROM hayaa_content_keys k WHERE k.file_path = scan_jobs.file_path) "
-            "WHERE COALESCE(content_key, '') = '' AND file_path IN (SELECT file_path FROM hayaa_content_keys)",
             "CREATE INDEX IF NOT EXISTS idx_scan_jobs_sync_state ON scan_jobs(hayaa_sync_state)",
             "CREATE INDEX IF NOT EXISTS idx_scan_jobs_content_key ON scan_jobs(content_key)",
-            # A finished scan, an own segment added, edited or removed, a false positive or
-            # relabel, a kept claim or a local re-check: each is something to share again.
-            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_scan AFTER UPDATE OF status, finished_at, scan_version ON scan_jobs "
-            "WHEN NEW.status = 'done' BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = NEW.plex_guid; END",
-            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_seg_ins AFTER INSERT ON segments WHEN NEW.source != 'hayaa' "
-            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = NEW.plex_guid; END",
-            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_seg_upd AFTER UPDATE OF false_positive, labels, start_ms, end_ms ON segments "
-            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = NEW.plex_guid; END",
-            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_seg_del AFTER DELETE ON segments WHEN OLD.source != 'hayaa' "
-            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = OLD.plex_guid; END",
-            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_feedback AFTER INSERT ON segment_feedback "
-            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = NEW.plex_guid; END",
-            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_override_ins AFTER INSERT ON hayaa_overrides "
-            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE content_key = NEW.title_key; END",
-            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_override_upd AFTER UPDATE ON hayaa_overrides "
-            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE content_key = NEW.title_key; END",
-            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_override_del AFTER DELETE ON hayaa_overrides "
-            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE content_key = OLD.title_key; END",
-            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_verify AFTER UPDATE OF verify_state ON hayaa_claims "
-            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = NEW.plex_guid; END",
-            # What Hayaa sync needs to push the scan of a removed title (#228).
+            # Version foreign keys (#233) on per-version tables.
+            "ALTER TABLE segments ADD COLUMN version_id INTEGER DEFAULT 0",
+            "CREATE INDEX IF NOT EXISTS idx_segments_version ON segments(version_id)",
+            "ALTER TABLE removed_segments ADD COLUMN version_id INTEGER DEFAULT 0",
+            "CREATE INDEX IF NOT EXISTS idx_removed_segments_version ON removed_segments(version_id)",
+            "ALTER TABLE segment_feedback ADD COLUMN version_id INTEGER DEFAULT 0",
+            "CREATE INDEX IF NOT EXISTS idx_segment_feedback_version ON segment_feedback(version_id)",
+            "ALTER TABLE keyframe_index ADD COLUMN version_id INTEGER DEFAULT 0",
+            "CREATE INDEX IF NOT EXISTS idx_keyframe_index_version ON keyframe_index(version_id)",
+            "ALTER TABLE hayaa_sent ADD COLUMN version_id INTEGER DEFAULT 0",
+            "CREATE INDEX IF NOT EXISTS idx_hayaa_sent_version ON hayaa_sent(version_id)",
+            "ALTER TABLE hayaa_claims ADD COLUMN version_id INTEGER DEFAULT 0",
+            "CREATE INDEX IF NOT EXISTS idx_hayaa_claims_version ON hayaa_claims(version_id)",
+            "ALTER TABLE hayaa_titles ADD COLUMN version_id INTEGER DEFAULT 0",
+            "CREATE INDEX IF NOT EXISTS idx_hayaa_titles_version ON hayaa_titles(version_id)",
+            "ALTER TABLE title_parts ADD COLUMN version_id INTEGER DEFAULT 0",
+            "CREATE INDEX IF NOT EXISTS idx_title_parts_version ON title_parts(version_id)",
+            "ALTER TABLE proxy_sessions ADD COLUMN version_id INTEGER DEFAULT 0",
+            # What Hayaa sync needs to push the scan of a removed title (#228, #235).
+            "ALTER TABLE removed_titles ADD COLUMN plex_media_id TEXT DEFAULT ''",
+            "ALTER TABLE removed_titles ADD COLUMN resolution TEXT DEFAULT ''",
             "ALTER TABLE removed_titles ADD COLUMN duration_ms INTEGER DEFAULT 0",
             "ALTER TABLE removed_titles ADD COLUMN status TEXT DEFAULT ''",
             "ALTER TABLE removed_titles ADD COLUMN scan_version INTEGER DEFAULT 0",
             "ALTER TABLE removed_titles ADD COLUMN finished_at TIMESTAMP",
+            "ALTER TABLE removed_titles ADD COLUMN content_key TEXT DEFAULT ''",
+            "ALTER TABLE removed_titles ADD COLUMN content_size INTEGER DEFAULT 0",
+            "ALTER TABLE removed_titles ADD COLUMN content_mtime INTEGER DEFAULT 0",
             # Labels the local re-check found for a pulled claim: Hayaa sends none
             # (ABUSE_RESISTANCE §7), so a pulled segment takes its labels from this server's scan.
             "ALTER TABLE hayaa_claims ADD COLUMN verify_labels TEXT DEFAULT ''",
@@ -576,6 +613,214 @@ async def init_db() -> None:
                     # Unexpected error — surface it rather than silently continuing.
                     logger.error("Unexpected migration failure: %s — %s", stmt, exc)
                     raise
+        # Consolidate hayaa_content_keys into scan_jobs and removed_titles (#235) without rehashing.
+        legacy_ck = await (await conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hayaa_content_keys'"
+        )).fetchone()
+        if legacy_ck:
+            await conn.execute(
+                "UPDATE scan_jobs SET "
+                "content_key = COALESCE(NULLIF(content_key, ''), (SELECT k.content_key FROM hayaa_content_keys k WHERE k.file_path = scan_jobs.file_path)), "
+                "content_size = COALESCE(NULLIF(content_size, 0), (SELECT k.size FROM hayaa_content_keys k WHERE k.file_path = scan_jobs.file_path)), "
+                "content_mtime = COALESCE(NULLIF(content_mtime, 0), (SELECT k.mtime FROM hayaa_content_keys k WHERE k.file_path = scan_jobs.file_path)) "
+                "WHERE file_path IN (SELECT file_path FROM hayaa_content_keys)"
+            )
+            await conn.execute(
+                "UPDATE removed_titles SET "
+                "content_key = COALESCE(NULLIF(content_key, ''), (SELECT k.content_key FROM hayaa_content_keys k WHERE k.file_path = removed_titles.file_path)), "
+                "content_size = COALESCE(NULLIF(content_size, 0), (SELECT k.size FROM hayaa_content_keys k WHERE k.file_path = removed_titles.file_path)), "
+                "content_mtime = COALESCE(NULLIF(content_mtime, 0), (SELECT k.mtime FROM hayaa_content_keys k WHERE k.file_path = removed_titles.file_path)) "
+                "WHERE file_path IN (SELECT file_path FROM hayaa_content_keys)"
+            )
+            await conn.execute("DROP TABLE hayaa_content_keys")
+            await conn.commit()
+        # Upgrade removed_titles from plex_guid PK to version_id PK (#233).
+        rt_cols = [r["name"] for r in await conn.execute_fetchall("PRAGMA table_info(removed_titles)")]
+        if "version_id" not in rt_cols:
+            await conn.executescript("""
+                CREATE TABLE removed_titles_v2 (
+                    version_id    INTEGER PRIMARY KEY,
+                    plex_guid     TEXT NOT NULL,
+                    plex_media_id TEXT DEFAULT '',
+                    resolution    TEXT DEFAULT '',
+                    title         TEXT,
+                    rating_key    TEXT,
+                    file_path     TEXT,
+                    part_files    TEXT DEFAULT '',
+                    duration_ms   INTEGER DEFAULT 0,
+                    status        TEXT DEFAULT '',
+                    scan_version  INTEGER DEFAULT 0,
+                    finished_at   TIMESTAMP,
+                    content_key   TEXT DEFAULT '',
+                    content_size  INTEGER DEFAULT 0,
+                    content_mtime INTEGER DEFAULT 0,
+                    removed_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    purged_at     TIMESTAMP
+                );
+                INSERT INTO removed_titles_v2(
+                    version_id, plex_guid, plex_media_id, resolution, title, rating_key, file_path,
+                    part_files, duration_ms, status, scan_version, finished_at, content_key,
+                    content_size, content_mtime, removed_at, purged_at
+                )
+                SELECT -rowid, plex_guid, COALESCE(plex_media_id, ''), COALESCE(resolution, ''),
+                       title, rating_key, file_path, COALESCE(part_files, ''),
+                       COALESCE(duration_ms, 0), COALESCE(status, ''), COALESCE(scan_version, 0),
+                       finished_at, COALESCE(content_key, ''), COALESCE(content_size, 0),
+                       COALESCE(content_mtime, 0), removed_at, purged_at
+                FROM removed_titles;
+                DROP TABLE removed_titles;
+                ALTER TABLE removed_titles_v2 RENAME TO removed_titles;
+                CREATE INDEX IF NOT EXISTS idx_removed_titles_guid ON removed_titles(plex_guid);
+                UPDATE removed_segments
+                SET version_id = COALESCE(
+                    (SELECT r.version_id FROM removed_titles r WHERE r.plex_guid = removed_segments.plex_guid LIMIT 1),
+                    0
+                )
+                WHERE COALESCE(version_id, 0) = 0;
+            """)
+            await conn.commit()
+            logger.info("Migrated removed_titles: keyed per removed version")
+
+        # Migrate pre-#233 scan_jobs and dependent tables into title_versions once (and idempotently).
+        migrated_versions = await (await conn.execute(
+            "SELECT 1 FROM settings WHERE key='versions_v1_migrated'"
+        )).fetchone()
+        if not migrated_versions:
+            sj_cols = {
+                r[1] for r in await conn.execute_fetchall("PRAGMA table_info(scan_jobs)")
+            }
+
+            def _sj(col: str, fallback: str) -> str:
+                return f"j.{col}" if col in sj_cols else fallback
+
+            await conn.execute(f"""
+                INSERT INTO title_versions(
+                    plex_guid, plex_media_id, media_index, resolution, file_path, part_files, part_ids,
+                    file_size, duration_ms, content_key, content_size, content_mtime,
+                    status, progress, force_scan, queue_pos, scan_version,
+                    started_at, finished_at, error_msg, hayaa_sync_state, created_at
+                )
+                SELECT
+                    j.plex_guid, '', 0, '',
+                    COALESCE({_sj('file_path', "''")}, ''),
+                    COALESCE({_sj('part_files', "''")}, ''),
+                    '', 0,
+                    COALESCE({_sj('duration_ms', '0')}, 0),
+                    COALESCE({_sj('content_key', "''")}, ''),
+                    COALESCE({_sj('content_size', '0')}, 0),
+                    COALESCE({_sj('content_mtime', '0')}, 0),
+                    COALESCE({_sj('status', "'pending'")}, 'pending'),
+                    COALESCE({_sj('progress', '0')}, 0),
+                    COALESCE({_sj('force_scan', '0')}, 0),
+                    {_sj('queue_pos', 'NULL')},
+                    COALESCE({_sj('scan_version', '0')}, 0),
+                    {_sj('started_at', 'NULL')},
+                    {_sj('finished_at', 'NULL')},
+                    {_sj('error_msg', 'NULL')},
+                    COALESCE({_sj('hayaa_sync_state', "'pending'")}, 'pending'),
+                    {_sj('created_at', 'CURRENT_TIMESTAMP')}
+                FROM scan_jobs j
+                WHERE NOT EXISTS (SELECT 1 FROM title_versions v WHERE v.plex_guid = j.plex_guid)
+            """)
+            await conn.executescript("""
+
+                UPDATE segments SET version_id = (
+                    SELECT MIN(v.id) FROM title_versions v WHERE v.plex_guid = segments.plex_guid
+                ) WHERE COALESCE(version_id, 0) = 0
+                  AND EXISTS (SELECT 1 FROM title_versions v WHERE v.plex_guid = segments.plex_guid);
+
+                UPDATE segment_feedback SET version_id = (
+                    SELECT MIN(v.id) FROM title_versions v WHERE v.plex_guid = segment_feedback.plex_guid
+                ) WHERE COALESCE(version_id, 0) = 0
+                  AND EXISTS (SELECT 1 FROM title_versions v WHERE v.plex_guid = segment_feedback.plex_guid);
+
+                UPDATE keyframe_index SET version_id = (
+                    SELECT MIN(v.id) FROM title_versions v WHERE v.file_path = keyframe_index.file_path
+                ) WHERE COALESCE(version_id, 0) = 0
+                  AND EXISTS (SELECT 1 FROM title_versions v WHERE v.file_path = keyframe_index.file_path);
+
+                UPDATE hayaa_titles SET version_id = COALESCE(
+                    (SELECT v.id FROM title_versions v WHERE v.content_key = hayaa_titles.title_key LIMIT 1),
+                    (SELECT MIN(v.id) FROM title_versions v WHERE v.plex_guid = hayaa_titles.plex_guid),
+                    0
+                ) WHERE COALESCE(version_id, 0) = 0;
+
+                UPDATE hayaa_claims SET version_id = COALESCE(
+                    (SELECT v.id FROM title_versions v WHERE v.content_key = hayaa_claims.title_key LIMIT 1),
+                    (SELECT MIN(v.id) FROM title_versions v WHERE v.plex_guid = hayaa_claims.plex_guid),
+                    0
+                ) WHERE COALESCE(version_id, 0) = 0;
+
+                UPDATE hayaa_sent SET version_id = COALESCE(
+                    (SELECT v.id FROM title_versions v WHERE v.content_key = hayaa_sent.title_key LIMIT 1),
+                    (SELECT ht.version_id FROM hayaa_titles ht WHERE ht.title_key = hayaa_sent.title_key LIMIT 1),
+                    0
+                ) WHERE COALESCE(version_id, 0) = 0;
+
+                UPDATE title_parts SET version_id = COALESCE(
+                    (SELECT MIN(v.id) FROM title_versions v
+                     JOIN scan_jobs j ON j.plex_guid = v.plex_guid
+                     WHERE j.rating_key = title_parts.rating_key),
+                    0
+                ) WHERE COALESCE(version_id, 0) = 0;
+
+                INSERT OR IGNORE INTO settings(key, value) VALUES('versions_v1_migrated', '1');
+            """)
+            await conn.commit()
+
+        # Triggers marking title_versions.hayaa_sync_state = 'pending' on any shared change (#233, #234).
+        # Recreated so upgraded databases replace the legacy scan_jobs triggers cleanly.
+        await conn.executescript("""
+            DROP TRIGGER IF EXISTS hayaa_pending_scan;
+            CREATE TRIGGER hayaa_pending_scan AFTER UPDATE OF status, finished_at, scan_version ON title_versions
+            WHEN NEW.status = 'done'
+            BEGIN UPDATE title_versions SET hayaa_sync_state = 'pending' WHERE id = NEW.id; END;
+
+            DROP TRIGGER IF EXISTS hayaa_pending_seg_ins;
+            CREATE TRIGGER hayaa_pending_seg_ins AFTER INSERT ON segments
+            WHEN NEW.source != 'hayaa'
+            BEGIN UPDATE title_versions SET hayaa_sync_state = 'pending'
+                  WHERE id = CASE WHEN COALESCE(NEW.version_id, 0) > 0 THEN NEW.version_id
+                                  ELSE (SELECT MIN(id) FROM title_versions WHERE plex_guid = NEW.plex_guid) END; END;
+
+            DROP TRIGGER IF EXISTS hayaa_pending_seg_upd;
+            CREATE TRIGGER hayaa_pending_seg_upd AFTER UPDATE OF false_positive, labels, start_ms, end_ms ON segments
+            WHEN NEW.source != 'hayaa' OR NEW.false_positive != OLD.false_positive
+            BEGIN UPDATE title_versions SET hayaa_sync_state = 'pending'
+                  WHERE id = CASE WHEN COALESCE(NEW.version_id, 0) > 0 THEN NEW.version_id
+                                  ELSE (SELECT MIN(id) FROM title_versions WHERE plex_guid = NEW.plex_guid) END; END;
+
+            DROP TRIGGER IF EXISTS hayaa_pending_seg_del;
+            CREATE TRIGGER hayaa_pending_seg_del AFTER DELETE ON segments
+            WHEN OLD.source != 'hayaa'
+            BEGIN UPDATE title_versions SET hayaa_sync_state = 'pending'
+                  WHERE id = CASE WHEN COALESCE(OLD.version_id, 0) > 0 THEN OLD.version_id
+                                  ELSE (SELECT MIN(id) FROM title_versions WHERE plex_guid = OLD.plex_guid) END; END;
+
+            DROP TRIGGER IF EXISTS hayaa_pending_feedback;
+            CREATE TRIGGER hayaa_pending_feedback AFTER INSERT ON segment_feedback
+            BEGIN UPDATE title_versions SET hayaa_sync_state = 'pending'
+                  WHERE id = CASE WHEN COALESCE(NEW.version_id, 0) > 0 THEN NEW.version_id
+                                  ELSE (SELECT MIN(id) FROM title_versions WHERE plex_guid = NEW.plex_guid) END; END;
+
+            DROP TRIGGER IF EXISTS hayaa_pending_override_ins;
+            CREATE TRIGGER hayaa_pending_override_ins AFTER INSERT ON hayaa_overrides
+            BEGIN UPDATE title_versions SET hayaa_sync_state = 'pending' WHERE content_key = NEW.title_key; END;
+
+            DROP TRIGGER IF EXISTS hayaa_pending_override_upd;
+            CREATE TRIGGER hayaa_pending_override_upd AFTER UPDATE ON hayaa_overrides
+            BEGIN UPDATE title_versions SET hayaa_sync_state = 'pending' WHERE content_key = NEW.title_key; END;
+
+            DROP TRIGGER IF EXISTS hayaa_pending_override_del;
+            CREATE TRIGGER hayaa_pending_override_del AFTER DELETE ON hayaa_overrides
+            BEGIN UPDATE title_versions SET hayaa_sync_state = 'pending' WHERE content_key = OLD.title_key; END;
+
+            DROP TRIGGER IF EXISTS hayaa_pending_verify;
+            CREATE TRIGGER hayaa_pending_verify AFTER UPDATE OF verify_state ON hayaa_claims
+            BEGIN UPDATE title_versions SET hayaa_sync_state = 'pending'
+                  WHERE (COALESCE(NEW.version_id, 0) > 0 AND id = NEW.version_id) OR content_key = NEW.title_key; END;
+        """)
+        await conn.commit()
         # Migrate plex_markers: replace UNIQUE(plex_guid, plex_marker_id) with
         # UNIQUE(rating_key, plex_marker_id). Episodes from the same show share the
         # same IMDB plex_guid, so the old constraint caused false collisions during
@@ -956,6 +1201,33 @@ async def get_segments_for_guid(plex_guid: str, include_false_positives: bool = 
         return [dict(r) for r in rows]
 
 
+async def get_segments_for_version(version_id: int, include_false_positives: bool = False) -> list[dict]:
+    """Return segments belonging to one media version by start time."""
+    where = "version_id=?" if include_false_positives else f"version_id=? AND {_ACTIVE}"
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            f"SELECT * FROM segments WHERE {where} ORDER BY start_ms", (version_id,)
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_segments_for_versions(version_ids: list[int], include_false_positives: bool = False) -> list[dict]:
+    """Return segments belonging to multiple media versions, ordered by version_id, start_ms."""
+    if not version_ids:
+        return []
+    active = "" if include_false_positives else f" AND {_ACTIVE}"
+    async with get_connection() as conn:
+        rows: list = []
+        for i in range(0, len(version_ids), 500):
+            chunk = version_ids[i:i + 500]
+            rows += await conn.execute_fetchall(
+                f"SELECT * FROM segments WHERE version_id IN ({','.join('?' * len(chunk))}){active} "
+                "ORDER BY version_id, start_ms",
+                chunk,
+            )
+        return [dict(r) for r in rows]
+
+
 async def get_segments_for_guids(plex_guids: list[str], include_false_positives: bool = False) -> list[dict]:
     """Return all segments for multiple guids in a single query, ordered by plex_guid, start_ms."""
     if not plex_guids:
@@ -1030,6 +1302,164 @@ async def get_segments_by_rating_key(rating_key: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def _resolve_version_id_conn(
+    conn,
+    *,
+    rating_key: str = "",
+    plex_guid: str = "",
+    part_id: int = 0,
+    plex_media_id: str = "",
+    file_path: str = "",
+) -> tuple[int | None, bool]:
+    """Resolve a session's media version id and report whether the title has any recorded versions.
+
+    Returns ``(version_id, has_versions)``. Matches strictly by part_id, plex_media_id, or
+    file_path so segments from one version are never served for another.
+    """
+    if part_id:
+        row = await (await conn.execute(
+            "SELECT version_id FROM title_parts WHERE part_id=? AND version_id > 0",
+            (part_id,),
+        )).fetchone()
+        if row:
+            return int(row["version_id"]), True
+
+    if plex_guid:
+        vcount = (await (await conn.execute(
+            "SELECT COUNT(*) FROM title_versions WHERE plex_guid=?", (plex_guid,)
+        )).fetchone())[0]
+        if vcount > 0:
+            if plex_media_id:
+                row = await (await conn.execute(
+                    "SELECT id FROM title_versions WHERE plex_guid=? AND plex_media_id=? LIMIT 1",
+                    (plex_guid, str(plex_media_id)),
+                )).fetchone()
+                if row:
+                    return int(row["id"]), True
+            if file_path:
+                row = await (await conn.execute(
+                    "SELECT id FROM title_versions WHERE plex_guid=? AND file_path=? LIMIT 1",
+                    (plex_guid, file_path),
+                )).fetchone()
+                if row:
+                    return int(row["id"]), True
+            return None, True
+
+    if rating_key:
+        vcount = (await (await conn.execute(
+            "SELECT COUNT(*) FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+            "WHERE j.rating_key=?",
+            (rating_key,),
+        )).fetchone())[0]
+        if vcount > 0:
+            if plex_media_id:
+                row = await (await conn.execute(
+                    "SELECT v.id FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+                    "WHERE j.rating_key=? AND v.plex_media_id=? LIMIT 1",
+                    (rating_key, str(plex_media_id)),
+                )).fetchone()
+                if row:
+                    return int(row["id"]), True
+            if file_path:
+                row = await (await conn.execute(
+                    "SELECT v.id FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+                    "WHERE j.rating_key=? AND v.file_path=? LIMIT 1",
+                    (rating_key, file_path),
+                )).fetchone()
+                if row:
+                    return int(row["id"]), True
+            return None, True
+
+    if plex_media_id:
+        row = await (await conn.execute(
+            "SELECT id FROM title_versions WHERE plex_media_id=? LIMIT 1",
+            (str(plex_media_id),),
+        )).fetchone()
+        if row:
+            return int(row["id"]), True
+    if file_path:
+        row = await (await conn.execute(
+            "SELECT id FROM title_versions WHERE file_path=? LIMIT 1",
+            (file_path,),
+        )).fetchone()
+        if row:
+            return int(row["id"]), True
+    return None, False
+
+
+async def resolve_session_version(
+    *,
+    rating_key: str = "",
+    plex_guid: str = "",
+    part_id: int = 0,
+    plex_media_id: str = "",
+    file_path: str = "",
+) -> int | None:
+    """Resolve the title_versions.id for a Plex playback session without mixing versions."""
+    async with get_connection() as conn:
+        vid, _ = await _resolve_version_id_conn(
+            conn,
+            rating_key=rating_key,
+            plex_guid=plex_guid,
+            part_id=part_id,
+            plex_media_id=plex_media_id,
+            file_path=file_path,
+        )
+        return vid
+
+
+async def get_segments_for_session(
+    *,
+    rating_key: str = "",
+    plex_guid: str = "",
+    part_id: int = 0,
+    plex_media_id: str = "",
+    file_path: str = "",
+) -> list[dict]:
+    """Return active segments for the exact Plex version being played.
+
+    When the session identifies a media version (part_id, plex_media_id, or file_path) and
+    versions are recorded for the title, only that version's segments are returned so cuts from
+    another edition/resolution never bleed into playback. Falls back to guid/rating_key only
+    when no version is identified or no version rows exist.
+    """
+    async with get_connection() as conn:
+        identifies_version = bool(part_id or plex_media_id or file_path)
+        vid, has_versions = await _resolve_version_id_conn(
+            conn,
+            rating_key=rating_key,
+            plex_guid=plex_guid,
+            part_id=part_id,
+            plex_media_id=plex_media_id,
+            file_path=file_path,
+        )
+        if vid is not None:
+            rows = await conn.execute_fetchall(
+                f"SELECT * FROM segments WHERE version_id=? AND {_ACTIVE} ORDER BY start_ms",
+                (vid,),
+            )
+            return [dict(r) for r in rows]
+        if identifies_version and has_versions:
+            return []
+        if plex_guid:
+            rows = await conn.execute_fetchall(
+                f"SELECT * FROM segments WHERE plex_guid=? AND {_ACTIVE} ORDER BY start_ms",
+                (plex_guid,),
+            )
+            if rows:
+                return [dict(r) for r in rows]
+        if rating_key:
+            rows = await conn.execute_fetchall(
+                """SELECT s.* FROM segments s
+                   JOIN scan_jobs j ON j.plex_guid = s.plex_guid
+                   WHERE j.rating_key = ? AND COALESCE(s.false_positive, 0) = 0
+                   ORDER BY s.start_ms""",
+                (rating_key,),
+            )
+            return [dict(r) for r in rows]
+        return []
+
+
 async def get_summary_stats(plex_guid: str) -> dict | None:
     """Return what the Plex summary describes for a title, or None for an unknown title.
 
@@ -1039,7 +1469,15 @@ async def get_summary_stats(plex_guid: str) -> dict | None:
     """
     async with get_connection() as conn:
         job = await (await conn.execute(
-            "SELECT status, finished_at, duration_ms, rating_key FROM scan_jobs WHERE plex_guid=?", (plex_guid,)
+            """SELECT j.status,
+                      COALESCE(NULLIF(j.finished_at, ''), MAX(v.finished_at)) AS finished_at,
+                      CASE WHEN COALESCE(j.duration_ms, 0) > 0 THEN j.duration_ms ELSE COALESCE(MAX(v.duration_ms), 0) END AS duration_ms,
+                      j.rating_key
+               FROM scan_jobs j
+               LEFT JOIN title_versions v ON v.plex_guid = j.plex_guid
+               WHERE j.plex_guid=?
+               GROUP BY j.plex_guid""",
+            (plex_guid,),
         )).fetchone()
         if job is None:
             return None
@@ -1085,6 +1523,15 @@ async def get_segment_file_refs_for_guid(plex_guid: str) -> list[tuple[int, str]
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
             "SELECT id, COALESCE(thumbnail_path, '') FROM segments WHERE plex_guid=?", (plex_guid,)
+        )
+        return [(r[0], r[1]) for r in rows]
+
+
+async def get_segment_file_refs_for_version(version_id: int) -> list[tuple[int, str]]:
+    """Return (id, thumbnail_path) of every segment of one version, so their files can be removed."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT id, COALESCE(thumbnail_path, '') FROM segments WHERE version_id=?", (version_id,)
         )
         return [(r[0], r[1]) for r in rows]
 
@@ -1150,7 +1597,7 @@ async def get_verifier_training_rows(max_kept_per_group: int) -> list[dict]:
 
 # Columns shared by segments and removed_segments, in the order they are copied between them.
 _SEGMENT_COLS = (
-    "id, plex_guid, title, start_ms, end_ms, confidence, thumbnail_path, created_at, labels, category, severity, "
+    "id, plex_guid, version_id, title, start_ms, end_ms, confidence, thumbnail_path, created_at, labels, category, severity, "
     "action, channel, source, language, detector, false_positive, hover_status, thumbnail_ms, refined_at"
 )
 
@@ -1175,34 +1622,74 @@ async def archive_segments(conn, guids: list[str]) -> None:
         await conn.execute(f"DELETE FROM segments WHERE plex_guid IN ({_in(chunk)})", chunk)
 
 
-async def remove_titles_not_in(library_id: str, keep_guids: list[str]) -> int:
-    """Remove a library's titles that Plex no longer reports; return how many.
+async def archive_version_segments(conn, version_ids: list[int]) -> None:
+    """Move the segments of *version_ids* into removed_segments inside the caller's transaction."""
+    for i in range(0, len(version_ids), 500):
+        chunk = version_ids[i:i + 500]
+        await conn.execute(
+            f"INSERT OR REPLACE INTO removed_segments({_SEGMENT_COLS}) SELECT {_SEGMENT_COLS} FROM segments WHERE version_id IN ({_in(chunk)})",
+            chunk,
+        )
+        await conn.execute(f"DELETE FROM segments WHERE version_id IN ({_in(chunk)})", chunk)
 
-    Each title's job is deleted, its segments are archived (kept as marks, hidden everywhere) and
-    the title is recorded in removed_titles with the data needed to purge it later. An empty
+
+async def remove_titles_not_in(library_id: str, keep_guids: list[str]) -> int:
+    """Remove a library's titles that Plex no longer reports; return how many titles were removed.
+
+    Each title's versions and segments are archived (kept as marks, hidden everywhere) and
+    recorded in removed_titles per version with the data needed to purge later. An empty
     *keep_guids* removes nothing, so a failed Plex listing cannot wipe a library.
     """
     if not keep_guids:
         return 0
     async with get_connection() as conn:
-        rows = await conn.execute_fetchall(
+        jobs = await conn.execute_fetchall(
             f"SELECT plex_guid, title, rating_key, file_path, part_files, COALESCE(duration_ms, 0) AS duration_ms, "
-            f"status, COALESCE(scan_version, 0) AS scan_version, finished_at FROM scan_jobs "
+            f"status, COALESCE(scan_version, 0) AS scan_version, finished_at, "
+            f"COALESCE(content_key, '') AS content_key, COALESCE(content_size, 0) AS content_size, "
+            f"COALESCE(content_mtime, 0) AS content_mtime FROM scan_jobs "
             f"WHERE library_id=? AND plex_guid NOT IN ({_in(keep_guids)})",
             [library_id, *keep_guids],
         )
-        if not rows:
+        if not jobs:
             return 0
-        await conn.executemany(
-            "INSERT OR REPLACE INTO removed_titles(plex_guid, title, rating_key, file_path, part_files, "
-            "duration_ms, status, scan_version, finished_at) VALUES(?,?,?,?,?,?,?,?,?)",
-            [(r["plex_guid"], r["title"], r["rating_key"], r["file_path"], r["part_files"] or "",
-              r["duration_ms"], r["status"] or "", r["scan_version"], r["finished_at"]) for r in rows],
-        )
-        guids = [r["plex_guid"] for r in rows]
+        guids = [r["plex_guid"] for r in jobs]
+        v_rows: list = []
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            v_rows += await conn.execute_fetchall(
+                f"SELECT v.id AS version_id, v.plex_guid, j.title, j.rating_key, v.file_path, v.part_files, "
+                f"COALESCE(v.duration_ms, 0) AS duration_ms, v.status, COALESCE(v.scan_version, 0) AS scan_version, "
+                f"v.finished_at, COALESCE(v.content_key, '') AS content_key, "
+                f"COALESCE(v.content_size, 0) AS content_size, COALESCE(v.content_mtime, 0) AS content_mtime "
+                f"FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+                f"WHERE v.plex_guid IN ({_in(chunk)})",
+                chunk,
+            )
+        covered_guids = {r["plex_guid"] for r in v_rows}
+        if v_rows:
+            await conn.executemany(
+                "INSERT OR REPLACE INTO removed_titles(version_id, plex_guid, title, rating_key, file_path, part_files, "
+                "duration_ms, status, scan_version, finished_at, content_key, content_size, content_mtime) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [(r["version_id"], r["plex_guid"], r["title"], r["rating_key"], r["file_path"], r["part_files"] or "",
+                  r["duration_ms"], r["status"] or "", r["scan_version"], r["finished_at"],
+                  r["content_key"], r["content_size"], r["content_mtime"]) for r in v_rows],
+            )
+        legacy_jobs = [r for r in jobs if r["plex_guid"] not in covered_guids]
+        if legacy_jobs:
+            await conn.executemany(
+                "INSERT OR IGNORE INTO removed_titles(plex_guid, title, rating_key, file_path, part_files, "
+                "duration_ms, status, scan_version, finished_at, content_key, content_size, content_mtime) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                [(r["plex_guid"], r["title"], r["rating_key"], r["file_path"] or "", r["part_files"] or "",
+                  r["duration_ms"], r["status"] or "", r["scan_version"], r["finished_at"],
+                  r["content_key"], r["content_size"], r["content_mtime"]) for r in legacy_jobs],
+            )
         await archive_segments(conn, guids)
         for i in range(0, len(guids), 500):
             chunk = guids[i:i + 500]
+            await conn.execute(f"DELETE FROM title_versions WHERE plex_guid IN ({_in(chunk)})", chunk)
             await conn.execute(f"DELETE FROM scan_jobs WHERE plex_guid IN ({_in(chunk)})", chunk)
         await conn.commit()
         return len(guids)
@@ -1215,17 +1702,26 @@ async def archive_orphan_segments(older_than_days: int = 1) -> int:
     """
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            "SELECT plex_guid, MIN(title) AS title, COUNT(*) AS n FROM segments s "
+            "SELECT plex_guid, COALESCE(version_id, 0) AS version_id, MIN(title) AS title, COUNT(*) AS n "
+            "FROM segments s "
             "WHERE NOT EXISTS (SELECT 1 FROM scan_jobs j WHERE j.plex_guid = s.plex_guid) "
-            "AND s.created_at < datetime('now', ?) GROUP BY plex_guid",
+            "AND s.created_at < datetime('now', ?) GROUP BY plex_guid, COALESCE(version_id, 0)",
             (f"-{int(older_than_days)} days",),
         )
         if not rows:
             return 0
-        await conn.executemany(
-            "INSERT OR IGNORE INTO removed_titles(plex_guid, title) VALUES(?,?)", [(r["plex_guid"], r["title"]) for r in rows]
-        )
-        guids = [r["plex_guid"] for r in rows]
+        for r in rows:
+            if r["version_id"]:
+                await conn.execute(
+                    "INSERT OR IGNORE INTO removed_titles(version_id, plex_guid, title, file_path) VALUES(?,?,?,'')",
+                    (r["version_id"], r["plex_guid"], r["title"]),
+                )
+            else:
+                await conn.execute(
+                    "INSERT OR IGNORE INTO removed_titles(plex_guid, title, file_path) VALUES(?,?,'')",
+                    (r["plex_guid"], r["title"]),
+                )
+        guids = list({r["plex_guid"] for r in rows})
         # Only the old rows move: a fresh segment of the same guid stays live until it, too, ages out.
         for i in range(0, len(guids), 500):
             chunk = guids[i:i + 500]
@@ -1248,11 +1744,45 @@ async def restore_removed_titles(guids: list[str]) -> int:
     async with get_connection() as conn:
         for i in range(0, len(guids), 500):
             chunk = guids[i:i + 500]
+            # Carry cached content keys back onto matching live versions.
+            await conn.execute(
+                "UPDATE title_versions SET "
+                "content_key = COALESCE((SELECT r.content_key FROM removed_titles r WHERE r.plex_guid = title_versions.plex_guid AND r.file_path = title_versions.file_path AND COALESCE(r.content_key, '') != '' LIMIT 1), content_key), "
+                "content_size = COALESCE((SELECT r.content_size FROM removed_titles r WHERE r.plex_guid = title_versions.plex_guid AND r.file_path = title_versions.file_path AND COALESCE(r.content_key, '') != '' LIMIT 1), content_size), "
+                "content_mtime = COALESCE((SELECT r.content_mtime FROM removed_titles r WHERE r.plex_guid = title_versions.plex_guid AND r.file_path = title_versions.file_path AND COALESCE(r.content_key, '') != '' LIMIT 1), content_mtime) "
+                f"WHERE plex_guid IN ({_in(chunk)}) AND COALESCE(content_key, '') = ''",
+                chunk,
+            )
             cursor = await conn.execute(
                 f"INSERT OR IGNORE INTO segments({_SEGMENT_COLS}) SELECT {_SEGMENT_COLS} FROM removed_segments WHERE plex_guid IN ({_in(chunk)})",
                 chunk,
             )
             total += cursor.rowcount
+            # Re-link restored segments to the current live version_id for that guid/file.
+            for g in chunk:
+                live_versions = await conn.execute_fetchall(
+                    "SELECT id, file_path FROM title_versions WHERE plex_guid=? ORDER BY id", (g,)
+                )
+                if not live_versions:
+                    continue
+                if len(live_versions) == 1:
+                    await conn.execute(
+                        "UPDATE segments SET version_id=? WHERE plex_guid=? "
+                        "AND (COALESCE(version_id, 0) = 0 OR NOT EXISTS (SELECT 1 FROM title_versions v WHERE v.id = segments.version_id))",
+                        (live_versions[0]["id"], g),
+                    )
+                else:
+                    old_rows = await conn.execute_fetchall(
+                        "SELECT version_id, file_path FROM removed_titles WHERE plex_guid=?", (g,)
+                    )
+                    by_path = {v["file_path"]: v["id"] for v in live_versions if v["file_path"]}
+                    for r in old_rows:
+                        new_vid = by_path.get(r["file_path"])
+                        if new_vid:
+                            await conn.execute(
+                                "UPDATE segments SET version_id=? WHERE plex_guid=? AND version_id=?",
+                                (new_vid, g, r["version_id"]),
+                            )
             await conn.execute(f"DELETE FROM removed_segments WHERE plex_guid IN ({_in(chunk)})", chunk)
             await conn.execute(f"DELETE FROM removed_titles WHERE plex_guid IN ({_in(chunk)})", chunk)
         await conn.commit()
@@ -1269,60 +1799,83 @@ async def get_removed_segments(plex_guid: str) -> list[dict]:
 async def get_removed_title(plex_guid: str) -> dict | None:
     """Return a removed title's record, or None."""
     async with get_connection() as conn:
-        row = await (await conn.execute("SELECT * FROM removed_titles WHERE plex_guid=?", (plex_guid,))).fetchone()
+        row = await (await conn.execute("SELECT * FROM removed_titles WHERE plex_guid=? LIMIT 1", (plex_guid,))).fetchone()
         return dict(row) if row else None
 
 
 async def purge_removed_titles(older_than_days: int) -> list[tuple[int, str]]:
-    """Delete what is saved for titles removed longer ago than the cutoff, keeping their marks.
+    """Delete what is saved for removed versions/titles older than the cutoff, keeping their marks.
 
-    Deletes skip events, Plex markers and the cached title row by guid, and cast, parts, proxy
-    sessions and keyframe indexes by rating key / file path, but only where no live title still uses
-    that rating key or file (a re-matched title keeps both). The archived segments stay, with their
-    thumbnail path and hover state cleared. Returns (segment id, thumbnail path) of every archived
-    segment of the purged titles so the caller can delete the files. Each title is purged once.
+    Deletes skip events, Plex markers and the cached title row when no live version of that guid
+    remains, and cast, parts, proxy sessions and keyframe indexes where no live title/version still
+    uses that rating key or file (a re-matched title keeps both). Archived segments keep their
+    marks with thumbnail_path and hover_status cleared. Returns (segment id, thumbnail path) for
+    the purged archived segments so the caller can delete their files. Each entry is purged once.
     """
     async with get_connection() as conn:
         titles = await conn.execute_fetchall(
-            "SELECT plex_guid, rating_key, file_path, part_files FROM removed_titles "
+            "SELECT version_id, plex_guid, rating_key, file_path, part_files FROM removed_titles "
             "WHERE purged_at IS NULL AND removed_at < datetime('now', ?)",
             (f"-{int(older_than_days)} days",),
         )
         if not titles:
             return []
-        guids = [t["plex_guid"] for t in titles]
-        live = await conn.execute_fetchall("SELECT rating_key, file_path, part_files FROM scan_jobs")
-        live_keys = {r["rating_key"] for r in live if r["rating_key"]}
+        version_ids = [t["version_id"] for t in titles]
+        live_jobs = await conn.execute_fetchall("SELECT plex_guid, rating_key FROM scan_jobs")
+        live_guids = {r["plex_guid"] for r in live_jobs if r["plex_guid"]}
+        live_keys = {r["rating_key"] for r in live_jobs if r["rating_key"]}
+        live_vers = await conn.execute_fetchall("SELECT file_path, part_files FROM title_versions")
         live_files: set[str] = set()
-        for r in live:
+        for r in live_vers:
             live_files.add(r["file_path"] or "")
             live_files.update(_json_list(r["part_files"]))
+        dead_guids = sorted({t["plex_guid"] for t in titles} - live_guids)
         keys = sorted({t["rating_key"] for t in titles if t["rating_key"]} - live_keys)
         files = sorted({f for t in titles for f in [t["file_path"] or "", *_json_list(t["part_files"])] if f} - live_files)
 
         refs: list[tuple[int, str]] = []
-        for i in range(0, len(guids), 500):
-            chunk = guids[i:i + 500]
+        # Thumbnail cleanup on archived segments belonging to these removed versions (or fully removed guids).
+        for i in range(0, len(version_ids), 500):
+            vchunk = version_ids[i:i + 500]
             rows = await conn.execute_fetchall(
-                f"SELECT id, COALESCE(thumbnail_path, '') AS t FROM removed_segments WHERE plex_guid IN ({_in(chunk)})", chunk
+                f"SELECT id, COALESCE(thumbnail_path, '') AS t FROM removed_segments WHERE version_id IN ({_in(vchunk)})",
+                vchunk,
             )
             refs += [(r["id"], r["t"]) for r in rows]
-            await conn.execute(f"UPDATE removed_segments SET thumbnail_path='', hover_status='' WHERE plex_guid IN ({_in(chunk)})", chunk)
-            await conn.execute(f"DELETE FROM skip_events WHERE plex_guid IN ({_in(chunk)})", chunk)
-            await conn.execute(f"DELETE FROM plex_markers WHERE plex_guid IN ({_in(chunk)})", chunk)
-            # Staged Hayaa claims and the key mapping; the sent-ledger and the user's overrides stay,
-            # so a title that comes back neither re-sends nor forgets the user's verdicts.
+            await conn.execute(
+                f"UPDATE removed_segments SET thumbnail_path='', hover_status='' WHERE version_id IN ({_in(vchunk)})",
+                vchunk,
+            )
             for table in ("hayaa_claims", "hayaa_titles"):
                 await conn.execute(
-                    f"DELETE FROM {table} WHERE plex_guid IN ({_in(chunk)}) "
-                    f"AND NOT EXISTS (SELECT 1 FROM scan_jobs j WHERE j.plex_guid = {table}.plex_guid)",
-                    chunk,
+                    f"DELETE FROM {table} WHERE version_id IN ({_in(vchunk)}) "
+                    f"AND NOT EXISTS (SELECT 1 FROM title_versions v WHERE v.id = {table}.version_id)",
+                    vchunk,
                 )
-            await conn.execute(
-                f"DELETE FROM plex_title_cache WHERE plex_guid IN ({_in(chunk)}) "
-                "AND NOT EXISTS (SELECT 1 FROM scan_jobs j WHERE j.plex_guid = plex_title_cache.plex_guid)",
+        for i in range(0, len(dead_guids), 500):
+            chunk = dead_guids[i:i + 500]
+            rows = await conn.execute_fetchall(
+                f"SELECT id, COALESCE(thumbnail_path, '') AS t FROM removed_segments "
+                f"WHERE plex_guid IN ({_in(chunk)}) AND COALESCE(thumbnail_path, '') != ''",
                 chunk,
             )
+            seen = {r_id for r_id, _ in refs}
+            refs += [(r["id"], r["t"]) for r in rows if r["id"] not in seen]
+            await conn.execute(
+                f"UPDATE removed_segments SET thumbnail_path='', hover_status='' WHERE plex_guid IN ({_in(chunk)})",
+                chunk,
+            )
+            await conn.execute(f"DELETE FROM skip_events WHERE plex_guid IN ({_in(chunk)})", chunk)
+            await conn.execute(f"DELETE FROM plex_markers WHERE plex_guid IN ({_in(chunk)})", chunk)
+            await conn.execute(
+                f"DELETE FROM plex_title_cache WHERE plex_guid IN ({_in(chunk)})", chunk
+            )
+            for table in ("hayaa_claims", "hayaa_titles"):
+                await conn.execute(
+                    f"DELETE FROM {table} WHERE plex_guid IN ({_in(chunk)})",
+                    chunk,
+                )
+            await conn.execute(f"DELETE FROM title_versions WHERE plex_guid IN ({_in(chunk)})", chunk)
         for i in range(0, len(keys), 500):
             chunk = keys[i:i + 500]
             for table in ("title_cast", "cast_synced", "title_parts", "proxy_sessions"):
@@ -1330,16 +1883,17 @@ async def purge_removed_titles(older_than_days: int) -> list[tuple[int, str]]:
         for i in range(0, len(files), 500):
             chunk = files[i:i + 500]
             await conn.execute(f"DELETE FROM keyframe_index WHERE file_path IN ({_in(chunk)})", chunk)
+        for i in range(0, len(version_ids), 500):
+            vchunk = version_ids[i:i + 500]
             # A content key nothing was sent for yet is kept: Hayaa sync can still push the
-            # removed title's scan under it (#228).
+            # removed version's scan under it (#228, #235).
             await conn.execute(
-                f"DELETE FROM hayaa_content_keys WHERE file_path IN ({_in(chunk)}) "
-                "AND EXISTS (SELECT 1 FROM hayaa_sent s WHERE s.title_key = hayaa_content_keys.content_key)",
-                chunk,
+                f"UPDATE removed_titles SET content_key='', content_size=0, content_mtime=0 "
+                f"WHERE version_id IN ({_in(vchunk)}) "
+                "AND EXISTS (SELECT 1 FROM hayaa_sent s WHERE s.title_key = removed_titles.content_key)",
+                vchunk,
             )
-        for i in range(0, len(guids), 500):
-            chunk = guids[i:i + 500]
-            await conn.execute(f"UPDATE removed_titles SET purged_at=CURRENT_TIMESTAMP WHERE plex_guid IN ({_in(chunk)})", chunk)
+            await conn.execute(f"UPDATE removed_titles SET purged_at=CURRENT_TIMESTAMP WHERE version_id IN ({_in(vchunk)})", vchunk)
         await conn.commit()
         return refs
 
@@ -1375,6 +1929,14 @@ async def delete_segments_for_guid(plex_guid: str) -> int:
         return cursor.rowcount
 
 
+async def delete_segments_for_version(version_id: int) -> int:
+    """Delete all stored segments for one media version and return deleted row count."""
+    async with get_connection() as conn:
+        cursor = await conn.execute("DELETE FROM segments WHERE version_id=?", (version_id,))
+        await conn.commit()
+        return cursor.rowcount
+
+
 async def get_all_segments(limit: int = 200, offset: int = 0) -> list[dict]:
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
@@ -1400,6 +1962,7 @@ async def insert_segment(
     detector: str = "",
     thumbnail_ms: int | None = None,
     false_positive: int = 0,
+    version_id: int | None = None,
 ) -> int:
     """Insert one segment and return its row id; false_positive 2 stores a verifier rejection (inactive, undoable).
 
@@ -1407,11 +1970,17 @@ async def insert_segment(
     their behaviour; importers pass the values parsed from the source file.
     """
     async with get_connection() as conn:
+        vid = version_id
+        if vid is None:
+            vrow = await (await conn.execute(
+                "SELECT id FROM title_versions WHERE plex_guid=? ORDER BY id LIMIT 1", (plex_guid,)
+            )).fetchone()
+            vid = int(vrow["id"]) if vrow else 0
         cursor = await conn.execute(
-            "INSERT INTO segments(plex_guid, title, start_ms, end_ms, confidence, thumbnail_path, "
+            "INSERT INTO segments(plex_guid, version_id, title, start_ms, end_ms, confidence, thumbnail_path, "
             "labels, category, severity, action, channel, source, detector, thumbnail_ms, false_positive) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (plex_guid, title, start_ms, end_ms, confidence, thumbnail_path, labels,
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (plex_guid, vid, title, start_ms, end_ms, confidence, thumbnail_path, labels,
              category, severity, action, channel, source, detector, thumbnail_ms, false_positive),
         )
         segment_id = cursor.lastrowid
@@ -1422,14 +1991,16 @@ async def insert_segment(
             await conn.execute(
                 "UPDATE segments SET false_positive=1 WHERE id=? AND EXISTS ("
                 "SELECT 1 FROM segment_feedback f WHERE f.plex_guid=? AND f.verdict='false_positive' "
+                "AND (COALESCE(f.version_id, 0) = ? OR COALESCE(f.version_id, 0) = 0 OR ? = 0) "
                 "AND f.start_ms < ? AND f.end_ms > ?)",
-                (segment_id, plex_guid, end_ms, start_ms),
+                (segment_id, plex_guid, vid, vid, end_ms, start_ms),
             )
             # Same for a label correction: a rescan must not undo the user's relabel.
             fixed = await (await conn.execute(
                 "SELECT corrected_labels FROM segment_feedback WHERE plex_guid=? AND verdict='relabeled' "
+                "AND (COALESCE(version_id, 0) = ? OR COALESCE(version_id, 0) = 0 OR ? = 0) "
                 "AND corrected_labels != '' AND start_ms < ? AND end_ms > ? ORDER BY id DESC LIMIT 1",
-                (plex_guid, end_ms, start_ms),
+                (plex_guid, vid, vid, end_ms, start_ms),
             )).fetchone()
             if fixed:
                 await conn.execute(
@@ -1440,7 +2011,13 @@ async def insert_segment(
         return segment_id
 
 
-async def insert_segments_bulk(plex_guid: str, title: str, segments: list[dict], source: str) -> int:
+async def insert_segments_bulk(
+    plex_guid: str,
+    title: str,
+    segments: list[dict],
+    source: str,
+    version_id: int | None = None,
+) -> int:
     """Insert many parsed segments in one transaction and return the row count.
 
     Used by the importers, where a single file routinely carries 100+ cues —
@@ -1449,13 +2026,20 @@ async def insert_segments_bulk(plex_guid: str, title: str, segments: list[dict],
     if not segments:
         return 0
     async with get_connection() as conn:
+        vid = version_id
+        if vid is None:
+            vrow = await (await conn.execute(
+                "SELECT id FROM title_versions WHERE plex_guid=? ORDER BY id LIMIT 1", (plex_guid,)
+            )).fetchone()
+            vid = int(vrow["id"]) if vrow else 0
         await conn.executemany(
-            "INSERT INTO segments(plex_guid, title, start_ms, end_ms, confidence, "
+            "INSERT INTO segments(plex_guid, version_id, title, start_ms, end_ms, confidence, "
             "labels, category, severity, action, channel, language, source) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 (
                     plex_guid,
+                    seg.get("version_id", vid) or 0,
                     title,
                     seg["start_ms"],
                     seg["end_ms"],
@@ -1501,10 +2085,10 @@ async def mark_segment_false_positive(segment_id: int, frame_path: str = "") -> 
             await conn.commit()
             return existing["id"]
         cursor = await conn.execute(
-            "INSERT INTO segment_feedback(plex_guid, segment_id, verdict, start_ms, end_ms, source, "
-            "detector, labels, confidence, frame_path) VALUES(?,?,'false_positive',?,?,?,?,?,?,?)",
-            (seg["plex_guid"], segment_id, seg["start_ms"], seg["end_ms"], seg["source"] or "scanner",
-             seg["detector"] or "", seg["labels"] or "", seg["confidence"] or 0, frame_path),
+            "INSERT INTO segment_feedback(plex_guid, version_id, segment_id, verdict, start_ms, end_ms, source, "
+            "detector, labels, confidence, frame_path) VALUES(?,?,?,'false_positive',?,?,?,?,?,?,?)",
+            (seg["plex_guid"], seg["version_id"] or 0, segment_id, seg["start_ms"], seg["end_ms"],
+             seg["source"] or "scanner", seg["detector"] or "", seg["labels"] or "", seg["confidence"] or 0, frame_path),
         )
         await conn.commit()
         return cursor.lastrowid
@@ -1544,10 +2128,10 @@ async def relabel_segment(segment_id: int, labels: list[str], frame_path: str = 
             await conn.execute("UPDATE segment_feedback SET corrected_labels=? WHERE id=?", (new, fb["id"]))
         else:
             await conn.execute(
-                "INSERT INTO segment_feedback(plex_guid, segment_id, verdict, start_ms, end_ms, source, "
-                "detector, labels, corrected_labels, confidence, frame_path) VALUES(?,?,'relabeled',?,?,?,?,?,?,?,?)",
-                (seg["plex_guid"], segment_id, seg["start_ms"], seg["end_ms"], seg["source"] or "scanner",
-                 seg["detector"] or "", original, new, seg["confidence"] or 0, frame_path),
+                "INSERT INTO segment_feedback(plex_guid, version_id, segment_id, verdict, start_ms, end_ms, source, "
+                "detector, labels, corrected_labels, confidence, frame_path) VALUES(?,?,?,'relabeled',?,?,?,?,?,?,?,?)",
+                (seg["plex_guid"], seg["version_id"] or 0, segment_id, seg["start_ms"], seg["end_ms"],
+                 seg["source"] or "scanner", seg["detector"] or "", original, new, seg["confidence"] or 0, frame_path),
             )
             frames = []
         await conn.commit()
@@ -1565,10 +2149,12 @@ async def unmark_segment_false_positive(segment_id: int) -> list[str]:
         seg = await (await conn.execute("SELECT * FROM segments WHERE id=?", (segment_id,))).fetchone()
         if seg is None:
             return []
+        vid = seg["version_id"] or 0
         rows = await conn.execute_fetchall(
             "SELECT id, frame_path FROM segment_feedback WHERE plex_guid=? AND verdict='false_positive' "
+            "AND (COALESCE(version_id, 0) = ? OR COALESCE(version_id, 0) = 0 OR ? = 0) "
             "AND (segment_id=? OR (start_ms < ? AND end_ms > ?))",
-            (seg["plex_guid"], segment_id, seg["end_ms"], seg["start_ms"]),
+            (seg["plex_guid"], vid, vid, segment_id, seg["end_ms"], seg["start_ms"]),
         )
         if rows:
             await conn.execute(
@@ -1662,13 +2248,16 @@ _NEEDS_REFINING = (
 async def get_segments_to_refine(limit: int) -> list[dict]:
     """Return up to *limit* active detector segments stored before dense sampling, by title then time.
 
-    Rows carry what the backfill needs: the segment, its title's file and parts, and rating key.
+    Rows carry what the backfill needs: the segment, its version's file and parts, and rating key.
     """
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            "SELECT s.id, s.plex_guid, s.start_ms, s.end_ms, s.confidence, s.labels, s.severity, s.source, "
-            "s.detector, s.thumbnail_path, j.file_path, j.part_files, j.title, j.rating_key "
-            f"FROM segments s JOIN scan_jobs j ON j.plex_guid = s.plex_guid WHERE {_NEEDS_REFINING} "
+            "SELECT s.id, s.plex_guid, s.version_id, s.start_ms, s.end_ms, s.confidence, s.labels, s.severity, s.source, "
+            "s.detector, s.thumbnail_path, COALESCE(v.file_path, j.file_path) AS file_path, "
+            "COALESCE(NULLIF(v.part_files, ''), j.part_files) AS part_files, j.title, j.rating_key "
+            "FROM segments s LEFT JOIN title_versions v ON v.id = s.version_id "
+            f"LEFT JOIN scan_jobs j ON j.plex_guid = s.plex_guid WHERE {_NEEDS_REFINING} "
+            "AND (v.file_path IS NOT NULL OR j.file_path IS NOT NULL) "
             "ORDER BY s.plex_guid, s.start_ms LIMIT ?",
             (limit,),
         )
@@ -1721,16 +2310,20 @@ async def apply_segment_refinement(
 async def get_hover_preview_candidates(limit: int) -> list[dict]:
     """Return up to *limit* active segments without a hover preview, oldest first.
 
-    Each row: id, start_ms, end_ms and the title's file_path and part_files. False positives are
-    left out; they are not worth the render time.
+    Each row: id, start_ms, end_ms and the version's file_path and part_files. False positives
+    are left out; they are not worth the render time.
     """
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
             f"""
-            SELECT s.id, s.start_ms, s.end_ms, j.file_path, j.part_files
+            SELECT s.id, s.start_ms, s.end_ms,
+                   COALESCE(v.file_path, j.file_path) AS file_path,
+                   COALESCE(NULLIF(v.part_files, ''), j.part_files) AS part_files
             FROM segments s
-            JOIN scan_jobs j ON j.plex_guid = s.plex_guid
+            LEFT JOIN title_versions v ON v.id = s.version_id
+            LEFT JOIN scan_jobs j ON j.plex_guid = s.plex_guid
             WHERE COALESCE(s.hover_status, '') = '' AND {_ACTIVE_S}
+              AND (v.file_path IS NOT NULL OR j.file_path IS NOT NULL)
             ORDER BY s.id
             LIMIT ?
             """,
@@ -1956,7 +2549,12 @@ async def upsert_scan_job(
     show_rating_key: str = "",
     part_files: str = "",
     duration_ms: int = 0,
+    plex_media_id: str = "",
+    resolution: str = "",
+    file_size: int = 0,
+    part_ids: str = "",
 ) -> None:
+    """Insert a scan job if missing and ensure it has at least one title_versions row."""
     async with get_connection() as conn:
         await conn.execute(
             "INSERT OR IGNORE INTO scan_jobs"
@@ -1964,22 +2562,75 @@ async def upsert_scan_job(
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (plex_guid, title, file_path, part_files, rating_key, library_id, library_title, content_rating, media_type, year, show_guid, show_rating_key, duration_ms),
         )
+        has_v = await (await conn.execute(
+            "SELECT 1 FROM title_versions WHERE plex_guid=? LIMIT 1", (plex_guid,)
+        )).fetchone()
+        if not has_v and file_path:
+            await conn.execute(
+                "INSERT INTO title_versions(plex_guid, plex_media_id, media_index, resolution, file_path, part_files, part_ids, file_size, duration_ms) "
+                "VALUES(?,?,0,?,?,?,?,?,?)",
+                (plex_guid, plex_media_id, resolution, file_path, part_files, part_ids, file_size, duration_ms),
+            )
         await conn.commit()
 
 
 async def get_failed_jobs_for_library(library_id: str) -> list[dict]:
-    """Return a library's failed, non-ignored scan jobs (all columns)."""
+    """Return a library's failed, non-ignored scan version jobs (version + parent job columns)."""
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            "SELECT * FROM scan_jobs WHERE library_id=? AND status='failed' AND COALESCE(ignored, 0)=0", (library_id,)
+            "SELECT j.*, v.id AS version_id, v.plex_media_id, v.media_index, v.resolution, "
+            "v.file_path, v.part_files, v.part_ids, v.file_size, v.duration_ms, "
+            "v.status, v.progress, v.force_scan, v.queue_pos, v.scan_version, "
+            "v.started_at, v.finished_at, v.error_msg "
+            "FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+            "WHERE j.library_id=? AND v.status='failed' AND COALESCE(j.ignored, 0)=0",
+            (library_id,),
         )
         return [dict(r) for r in rows]
+
+
+async def _refresh_job_summary_conn(conn, guids: list[str]) -> None:
+    """Keep scan_jobs status/timestamps synced from its title_versions rows."""
+    for g in set(guids):
+        rows = await conn.execute_fetchall(
+            "SELECT status, progress, force_scan, scan_version, started_at, finished_at, error_msg, "
+            "file_path, part_files, duration_ms FROM title_versions WHERE plex_guid=? ORDER BY media_index, id",
+            (g,),
+        )
+        if not rows:
+            continue
+        statuses = [r["status"] or "pending" for r in rows]
+        if any(s == "scanning" for s in statuses):
+            summary = "scanning"
+        elif all(s == "done" for s in statuses):
+            summary = "done"
+        elif any(s == "pending" for s in statuses):
+            summary = "pending"
+        elif any(s == "failed" for s in statuses):
+            summary = "failed"
+        else:
+            summary = statuses[0]
+        primary = rows[0]
+        finished = max((r["finished_at"] for r in rows if r["finished_at"]), default=None)
+        started = min((r["started_at"] for r in rows if r["started_at"]), default=None)
+        force = 1 if any(r["force_scan"] for r in rows) else 0
+        sv = max((r["scan_version"] or 0 for r in rows), default=0)
+        err = next((r["error_msg"] for r in rows if r["status"] == "failed" and r["error_msg"]), None)
+        prog = sum(float(r["progress"] or 0.0) for r in rows) / len(rows)
+        await conn.execute(
+            "UPDATE scan_jobs SET status=?, progress=?, force_scan=?, scan_version=?, "
+            "started_at=?, finished_at=?, error_msg=?, file_path=?, part_files=?, duration_ms=? "
+            "WHERE plex_guid=?",
+            (summary, prog, force, sv, started, finished, err,
+             primary["file_path"], primary["part_files"], primary["duration_ms"], g),
+        )
 
 
 async def upsert_scan_jobs_batch(jobs: list[dict]) -> int:
     """Insert scan jobs that do not exist yet, in one transaction; return how many were inserted.
 
-    Each dict takes the keyword arguments of upsert_scan_job; existing guids are left untouched.
+    Each dict takes the keyword arguments of upsert_scan_job (plus optional ``versions`` list);
+    existing guids are left untouched.
     """
     if not jobs:
         return 0
@@ -2001,9 +2652,310 @@ async def upsert_scan_jobs_batch(jobs: list[dict]) -> int:
         )
         await conn.commit()
         inserted = conn.total_changes - before
+
+        # Ensure titles inserted via legacy callers without explicit sync_title_versions_batch still
+        # get a title_versions row.
+        guids = [j["plex_guid"] for j in jobs]
+        existing_v: set[str] = set()
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            erows = await conn.execute_fetchall(
+                f"SELECT DISTINCT plex_guid FROM title_versions WHERE plex_guid IN ({_in(chunk)})", chunk
+            )
+            existing_v.update(r["plex_guid"] for r in erows)
+        to_insert: list[tuple] = []
+        for j in jobs:
+            if j["plex_guid"] in existing_v:
+                continue
+            existing_v.add(j["plex_guid"])
+            versions = j.get("versions")
+            if versions:
+                for idx, v in enumerate(versions):
+                    to_insert.append((
+                        j["plex_guid"],
+                        str(v.get("plex_media_id", "")),
+                        v.get("media_index", idx),
+                        v.get("resolution", ""),
+                        v.get("file_path", ""),
+                        v.get("part_files", ""),
+                        v.get("part_ids", ""),
+                        v.get("file_size", 0),
+                        v.get("duration_ms", 0),
+                    ))
+            elif j.get("file_path"):
+                to_insert.append((
+                    j["plex_guid"],
+                    str(j.get("plex_media_id", "")),
+                    0,
+                    j.get("resolution", ""),
+                    j["file_path"],
+                    j.get("part_files", ""),
+                    j.get("part_ids", ""),
+                    j.get("file_size", 0),
+                    j.get("duration_ms", 0),
+                ))
+        if to_insert:
+            await conn.executemany(
+                "INSERT INTO title_versions(plex_guid, plex_media_id, media_index, resolution, file_path, "
+                "part_files, part_ids, file_size, duration_ms) VALUES(?,?,?,?,?,?,?,?,?)",
+                to_insert,
+            )
+            await conn.commit()
     # A title that returns gets its archived marks back (#191).
     await restore_removed_titles([j["plex_guid"] for j in jobs])
     return inserted
+
+
+async def get_title_versions(plex_guid: str) -> list[dict]:
+    """Return every media version for one title, ordered by media_index, id."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT * FROM title_versions WHERE plex_guid=? ORDER BY media_index, id",
+            (plex_guid,),
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_title_version(version_id: int) -> dict | None:
+    """Return one media version joined with its parent scan_jobs metadata, or None."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(
+            "SELECT v.*, v.id AS version_id, j.title, j.rating_key, j.library_id, j.library_title, "
+            "j.media_type, j.content_rating, j.year, j.show_guid, j.show_rating_key, "
+            "COALESCE(j.ignored, 0) AS ignored "
+            "FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+            "WHERE v.id=?",
+            (version_id,),
+        )).fetchone()
+        return dict(row) if row else None
+
+
+async def get_title_versions_for_guids(guids: list[str]) -> dict[str, list[dict]]:
+    """Return {plex_guid: [version_dicts]} for the given guids."""
+    out: dict[str, list[dict]] = {}
+    if not guids:
+        return out
+    async with get_connection() as conn:
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            rows = await conn.execute_fetchall(
+                f"SELECT * FROM title_versions WHERE plex_guid IN ({_in(chunk)}) ORDER BY plex_guid, media_index, id",
+                chunk,
+            )
+            for r in rows:
+                out.setdefault(r["plex_guid"], []).append(dict(r))
+    return out
+
+
+async def get_title_versions_for_library(library_id: str) -> dict[str, list[dict]]:
+    """Return {plex_guid: [version_dicts]} for every title in one library (single query)."""
+    out: dict[str, list[dict]] = {}
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT v.* FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+            "WHERE j.library_id=? ORDER BY v.plex_guid, v.media_index, v.id",
+            (library_id,),
+        )
+        for r in rows:
+            out.setdefault(r["plex_guid"], []).append(dict(r))
+    return out
+
+
+async def get_version_by_media_index(rating_key: str, media_index: int) -> dict | None:
+    """Return the version row for a rating_key and Plex 0-based mediaIndex."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT v.*, v.id AS version_id, j.rating_key, j.title FROM title_versions v "
+            "JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+            "WHERE j.rating_key=? ORDER BY v.media_index, v.id",
+            (rating_key,),
+        )
+    if not rows:
+        return None
+    for r in rows:
+        if int(r["media_index"] or 0) == media_index:
+            return dict(r)
+    if 0 <= media_index < len(rows):
+        return dict(rows[media_index])
+    return None
+
+
+async def sync_title_versions_batch(items: list[dict]) -> dict[str, list]:
+    """Reconcile Plex media versions for existing titles without losing scan history or rehashing unchanged files.
+
+    Each item dict carries ``plex_guid``, ``rating_key``, ``title``, and ``versions`` (each a
+    dict with ``plex_media_id``, ``media_index``, ``resolution``, ``file_path``, ``part_files``,
+    ``part_ids``, ``file_size``, ``duration_ms``).
+    Returns ``{"inserted": [version_dicts], "removed_ids": [version_ids]}``.
+    """
+    if not items:
+        return {"inserted": [], "removed_ids": []}
+    guids = [it["plex_guid"] for it in items]
+    inserted: list[dict] = []
+    removed_ids: list[int] = []
+    restored_pairs: list[tuple[int, str, str]] = []
+    part_tuples: list[tuple[int, str, int]] = []
+
+    async with get_connection() as conn:
+        existing_by_guid: dict[str, list[dict]] = {}
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            rows = await conn.execute_fetchall(
+                f"SELECT * FROM title_versions WHERE plex_guid IN ({_in(chunk)}) ORDER BY media_index, id",
+                chunk,
+            )
+            for r in rows:
+                existing_by_guid.setdefault(r["plex_guid"], []).append(dict(r))
+
+        touched_guids: list[str] = []
+        for it in items:
+            guid = it["plex_guid"]
+            versions = it.get("versions") or []
+            if not versions:
+                continue
+            existing = list(existing_by_guid.get(guid, []))
+            used_ids: set[int] = set()
+            by_media_id = {e["plex_media_id"]: e for e in existing if e["plex_media_id"]}
+
+            for idx, v in enumerate(versions):
+                mid = str(v.get("plex_media_id") or "")
+                fpath = v.get("file_path") or ""
+                pfiles = v.get("part_files") or ""
+                pids_raw = v.get("part_ids") or ""
+                res = v.get("resolution") or ""
+                fsize = int(v.get("file_size") or 0)
+                dur = int(v.get("duration_ms") or 0)
+                m_idx = int(v.get("media_index", idx))
+
+                match = None
+                if mid and mid in by_media_id and by_media_id[mid]["id"] not in used_ids:
+                    match = by_media_id[mid]
+                if match is None:
+                    for e in existing:
+                        if e["id"] not in used_ids and fpath and e["file_path"] == fpath:
+                            match = e
+                            break
+                if match is None and len(existing) == 1 and len(versions) == 1 and existing[0]["id"] not in used_ids:
+                    # Single-version file rename / path change on a pre-existing row.
+                    if not existing[0]["plex_media_id"] or existing[0]["plex_media_id"] == mid:
+                        match = existing[0]
+
+                if match is not None:
+                    vid = int(match["id"])
+                    used_ids.add(vid)
+                    path_changed = match["file_path"] != fpath
+                    await conn.execute(
+                        "UPDATE title_versions SET plex_media_id=?, media_index=?, resolution=?, file_path=?, "
+                        "part_files=?, part_ids=?, file_size=?, duration_ms=?, "
+                        "content_key=CASE WHEN ? THEN '' ELSE content_key END, "
+                        "content_size=CASE WHEN ? THEN 0 ELSE content_size END, "
+                        "content_mtime=CASE WHEN ? THEN 0 ELSE content_mtime END "
+                        "WHERE id=?",
+                        (mid, m_idx, res, fpath, pfiles, pids_raw, fsize, dur,
+                         path_changed, path_changed, path_changed, vid),
+                    )
+                    if path_changed:
+                        touched_guids.append(guid)
+                else:
+                    cur = await conn.execute(
+                        "INSERT INTO title_versions(plex_guid, plex_media_id, media_index, resolution, file_path, "
+                        "part_files, part_ids, file_size, duration_ms) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (guid, mid, m_idx, res, fpath, pfiles, pids_raw, fsize, dur),
+                    )
+                    vid = int(cur.lastrowid)
+                    inserted.append({
+                        "id": vid,
+                        "plex_guid": guid,
+                        "plex_media_id": mid,
+                        "media_index": m_idx,
+                        "resolution": res,
+                        "file_path": fpath,
+                        "part_files": pfiles,
+                        "part_ids": pids_raw,
+                        "file_size": fsize,
+                        "duration_ms": dur,
+                    })
+                    restored_pairs.append((vid, guid, fpath))
+                    touched_guids.append(guid)
+
+                rkey = it.get("rating_key") or ""
+                if rkey:
+                    for pid in _json_int_list(pids_raw):
+                        part_tuples.append((pid, rkey, vid))
+
+            unmatched = [e for e in existing if e["id"] not in used_ids]
+            if unmatched:
+                touched_guids.append(guid)
+                for e in unmatched:
+                    evid = int(e["id"])
+                    removed_ids.append(evid)
+                    await conn.execute(
+                        "INSERT OR REPLACE INTO removed_titles(version_id, plex_guid, title, rating_key, file_path, "
+                        "part_files, duration_ms, status, scan_version, finished_at, content_key, content_size, content_mtime) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (evid, guid, it.get("title", ""), it.get("rating_key", ""), e["file_path"],
+                         e["part_files"] or "", int(e["duration_ms"] or 0), e["status"] or "",
+                         int(e["scan_version"] or 0), e["finished_at"],
+                         e["content_key"] or "", int(e["content_size"] or 0), int(e["content_mtime"] or 0)),
+                    )
+                await archive_version_segments(conn, [int(e["id"]) for e in unmatched])
+                for e in unmatched:
+                    await conn.execute("DELETE FROM title_versions WHERE id=?", (e["id"],))
+
+        # Restore archived content keys / segments if an exact (plex_guid, file_path) version returned.
+        for new_vid, guid, fpath in restored_pairs:
+            if not fpath:
+                continue
+            rrow = await (await conn.execute(
+                "SELECT version_id, content_key, content_size, content_mtime FROM removed_titles "
+                "WHERE plex_guid=? AND file_path=? LIMIT 1",
+                (guid, fpath),
+            )).fetchone()
+            if rrow:
+                if rrow["content_key"]:
+                    await conn.execute(
+                        "UPDATE title_versions SET content_key=?, content_size=?, content_mtime=? "
+                        "WHERE id=? AND COALESCE(content_key, '')=''",
+                        (rrow["content_key"], rrow["content_size"], rrow["content_mtime"], new_vid),
+                    )
+                old_vid = rrow["version_id"]
+                await conn.execute(
+                    f"INSERT OR IGNORE INTO segments({_SEGMENT_COLS}) "
+                    f"SELECT id, plex_guid, ?, title, start_ms, end_ms, confidence, thumbnail_path, created_at, "
+                    "labels, category, severity, action, channel, source, language, detector, false_positive, "
+                    "hover_status, thumbnail_ms, refined_at FROM removed_segments WHERE version_id=?",
+                    (new_vid, old_vid),
+                )
+                await conn.execute("DELETE FROM removed_segments WHERE version_id=?", (old_vid,))
+                await conn.execute("DELETE FROM removed_titles WHERE version_id=?", (old_vid,))
+
+        if part_tuples:
+            await conn.executemany(
+                "INSERT OR REPLACE INTO title_parts(part_id, rating_key, version_id) VALUES(?,?,?)",
+                part_tuples,
+            )
+
+        if touched_guids:
+            await _refresh_job_summary_conn(conn, touched_guids)
+        await conn.commit()
+    return {"inserted": inserted, "removed_ids": removed_ids}
+
+
+def _json_int_list(raw: str | None) -> list[int]:
+    """Parse a JSON int list column, tolerating blanks and bad data."""
+    try:
+        value = json.loads(raw) if raw else []
+    except ValueError:
+        return []
+    if not isinstance(value, list):
+        return []
+    out: list[int] = []
+    for v in value:
+        try:
+            out.append(int(v))
+        except (TypeError, ValueError):
+            pass
+    return out
 
 
 async def get_existing_guids(guids: list[str]) -> set[str]:
@@ -2031,46 +2983,71 @@ async def refresh_scan_job_metadata_batch(
     async with get_connection() as conn:
         await conn.executemany(
             "UPDATE scan_jobs SET title=?, file_path=?, part_files=?, rating_key=?, content_rating=?, year=?,"
+            # Clear cached content key only if the file path changed so existing files are never rehashed (#235).
+            " content_key=CASE WHEN file_path != ? THEN '' ELSE content_key END,"
+            " content_size=CASE WHEN file_path != ? THEN 0 ELSE content_size END,"
+            " content_mtime=CASE WHEN file_path != ? THEN 0 ELSE content_mtime END,"
             # Backfill show_guid/show_rating_key from Plex for episodes synced before these columns existed.
             " show_guid=CASE WHEN ? != '' THEN ? ELSE show_guid END,"
             " show_rating_key=CASE WHEN ? != '' THEN ? ELSE show_rating_key END"
             " WHERE plex_guid=?",
             [(title, file_path, part_files, rating_key, content_rating, year,
+              file_path, file_path, file_path,
               show_guid, show_guid, show_rating_key, show_rating_key, plex_guid)
              for plex_guid, title, file_path, rating_key, content_rating, year, show_guid, show_rating_key, part_files in items],
+        )
+        # Keep single-version rows in sync when metadata is refreshed without sync_title_versions_batch.
+        await conn.executemany(
+            "UPDATE title_versions SET file_path=?, part_files=?, "
+            "content_key=CASE WHEN file_path != ? THEN '' ELSE content_key END, "
+            "content_size=CASE WHEN file_path != ? THEN 0 ELSE content_size END, "
+            "content_mtime=CASE WHEN file_path != ? THEN 0 ELSE content_mtime END "
+            "WHERE plex_guid=? AND (SELECT COUNT(*) FROM title_versions v2 WHERE v2.plex_guid = title_versions.plex_guid) = 1",
+            [(file_path, part_files, file_path, file_path, file_path, plex_guid)
+             for plex_guid, _t, file_path, _rk, _cr, _yr, _sg, _srk, part_files in items],
         )
         await conn.commit()
 
 
 async def get_scan_jobs(status: str | None = None) -> list[dict]:
-    """Return every scan job (optionally one status), newest first. Prefer the paged and counting variants for UI/API use."""
+    """Return every version scan job joined with title metadata, newest first."""
     async with get_connection() as conn:
+        base = (
+            "SELECT j.*, v.id AS version_id, v.plex_media_id, v.media_index, v.resolution, "
+            "v.file_path, v.part_files, v.part_ids, v.file_size, v.duration_ms, "
+            "v.status, v.progress, v.force_scan, v.queue_pos, v.scan_version, "
+            "v.started_at, v.finished_at, v.error_msg "
+            "FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+        )
         if status:
-            rows = await conn.execute_fetchall(
-                "SELECT * FROM scan_jobs WHERE status=? ORDER BY created_at DESC", (status,)
-            )
+            rows = await conn.execute_fetchall(base + "WHERE v.status=? ORDER BY v.created_at DESC", (status,))
         else:
-            rows = await conn.execute_fetchall("SELECT * FROM scan_jobs ORDER BY created_at DESC")
+            rows = await conn.execute_fetchall(base + "ORDER BY v.created_at DESC")
         return [dict(r) for r in rows]
 
 
 async def get_scan_jobs_page(statuses: list[str], limit: int, offset: int = 0) -> list[dict]:
-    """Return scan jobs whose status is in *statuses*, newest first, at most *limit* rows from *offset*."""
+    """Return version scan jobs whose status is in *statuses*, newest first, at most *limit* rows from *offset*."""
     if not statuses:
         return []
     marks = ",".join("?" * len(statuses))
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            f"SELECT * FROM scan_jobs WHERE status IN ({marks}) ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            f"SELECT j.*, v.id AS version_id, v.plex_media_id, v.media_index, v.resolution, "
+            f"v.file_path, v.part_files, v.part_ids, v.file_size, v.duration_ms, "
+            f"v.status, v.progress, v.force_scan, v.queue_pos, v.scan_version, "
+            f"v.started_at, v.finished_at, v.error_msg "
+            f"FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+            f"WHERE v.status IN ({marks}) ORDER BY v.created_at DESC, v.id DESC LIMIT ? OFFSET ?",
             (*statuses, limit, offset),
         )
         return [dict(r) for r in rows]
 
 
 async def count_scan_jobs_by_status() -> dict[str, int]:
-    """Return {status: count} over all scan jobs."""
+    """Return {status: count} over all version scan jobs."""
     async with get_connection() as conn:
-        rows = await conn.execute_fetchall("SELECT status, COUNT(*) AS n FROM scan_jobs GROUP BY status")
+        rows = await conn.execute_fetchall("SELECT status, COUNT(*) AS n FROM title_versions GROUP BY status")
         return {(r["status"] or "unknown"): r["n"] for r in rows}
 
 
@@ -2084,9 +3061,24 @@ async def get_content_rating_counts() -> list[dict]:
 
 
 async def get_scan_job_by_guid(plex_guid: str) -> dict | None:
+    """Return one title's scan job merged with its primary version's state/content_key."""
     async with get_connection() as conn:
         row = await (await conn.execute("SELECT * FROM scan_jobs WHERE plex_guid=?", (plex_guid,))).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        d = dict(row)
+        vrows = await conn.execute_fetchall(
+            "SELECT * FROM title_versions WHERE plex_guid=? ORDER BY media_index, id", (plex_guid,)
+        )
+        if vrows:
+            v0 = dict(vrows[0])
+            d["version_id"] = v0["id"]
+            d["content_key"] = v0.get("content_key") or d.get("content_key") or ""
+            d["content_size"] = v0.get("content_size") or d.get("content_size") or 0
+            d["content_mtime"] = v0.get("content_mtime") or d.get("content_mtime") or 0
+            d["hayaa_sync_state"] = v0.get("hayaa_sync_state") or "pending"
+            d["resolution"] = v0.get("resolution") or ""
+        return d
 
 
 async def get_scan_job_by_rating_key(rating_key: str) -> dict | None:
@@ -2096,27 +3088,78 @@ async def get_scan_job_by_rating_key(rating_key: str) -> dict | None:
         return dict(row) if row else None
 
 
+async def update_version_status(
+    version_id: int,
+    status: str,
+    progress: float = 0.0,
+    error_msg: str | None = None,
+    scan_version: int | None = None,
+) -> None:
+    """Set one version's scan status and progress, keeping its parent scan_jobs summary synced."""
+    async with get_connection() as conn:
+        row = await (await conn.execute("SELECT plex_guid FROM title_versions WHERE id=?", (version_id,))).fetchone()
+        if status == "scanning":
+            await conn.execute(
+                "UPDATE title_versions SET status=?, progress=?, started_at=COALESCE(started_at, CURRENT_TIMESTAMP) WHERE id=?",
+                (status, progress, version_id),
+            )
+        elif status in ("done", "failed"):
+            await conn.execute(
+                "UPDATE title_versions SET status=?, progress=?, finished_at=CURRENT_TIMESTAMP, error_msg=?, "
+                "queue_pos=NULL, scan_version=COALESCE(?, scan_version) WHERE id=?",
+                (status, progress, error_msg, scan_version if status == "done" else None, version_id),
+            )
+        else:
+            await conn.execute(
+                "UPDATE title_versions SET status=?, progress=? WHERE id=?",
+                (status, progress, version_id),
+            )
+        if row:
+            await _refresh_job_summary_conn(conn, [row["plex_guid"]])
+        await conn.commit()
+
+
 async def update_scan_job_status(
     plex_guid: str,
     status: str,
     progress: float = 0.0,
     error_msg: str | None = None,
     scan_version: int | None = None,
+    version_id: int | None = None,
 ) -> None:
-    """Set a job's status and progress; a finished scan also records the scanner revision."""
+    """Set a job's (or specific version's) status and progress; a finished scan records the scanner revision."""
+    if version_id is not None:
+        await update_version_status(
+            version_id, status, progress=progress, error_msg=error_msg, scan_version=scan_version
+        )
+        return
     async with get_connection() as conn:
         if status == "scanning":
+            await conn.execute(
+                "UPDATE title_versions SET status=?, progress=?, started_at=COALESCE(started_at, CURRENT_TIMESTAMP) WHERE plex_guid=?",
+                (status, progress, plex_guid),
+            )
             await conn.execute(
                 "UPDATE scan_jobs SET status=?, progress=?, started_at=COALESCE(started_at, CURRENT_TIMESTAMP) WHERE plex_guid=?",
                 (status, progress, plex_guid),
             )
         elif status in ("done", "failed"):
+            sv = scan_version if status == "done" else None
+            await conn.execute(
+                "UPDATE title_versions SET status=?, progress=?, finished_at=CURRENT_TIMESTAMP, error_msg=?, "
+                "queue_pos=NULL, scan_version=COALESCE(?, scan_version) WHERE plex_guid=?",
+                (status, progress, error_msg, sv, plex_guid),
+            )
             await conn.execute(
                 "UPDATE scan_jobs SET status=?, progress=?, finished_at=CURRENT_TIMESTAMP, error_msg=?, "
                 "queue_pos=NULL, scan_version=COALESCE(?, scan_version) WHERE plex_guid=?",
-                (status, progress, error_msg, scan_version if status == "done" else None, plex_guid),
+                (status, progress, error_msg, sv, plex_guid),
             )
         else:
+            await conn.execute(
+                "UPDATE title_versions SET status=?, progress=? WHERE plex_guid=?",
+                (status, progress, plex_guid),
+            )
             await conn.execute(
                 "UPDATE scan_jobs SET status=?, progress=? WHERE plex_guid=?",
                 (status, progress, plex_guid),
@@ -2133,40 +3176,36 @@ async def get_rescan_candidates(
     library_id: str | None = None,
     before: str | None = None,
 ) -> list[dict]:
-    """Return finished, non-ignored scan jobs matching a rescan scope.
-
-    outdated: scanned by an older scanner revision than current_version; with_segments: has at
-    least one active segment; all_scanned: every finished title; scanned_before: finished before
-    the SQLite timestamp *before*; whole_library: every title of *library_id*, finished or failed;
-    failed: titles whose last scan failed.
-    Optionally limited to one library. Pending and scanning jobs are never returned (pending ones
-    are queued already). Raises ValueError for an unknown scope or a missing date or library.
-    """
+    """Return finished, non-ignored media versions matching a rescan scope."""
     if scope not in RESCAN_SCOPES:
         raise ValueError(f"unknown rescan scope {scope!r}")
     if scope == "whole_library" and not library_id:
         raise ValueError("whole_library needs a library")
-    status_sql = {"whole_library": "j.status IN ('done', 'failed')", "failed": "j.status = 'failed'"}.get(
-        scope, "j.status = 'done'"
+    status_sql = {"whole_library": "v.status IN ('done', 'failed')", "failed": "v.status = 'failed'"}.get(
+        scope, "v.status = 'done'"
     )
     where = [status_sql, "COALESCE(j.ignored, 0) = 0"]
     params: list = []
     if scope == "outdated":
-        where.append("COALESCE(j.scan_version, 0) < ?")
+        where.append("COALESCE(v.scan_version, 0) < ?")
         params.append(current_version)
     elif scope == "with_segments":
-        where.append(f"EXISTS (SELECT 1 FROM segments s WHERE s.plex_guid = j.plex_guid AND {_ACTIVE_S})")
+        where.append(
+            f"EXISTS (SELECT 1 FROM segments s WHERE (s.version_id = v.id OR (COALESCE(s.version_id, 0) = 0 AND s.plex_guid = v.plex_guid)) AND {_ACTIVE_S})"
+        )
     elif scope == "scanned_before":
         if not before:
             raise ValueError("scanned_before needs a date")
-        where.append("j.finished_at < ?")
+        where.append("v.finished_at < ?")
         params.append(before)
     if library_id:
         where.append("j.library_id = ?")
         params.append(library_id)
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            f"SELECT j.plex_guid, j.library_id, j.content_rating, j.ignored, j.error_msg, j.file_path, j.part_files FROM scan_jobs j WHERE {' AND '.join(where)}",
+            f"SELECT v.id AS version_id, v.plex_guid, j.library_id, j.content_rating, j.ignored, "
+            f"v.error_msg, v.file_path, v.part_files, v.resolution "
+            f"FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid WHERE {' AND '.join(where)}",
             params,
         )
         return [dict(r) for r in rows]
@@ -2178,31 +3217,35 @@ def _like_literal(text: str) -> str:
 
 
 async def count_failed_ignored(library_id: str | None = None) -> int:
-    """Return how many ignored titles are still marked failed (they are never scanned, so it is noise).
-
-    Optionally limited to one library.
-    """
-    sql, params = "SELECT COUNT(*) FROM scan_jobs WHERE status='failed' AND COALESCE(ignored, 0) = 1", []
+    """Return how many ignored versions are still marked failed (they are never scanned, so it is noise)."""
+    sql = ("SELECT COUNT(*) FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+           "WHERE v.status='failed' AND COALESCE(j.ignored, 0) = 1")
+    params: list = []
     if library_id:
-        sql, params = sql + " AND library_id = ?", [library_id]
+        sql, params = sql + " AND j.library_id = ?", [library_id]
     async with get_connection() as conn:
         row = await (await conn.execute(sql, params)).fetchone()
         return row[0]
 
 
 async def clear_failed_ignored(library_id: str | None = None) -> int:
-    """Reset ignored titles from failed to pending, dropping their stale error; return how many.
-
-    Ignored titles are never queued, so pending just means "not scanned" and they leave the Failed list.
-    Optionally limited to one library.
-    """
-    sql = ("UPDATE scan_jobs SET status='pending', progress=0, started_at=NULL, finished_at=NULL, error_msg=NULL "
-           "WHERE status='failed' AND COALESCE(ignored, 0) = 1")
+    """Reset ignored versions from failed to pending, dropping their stale error; return how many."""
+    where = "WHERE status='failed' AND plex_guid IN (SELECT plex_guid FROM scan_jobs WHERE COALESCE(ignored, 0) = 1"
     params: list = []
     if library_id:
-        sql, params = sql + " AND library_id = ?", [library_id]
+        where += " AND library_id = ?"
+        params.append(library_id)
+    where += ")"
     async with get_connection() as conn:
-        cursor = await conn.execute(sql, params)
+        guids = [r[0] for r in await conn.execute_fetchall(
+            f"SELECT DISTINCT plex_guid FROM title_versions {where}", params
+        )]
+        cursor = await conn.execute(
+            f"UPDATE title_versions SET status='pending', progress=0, started_at=NULL, finished_at=NULL, error_msg=NULL {where}",
+            params,
+        )
+        if guids:
+            await _refresh_job_summary_conn(conn, guids)
         await conn.commit()
         return cursor.rowcount
 
@@ -2210,45 +3253,87 @@ async def clear_failed_ignored(library_id: str | None = None) -> int:
 async def get_show_episode_jobs(
     show_guid: str = "", show_title: str = "", library_id: str | None = None, season: str = ""
 ) -> list[dict]:
-    """Return a show's non-ignored episode jobs, by show GUID or, failing that, by "<show> – " title.
-
-    Some episodes carry no show GUID, so the title prefix ("Show – Season – Episode") is the fallback.
-    With *season* (needs show_title) only that season's episodes are returned.
-    """
+    """Return a show's non-ignored episode versions, by show GUID or, failing that, by "<show> – " title."""
     season_like = f"{_like_literal(show_title)} – {_like_literal(season)} – %" if season and show_title else ""
     async with get_connection() as conn:
         rows: list = []
         if show_guid:
-            sql = ("SELECT plex_guid, library_id, content_rating, ignored, status FROM scan_jobs "
-                   "WHERE show_guid = ? AND COALESCE(ignored, 0) = 0")
+            sql = ("SELECT v.id AS version_id, v.plex_guid, j.library_id, j.content_rating, j.ignored, v.status "
+                   "FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+                   "WHERE j.show_guid = ? AND COALESCE(j.ignored, 0) = 0")
             params = [show_guid]
             if season_like:
-                sql += " AND title LIKE ? ESCAPE '\\'"
+                sql += " AND j.title LIKE ? ESCAPE '\\'"
                 params.append(season_like)
             rows = await conn.execute_fetchall(sql, params)
         if not rows and show_title:
-            sql = ("SELECT plex_guid, library_id, content_rating, ignored, status FROM scan_jobs "
-                   "WHERE media_type = 'episode' AND title LIKE ? ESCAPE '\\' AND COALESCE(ignored, 0) = 0")
+            sql = ("SELECT v.id AS version_id, v.plex_guid, j.library_id, j.content_rating, j.ignored, v.status "
+                   "FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+                   "WHERE j.media_type = 'episode' AND j.title LIKE ? ESCAPE '\\' AND COALESCE(j.ignored, 0) = 0")
             params: list = [season_like or f"{_like_literal(show_title)} – %"]
             if library_id:
-                sql += " AND library_id = ?"
+                sql += " AND j.library_id = ?"
                 params.append(library_id)
             rows = await conn.execute_fetchall(sql, params)
         return [dict(r) for r in rows]
 
 
-async def update_part_files(plex_guid: str, part_files: str) -> None:
-    """Update the part_files JSON for an existing scan job without touching status or progress."""
+async def update_part_files(plex_guid: str, part_files: str, version_id: int | None = None) -> None:
+    """Update the part_files JSON for an existing version/job without touching status or progress."""
     async with get_connection() as conn:
-        await conn.execute(
-            "UPDATE scan_jobs SET part_files=? WHERE plex_guid=?",
-            (part_files, plex_guid),
-        )
+        if version_id is not None:
+            await conn.execute("UPDATE title_versions SET part_files=? WHERE id=?", (part_files, version_id))
+        else:
+            await conn.execute("UPDATE scan_jobs SET part_files=? WHERE plex_guid=?", (part_files, plex_guid))
+            await conn.execute("UPDATE title_versions SET part_files=? WHERE plex_guid=?", (part_files, plex_guid))
         await conn.commit()
 
 
-async def reset_scan_job(plex_guid: str) -> None:
+async def reset_version_job(version_id: int) -> None:
+    """Reset one media version's scan job back to pending."""
     async with get_connection() as conn:
+        row = await (await conn.execute("SELECT plex_guid FROM title_versions WHERE id=?", (version_id,))).fetchone()
+        await conn.execute(
+            "UPDATE title_versions SET status='pending', progress=0, started_at=NULL, finished_at=NULL, "
+            "error_msg=NULL, queue_pos=NULL WHERE id=?",
+            (version_id,),
+        )
+        if row:
+            await _refresh_job_summary_conn(conn, [row["plex_guid"]])
+        await conn.commit()
+
+
+async def reset_version_jobs(version_ids: list[int]) -> int:
+    """Mark many version jobs pending (in chunks); returns how many matched."""
+    total = 0
+    guids: set[str] = set()
+    async with get_connection() as conn:
+        for i in range(0, len(version_ids), 500):
+            chunk = version_ids[i:i + 500]
+            grows = await conn.execute_fetchall(
+                f"SELECT DISTINCT plex_guid FROM title_versions WHERE id IN ({_in(chunk)})", chunk
+            )
+            guids.update(r["plex_guid"] for r in grows)
+            cursor = await conn.execute(
+                "UPDATE title_versions SET status='pending', progress=0, started_at=NULL, finished_at=NULL, "
+                f"error_msg=NULL, queue_pos=NULL WHERE id IN ({_in(chunk)})",
+                chunk,
+            )
+            total += cursor.rowcount
+        if guids:
+            await _refresh_job_summary_conn(conn, list(guids))
+        await conn.commit()
+    return total
+
+
+async def reset_scan_job(plex_guid: str) -> None:
+    """Reset every version of a title back to pending."""
+    async with get_connection() as conn:
+        await conn.execute(
+            "UPDATE title_versions SET status='pending', progress=0, started_at=NULL, finished_at=NULL, error_msg=NULL, "
+            "queue_pos=NULL WHERE plex_guid=?",
+            (plex_guid,),
+        )
         await conn.execute(
             "UPDATE scan_jobs SET status='pending', progress=0, started_at=NULL, finished_at=NULL, error_msg=NULL, "
             "queue_pos=NULL WHERE plex_guid=?",
@@ -2258,13 +3343,18 @@ async def reset_scan_job(plex_guid: str) -> None:
 
 
 async def reset_scan_jobs(plex_guids: list[str]) -> int:
-    """Mark many jobs pending (in chunks, within SQLite's variable limit); returns how many matched."""
+    """Mark every version of many titles pending (in chunks, within SQLite's variable limit); returns matched count."""
     total = 0
     async with get_connection() as conn:
         for i in range(0, len(plex_guids), 500):
             chunk = plex_guids[i:i + 500]
             placeholders = ",".join("?" * len(chunk))
             cursor = await conn.execute(
+                "UPDATE title_versions SET status='pending', progress=0, started_at=NULL, finished_at=NULL, "
+                f"error_msg=NULL, queue_pos=NULL WHERE plex_guid IN ({placeholders})",
+                chunk,
+            )
+            await conn.execute(
                 "UPDATE scan_jobs SET status='pending', progress=0, started_at=NULL, finished_at=NULL, "
                 f"error_msg=NULL, queue_pos=NULL WHERE plex_guid IN ({placeholders})",
                 chunk,
@@ -2275,31 +3365,33 @@ async def reset_scan_jobs(plex_guids: list[str]) -> int:
 
 
 async def reset_interrupted_scans() -> int:
-    """Move jobs left in 'scanning' back to 'pending'; returns how many were reset.
-
-    Called once at startup, when no worker can be scanning yet: any such row was
-    cut off by a restart and would otherwise show as scanning forever.
-    """
+    """Move versions/jobs left in 'scanning' back to 'pending'; returns how many versions were reset."""
     async with get_connection() as conn:
         cursor = await conn.execute(
+            "UPDATE title_versions SET status='pending', started_at=NULL WHERE status='scanning'"
+        )
+        await conn.execute(
             "UPDATE scan_jobs SET status='pending', started_at=NULL WHERE status='scanning'"
         )
         await conn.commit()
         return cursor.rowcount
 
 
-async def set_force_scan(plex_guid: str, force: bool) -> None:
-    """Set or unset the force_scan flag for a specific job."""
+async def set_force_scan(plex_guid: str, force: bool, version_id: int | None = None) -> None:
+    """Set or unset the force_scan flag for one version or all versions of a title."""
+    val = 1 if force else 0
     async with get_connection() as conn:
-        await conn.execute(
-            "UPDATE scan_jobs SET force_scan=? WHERE plex_guid=?",
-            (1 if force else 0, plex_guid),
-        )
+        if version_id is not None:
+            await conn.execute("UPDATE title_versions SET force_scan=? WHERE id=?", (val, version_id))
+            await _refresh_job_summary_conn(conn, [plex_guid])
+        else:
+            await conn.execute("UPDATE title_versions SET force_scan=? WHERE plex_guid=?", (val, plex_guid))
+            await conn.execute("UPDATE scan_jobs SET force_scan=? WHERE plex_guid=?", (val, plex_guid))
         await conn.commit()
 
 
 async def set_ignored(plex_guid: str, ignored: bool) -> None:
-    """Set or unset the ignored flag for a specific job."""
+    """Set or unset the ignored flag for a specific title."""
     async with get_connection() as conn:
         await conn.execute(
             "UPDATE scan_jobs SET ignored=? WHERE plex_guid=?",
@@ -2308,6 +3400,11 @@ async def set_ignored(plex_guid: str, ignored: bool) -> None:
         if ignored:
             # An ignored title leaves the queue unless it was force-scanned on purpose.
             await conn.execute(
+                "UPDATE title_versions SET queue_pos=NULL WHERE plex_guid=? AND status='pending' "
+                "AND COALESCE(force_scan,0)=0",
+                (plex_guid,),
+            )
+            await conn.execute(
                 "UPDATE scan_jobs SET queue_pos=NULL WHERE plex_guid=? AND status='pending' "
                 "AND COALESCE(force_scan,0)=0",
                 (plex_guid,),
@@ -2315,54 +3412,62 @@ async def set_ignored(plex_guid: str, ignored: bool) -> None:
         await conn.commit()
 
 
-# ── Scan queue (#174) ─────────────────────────────────────────────────────────
-# Queue membership and order live in scan_jobs.queue_pos: a pending job with a position is
-# queued, lower runs first, force_scan jobs run before the rest. Workers claim with
-# claim_next_scan_job, so a job being scanned (status 'scanning') can never be taken again.
+# ── Scan queue (#174, #233) ───────────────────────────────────────────────────
+# Queue membership and order live in title_versions.queue_pos: a pending version with a position is
+# queued, lower runs first, force_scan versions run before the rest. Workers claim per version
+# with claim_next_scan_job so multi-version titles scan independently without double claiming.
 
-_QUEUE_ORDER = "COALESCE(force_scan,0) DESC, queue_pos, id"
-# A forced title may be ignored; the user asked for that scan explicitly.
-_CLAIMABLE = "status='pending' AND queue_pos IS NOT NULL AND (COALESCE(ignored,0)=0 OR COALESCE(force_scan,0)=1)"
+_QUEUE_ORDER = "COALESCE(v.force_scan,0) DESC, v.queue_pos, v.id"
+_QUEUE_SELECT_FROM = (
+    "SELECT v.*, v.id AS version_id, j.title, j.rating_key, j.library_id, j.library_title, "
+    "j.media_type, j.content_rating, j.year, j.show_guid, j.show_rating_key, "
+    "COALESCE(j.ignored, 0) AS ignored "
+    "FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid"
+)
+# A forced version may belong to an ignored title; the user asked for that scan explicitly.
+_CLAIMABLE_WHERE = (
+    "v.status='pending' AND v.queue_pos IS NOT NULL "
+    "AND (COALESCE(j.ignored,0)=0 OR COALESCE(v.force_scan,0)=1 OR COALESCE(j.force_scan,0)=1)"
+)
 
 
 async def claim_next_scan_job(force_only: bool = False) -> dict | None:
-    """Atomically take the next queued job: mark it 'scanning' and return its row, or None if nothing is queued.
-
-    One UPDATE ... RETURNING picks and flips the row in a single statement, so concurrent workers
-    never receive the same job. force_only restricts the claim to force_scan jobs (used outside the
-    scan window). queue_pos is kept so a released job returns to its place.
-    """
-    extra = " AND COALESCE(force_scan,0)=1" if force_only else ""
+    """Atomically take the next queued version: mark it 'scanning' and return its joined row, or None."""
+    extra = " AND (COALESCE(v.force_scan,0)=1 OR COALESCE(j.force_scan,0)=1)" if force_only else ""
     async with get_connection() as conn:
         cursor = await conn.execute(
-            "UPDATE scan_jobs SET status='scanning', started_at=COALESCE(started_at, CURRENT_TIMESTAMP) "
-            f"WHERE status='pending' AND id=(SELECT id FROM scan_jobs WHERE {_CLAIMABLE}{extra} "
-            f"ORDER BY {_QUEUE_ORDER} LIMIT 1) RETURNING *"
+            "UPDATE title_versions SET status='scanning', started_at=COALESCE(started_at, CURRENT_TIMESTAMP) "
+            "WHERE status='pending' AND id=("
+            f"SELECT v.id FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+            f"WHERE {_CLAIMABLE_WHERE}{extra} ORDER BY {_QUEUE_ORDER} LIMIT 1"
+            ") RETURNING id"
         )
-        row = await cursor.fetchone()
+        claimed = await cursor.fetchone()
+        if not claimed:
+            await conn.commit()
+            return None
+        vid = int(claimed["id"])
+        row = await (await conn.execute(f"{_QUEUE_SELECT_FROM} WHERE v.id=?", (vid,))).fetchone()
+        if row:
+            await _refresh_job_summary_conn(conn, [row["plex_guid"]])
         await conn.commit()
         return dict(row) if row else None
 
 
-async def queue_scan_jobs(plex_guids: list[str], *, to_end: bool = False) -> int:
-    """Append pending jobs to the queue in the order given; returns how many were queued.
-
-    Jobs already queued keep their place unless to_end is set, which moves them behind everything
-    else (a forced or released job). Jobs that are not pending (scanning, done, failed) are ignored.
-    """
-    if not plex_guids:
+async def queue_version_jobs(version_ids: list[int], *, to_end: bool = False) -> int:
+    """Append pending version jobs to the queue in the order given; return how many were queued."""
+    if not version_ids:
         return 0
     queued = 0
     async with get_connection() as conn:
-        # BEGIN IMMEDIATE: the MAX read and the writes must not interleave with another producer.
         await conn.execute("BEGIN IMMEDIATE")
-        row = await (await conn.execute("SELECT COALESCE(MAX(queue_pos), 0) AS m FROM scan_jobs")).fetchone()
+        row = await (await conn.execute("SELECT COALESCE(MAX(queue_pos), 0) AS m FROM title_versions")).fetchone()
         pos = row["m"]
-        for guid in plex_guids:
-            cond = "" if to_end else " AND queue_pos IS NULL"
+        cond = "" if to_end else " AND queue_pos IS NULL"
+        for vid in version_ids:
             cursor = await conn.execute(
-                f"UPDATE scan_jobs SET queue_pos=? WHERE plex_guid=? AND status='pending'{cond}",
-                (pos + 1, guid),
+                f"UPDATE title_versions SET queue_pos=? WHERE id=? AND status='pending'{cond}",
+                (pos + 1, vid),
             )
             if cursor.rowcount:
                 pos += 1
@@ -2371,51 +3476,129 @@ async def queue_scan_jobs(plex_guids: list[str], *, to_end: bool = False) -> int
     return queued
 
 
-async def set_scan_queue_order(plex_guids: list[str]) -> None:
-    """Rebuild the queue: every pending job leaves it, then the given guids take positions 1..N in order."""
+async def queue_scan_jobs(plex_guids: list[str], *, to_end: bool = False) -> int:
+    """Append pending versions for the given guids to the queue; returns how many versions were queued."""
+    if not plex_guids:
+        return 0
+    queued = 0
     async with get_connection() as conn:
         await conn.execute("BEGIN IMMEDIATE")
-        await conn.execute("UPDATE scan_jobs SET queue_pos=NULL WHERE status='pending'")
+        row = await (await conn.execute("SELECT COALESCE(MAX(queue_pos), 0) AS m FROM title_versions")).fetchone()
+        pos = row["m"]
+        cond = "" if to_end else " AND queue_pos IS NULL"
+        for guid in plex_guids:
+            vrows = await conn.execute_fetchall(
+                f"SELECT id FROM title_versions WHERE plex_guid=? AND status='pending'{cond} ORDER BY media_index, id",
+                (guid,),
+            )
+            for vr in vrows:
+                await conn.execute("UPDATE title_versions SET queue_pos=? WHERE id=?", (pos + 1, vr["id"]))
+                pos += 1
+                queued += 1
+        await conn.commit()
+    return queued
+
+
+async def set_version_queue_order(version_ids: list[int]) -> None:
+    """Rebuild the queue: every pending version leaves it, then *version_ids* take positions 1..N."""
+    async with get_connection() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        await conn.execute("UPDATE title_versions SET queue_pos=NULL WHERE status='pending'")
         await conn.executemany(
-            "UPDATE scan_jobs SET queue_pos=? WHERE plex_guid=? AND status='pending'",
-            [(i + 1, g) for i, g in enumerate(plex_guids)],
+            "UPDATE title_versions SET queue_pos=? WHERE id=? AND status='pending'",
+            [(i + 1, vid) for i, vid in enumerate(version_ids)],
         )
         await conn.commit()
 
 
+async def set_scan_queue_order(plex_guids: list[str]) -> None:
+    """Rebuild the queue in the given guid order (versions within a title ordered by media_index, id)."""
+    async with get_connection() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        await conn.execute("UPDATE title_versions SET queue_pos=NULL WHERE status='pending'")
+        pos = 1
+        for guid in plex_guids:
+            vrows = await conn.execute_fetchall(
+                "SELECT id FROM title_versions WHERE plex_guid=? AND status='pending' ORDER BY media_index, id",
+                (guid,),
+            )
+            for vr in vrows:
+                await conn.execute("UPDATE title_versions SET queue_pos=? WHERE id=?", (pos, vr["id"]))
+                pos += 1
+        await conn.commit()
+
+
+async def dequeue_version_jobs(version_ids: list[int]) -> None:
+    """Take version jobs out of the queue without changing their status."""
+    if not version_ids:
+        return
+    async with get_connection() as conn:
+        for i in range(0, len(version_ids), 500):
+            chunk = version_ids[i:i + 500]
+            await conn.execute(f"UPDATE title_versions SET queue_pos=NULL WHERE id IN ({_in(chunk)})", chunk)
+        await conn.commit()
+
+
 async def dequeue_scan_jobs(plex_guids: list[str]) -> None:
-    """Take jobs out of the queue without changing their status."""
+    """Take all versions of the given guids out of the queue without changing their status."""
     if not plex_guids:
         return
     async with get_connection() as conn:
         for i in range(0, len(plex_guids), 500):
             chunk = plex_guids[i:i + 500]
             marks = ",".join("?" * len(chunk))
-            await conn.execute(f"UPDATE scan_jobs SET queue_pos=NULL WHERE plex_guid IN ({marks})", chunk)
+            await conn.execute(f"UPDATE title_versions SET queue_pos=NULL WHERE plex_guid IN ({marks})", chunk)
         await conn.commit()
 
 
-async def release_scan_job(plex_guid: str, *, requeue: bool, progress: float = 0.0) -> None:
-    """Give a claimed job back as pending: behind the rest of the queue (requeue) or out of it."""
+async def release_version_job(version_id: int, *, requeue: bool, progress: float = 0.0) -> None:
+    """Give a claimed version back as pending: behind the rest of the queue (requeue) or out of it."""
+    async with get_connection() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        vrow = await (await conn.execute("SELECT plex_guid FROM title_versions WHERE id=?", (version_id,))).fetchone()
+        if requeue:
+            row = await (await conn.execute("SELECT COALESCE(MAX(queue_pos), 0) AS m FROM title_versions")).fetchone()
+            await conn.execute(
+                "UPDATE title_versions SET status='pending', progress=?, queue_pos=? WHERE id=?",
+                (progress, row["m"] + 1, version_id),
+            )
+        else:
+            await conn.execute(
+                "UPDATE title_versions SET status='pending', progress=?, queue_pos=NULL WHERE id=?",
+                (progress, version_id),
+            )
+        if vrow:
+            await _refresh_job_summary_conn(conn, [vrow["plex_guid"]])
+        await conn.commit()
+
+
+async def release_scan_job(
+    plex_guid: str, *, requeue: bool, progress: float = 0.0, version_id: int | None = None
+) -> None:
+    """Give a claimed job (or version) back as pending."""
+    if version_id is not None:
+        await release_version_job(version_id, requeue=requeue, progress=progress)
+        return
     async with get_connection() as conn:
         await conn.execute("BEGIN IMMEDIATE")
         if requeue:
-            row = await (await conn.execute("SELECT COALESCE(MAX(queue_pos), 0) AS m FROM scan_jobs")).fetchone()
+            row = await (await conn.execute("SELECT COALESCE(MAX(queue_pos), 0) AS m FROM title_versions")).fetchone()
             await conn.execute(
-                "UPDATE scan_jobs SET status='pending', progress=?, queue_pos=? WHERE plex_guid=?",
+                "UPDATE title_versions SET status='pending', progress=?, queue_pos=? WHERE plex_guid=?",
                 (progress, row["m"] + 1, plex_guid),
             )
         else:
             await conn.execute(
-                "UPDATE scan_jobs SET status='pending', progress=?, queue_pos=NULL WHERE plex_guid=?",
+                "UPDATE title_versions SET status='pending', progress=?, queue_pos=NULL WHERE plex_guid=?",
                 (progress, plex_guid),
             )
+        await _refresh_job_summary_conn(conn, [plex_guid])
         await conn.commit()
 
 
 async def get_queued_scan_jobs(limit: int | None = None, offset: int = 0) -> list[dict]:
-    """Return the queued (pending, positioned) jobs in execution order: force first, then by position."""
-    sql = f"SELECT * FROM scan_jobs WHERE status='pending' AND queue_pos IS NOT NULL ORDER BY {_QUEUE_ORDER}"
+    """Return the queued (pending, positioned) version jobs in execution order: force first, then position."""
+    sql = f"{_QUEUE_SELECT_FROM} WHERE v.status='pending' AND v.queue_pos IS NOT NULL ORDER BY {_QUEUE_ORDER}"
     params: tuple = ()
     if limit is not None:
         sql += " LIMIT ? OFFSET ?"
@@ -2425,26 +3608,39 @@ async def get_queued_scan_jobs(limit: int | None = None, offset: int = 0) -> lis
 
 
 async def count_queued_scan_jobs() -> int:
-    """Return how many jobs are waiting in the queue."""
+    """Return how many version jobs are waiting in the queue."""
     async with get_connection() as conn:
         row = await (await conn.execute(
-            "SELECT COUNT(*) FROM scan_jobs WHERE status='pending' AND queue_pos IS NOT NULL"
+            "SELECT COUNT(*) FROM title_versions WHERE status='pending' AND queue_pos IS NOT NULL"
         )).fetchone()
         return row[0]
 
 
 async def get_unqueued_pending_scan_jobs() -> list[dict]:
-    """Return pending jobs that are not in the queue (new titles, or ones dequeued by a settings change)."""
+    """Return pending version jobs that are not in the queue."""
     async with get_connection() as conn:
-        rows = await conn.execute_fetchall("SELECT * FROM scan_jobs WHERE status='pending' AND queue_pos IS NULL")
+        rows = await conn.execute_fetchall(
+            f"{_QUEUE_SELECT_FROM} WHERE v.status='pending' AND v.queue_pos IS NULL ORDER BY v.id"
+        )
         return [dict(r) for r in rows]
 
 
 async def get_scanning_guids() -> list[str]:
-    """Return the guids of jobs currently being scanned, sorted."""
+    """Return distinct guids with a version currently being scanned, sorted."""
     async with get_connection() as conn:
-        rows = await conn.execute_fetchall("SELECT plex_guid FROM scan_jobs WHERE status='scanning' ORDER BY plex_guid")
+        rows = await conn.execute_fetchall(
+            "SELECT DISTINCT plex_guid FROM title_versions WHERE status='scanning' ORDER BY plex_guid"
+        )
         return [r["plex_guid"] for r in rows]
+
+
+async def get_scanning_version_ids() -> list[int]:
+    """Return version_ids currently being scanned, sorted."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT id FROM title_versions WHERE status='scanning' ORDER BY id"
+        )
+        return [int(r["id"]) for r in rows]
 
 
 async def get_scan_jobs_by_guids(guids: list[str]) -> dict[str, dict]:
@@ -2464,16 +3660,17 @@ async def get_scan_jobs_by_guids(guids: list[str]) -> dict[str, dict]:
 
 
 async def save_proxy_session(session_id: str, data: dict) -> None:
-    """Insert or update a proxy session: rating_key, username, client_id, client_title, offset_ms, ranges, spans, removed."""
+    """Insert or update a proxy session: rating_key, version_id, username, client_id, client_title, offset_ms, ranges, spans, removed."""
     async with get_connection() as conn:
         await conn.execute(
-            "INSERT INTO proxy_sessions(session_id, rating_key, username, client_id, client_title, offset_ms, "
-            "ranges, spans, removed, updated_at) VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) "
+            "INSERT INTO proxy_sessions(session_id, rating_key, version_id, username, client_id, client_title, offset_ms, "
+            "ranges, spans, removed, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) "
             "ON CONFLICT(session_id) DO UPDATE SET spans=excluded.spans, removed=excluded.removed, "
+            "version_id=CASE WHEN excluded.version_id > 0 THEN excluded.version_id ELSE proxy_sessions.version_id END, "
             "updated_at=CURRENT_TIMESTAMP",
-            (session_id, data["rating_key"], data.get("username") or "", data.get("client_id", ""),
-             data.get("client_title", ""), data.get("offset_ms", 0), json.dumps(data.get("ranges", [])),
-             json.dumps(data.get("spans", [])), json.dumps(data.get("removed", []))),
+            (session_id, data["rating_key"], int(data.get("version_id") or 0), data.get("username") or "",
+             data.get("client_id", ""), data.get("client_title", ""), data.get("offset_ms", 0),
+             json.dumps(data.get("ranges", [])), json.dumps(data.get("spans", [])), json.dumps(data.get("removed", []))),
         )
         await conn.commit()
 
@@ -2538,88 +3735,109 @@ async def put_keyframes(file_path: str, size: int, mtime: int, keyframes: list[i
         await conn.commit()
 
 
-async def get_hayaa_content_key(file_path: str, size: int, mtime: int) -> str | None:
-    """Return the cached Hayaa content key for a file, or None when missing or the file changed."""
+async def get_file_content_key(file_path: str, size: int, mtime: int) -> str | None:
+    """Return the cached Hayaa content key for a file on title_versions, or None when missing or changed."""
     async with get_connection() as conn:
         row = await (await conn.execute(
-            "SELECT content_key FROM hayaa_content_keys WHERE file_path=? AND size=? AND mtime=?",
+            "SELECT content_key FROM title_versions "
+            "WHERE file_path=? AND content_size=? AND content_mtime=? AND COALESCE(content_key, '') != '' LIMIT 1",
             (file_path, size, mtime),
         )).fetchone()
     return row[0] if row else None
 
 
-async def set_title_content_key(plex_guid: str, content_key: str, size: int) -> None:
-    """Keep a title's content key on its row (#231): computed once, never read from the file again."""
+async def set_title_content_key(
+    plex_guid: str, content_key: str, size: int, mtime: int = 0, version_id: int | None = None
+) -> None:
+    """Keep a version's content key on its row (#231, #233, #235): computed once, never read from disk again."""
     async with get_connection() as conn:
-        await conn.execute("UPDATE scan_jobs SET content_key=?, content_size=? WHERE plex_guid=?",
-                           (content_key, size, plex_guid))
-        await conn.commit()
-
-
-async def mark_hayaa_sending(guids: list[str]) -> None:
-    """Titles about to be pushed; a change while the push runs sets them back to pending."""
-    async with get_connection() as conn:
-        for i in range(0, len(guids), 500):
-            chunk = guids[i:i + 500]
-            await conn.execute(f"UPDATE scan_jobs SET hayaa_sync_state='sending' WHERE plex_guid IN ({_in(chunk)})", chunk)
-        await conn.commit()
-
-
-async def mark_hayaa_synced(guids: list[str]) -> None:
-    """Hayaa accepted everything for these titles; only those not changed since are marked."""
-    async with get_connection() as conn:
-        for i in range(0, len(guids), 500):
-            chunk = guids[i:i + 500]
+        if version_id is not None:
             await conn.execute(
-                f"UPDATE scan_jobs SET hayaa_sync_state='synced' WHERE hayaa_sync_state='sending' AND plex_guid IN ({_in(chunk)})",
-                chunk)
+                "UPDATE title_versions SET content_key=?, content_size=?, content_mtime=? WHERE id=?",
+                (content_key, size, mtime, version_id),
+            )
+        else:
+            await conn.execute(
+                "UPDATE title_versions SET content_key=?, content_size=?, content_mtime=? WHERE plex_guid=?",
+                (content_key, size, mtime, plex_guid),
+            )
+        await conn.commit()
+
+
+async def mark_hayaa_sending(targets: list[int] | list[str]) -> None:
+    """Versions (or titles) about to be pushed; a change while the push runs sets them back to pending."""
+    if not targets:
+        return
+    col = "id" if isinstance(targets[0], int) else "plex_guid"
+    async with get_connection() as conn:
+        for i in range(0, len(targets), 500):
+            chunk = targets[i:i + 500]
+            await conn.execute(f"UPDATE title_versions SET hayaa_sync_state='sending' WHERE {col} IN ({_in(chunk)})", chunk)
+        await conn.commit()
+
+
+async def mark_hayaa_synced(targets: list[int] | list[str]) -> None:
+    """Hayaa accepted everything for these versions (or titles); only those not changed since are marked."""
+    if not targets:
+        return
+    col = "id" if isinstance(targets[0], int) else "plex_guid"
+    async with get_connection() as conn:
+        for i in range(0, len(targets), 500):
+            chunk = targets[i:i + 500]
+            await conn.execute(
+                f"UPDATE title_versions SET hayaa_sync_state='synced' WHERE hayaa_sync_state='sending' AND {col} IN ({_in(chunk)})",
+                chunk,
+            )
         await conn.commit()
 
 
 async def count_hayaa_pending() -> int:
-    """Titles with something not yet accepted by Hayaa (scanned, single file)."""
+    """Single-file versions with something not yet accepted by Hayaa."""
     async with get_connection() as conn:
         row = await (await conn.execute(
-            "SELECT COUNT(*) FROM scan_jobs WHERE COALESCE(hayaa_sync_state, 'pending') != 'synced' "
-            "AND status = 'done' AND COALESCE(file_path, '') != '' AND COALESCE(ignored, 0) = 0 "
-            "AND COALESCE(json_array_length(NULLIF(part_files, '')), 0) <= 1")).fetchone()
+            "SELECT COUNT(*) FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+            "WHERE COALESCE(v.hayaa_sync_state, 'pending') != 'synced' "
+            "AND v.status = 'done' AND COALESCE(v.file_path, '') != '' AND COALESCE(j.ignored, 0) = 0 "
+            "AND COALESCE(json_array_length(NULLIF(v.part_files, '')), 0) <= 1"
+        )).fetchone()
     return int(row[0])
 
 
 async def mark_all_hayaa_pending() -> None:
-    """Force sync: everything is sent again (Hayaa ignores what it already has)."""
+    """Force sync: every version is sent again (Hayaa ignores what it already has)."""
     async with get_connection() as conn:
-        await conn.execute("UPDATE scan_jobs SET hayaa_sync_state='pending'")
+        await conn.execute("UPDATE title_versions SET hayaa_sync_state='pending'")
         await conn.commit()
 
 
-async def put_hayaa_content_key(file_path: str, size: int, mtime: int, content_key: str) -> None:
-    """Store a file's Hayaa content key, replacing an older one for the same path."""
+async def set_file_content_key(
+    file_path: str, size: int, mtime: int, content_key: str, version_id: int | None = None
+) -> None:
+    """Store a file's Hayaa content key on matching title_versions rows (#233, #235)."""
     async with get_connection() as conn:
-        await conn.execute(
-            "INSERT OR REPLACE INTO hayaa_content_keys(file_path, size, mtime, content_key) VALUES(?,?,?,?)",
-            (file_path, size, mtime, content_key),
-        )
-        await conn.execute("UPDATE scan_jobs SET content_key=?, content_size=? WHERE file_path=?",
-                           (content_key, size, file_path))
+        if version_id is not None:
+            await conn.execute(
+                "UPDATE title_versions SET content_key=?, content_size=?, content_mtime=? WHERE id=?",
+                (content_key, size, mtime, version_id),
+            )
+        else:
+            await conn.execute(
+                "UPDATE title_versions SET content_key=?, content_size=?, content_mtime=? WHERE file_path=?",
+                (content_key, size, mtime, file_path),
+            )
         await conn.commit()
 
 
 async def get_flagged_files_without_keyframes(limit: int) -> list[str]:
-    """Return single-file media paths of titles with active skip segments and no keyframe index yet.
-
-    Multi-part titles are left out: the proxy re-encodes those (a copied stream's segment
-    times cannot be predicted across part boundaries).
-    """
+    """Return single-file media paths of versions with active skip segments and no keyframe index yet."""
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
             f"""
-            SELECT DISTINCT j.file_path FROM scan_jobs j
-            JOIN segments s ON s.plex_guid = j.plex_guid
-            LEFT JOIN keyframe_index k ON k.file_path = j.file_path
-            WHERE {_ACTIVE_S} AND COALESCE(j.file_path,'') != ''
-              -- part_files is a JSON list; single-file titles hold one path (or nothing, older rows)
-              AND COALESCE(json_array_length(NULLIF(j.part_files, '')), 0) <= 1
+            SELECT DISTINCT v.file_path FROM title_versions v
+            JOIN segments s ON (s.version_id = v.id OR (COALESCE(s.version_id, 0) = 0 AND s.plex_guid = v.plex_guid))
+            LEFT JOIN keyframe_index k ON k.file_path = v.file_path
+            WHERE {_ACTIVE_S} AND COALESCE(v.file_path,'') != ''
+              AND COALESCE(json_array_length(NULLIF(v.part_files, '')), 0) <= 1
               AND k.file_path IS NULL
             LIMIT ?
             """,
@@ -2628,24 +3846,39 @@ async def get_flagged_files_without_keyframes(limit: int) -> list[str]:
     return [r[0] for r in rows]
 
 
-async def get_file_for_rating_key(rating_key: str) -> str | None:
-    """Return the single media file of a title, or None for unknown or multi-part titles."""
+async def get_file_for_rating_key(rating_key: str, version_id: int | None = None) -> str | None:
+    """Return the single media file of a version (or title's first version), or None for unknown or multi-part."""
     async with get_connection() as conn:
-        row = await (await conn.execute(
-            "SELECT file_path, part_files FROM scan_jobs WHERE rating_key=? LIMIT 1", (rating_key,)
-        )).fetchone()
+        if version_id is not None:
+            row = await (await conn.execute(
+                "SELECT file_path, part_files FROM title_versions WHERE id=?", (version_id,)
+            )).fetchone()
+        else:
+            row = await (await conn.execute(
+                "SELECT v.file_path, v.part_files FROM title_versions v "
+                "JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+                "WHERE j.rating_key=? ORDER BY v.media_index, v.id LIMIT 1",
+                (rating_key,),
+            )).fetchone()
+            if not row:
+                row = await (await conn.execute(
+                    "SELECT file_path, part_files FROM scan_jobs WHERE rating_key=? LIMIT 1", (rating_key,)
+                )).fetchone()
     if not row or not row[0]:
         return None
     parts = json.loads(row[1]) if row[1] else []
     return row[0] if len(parts) <= 1 else None
 
 
-async def replace_title_parts(pairs: list[tuple[int, str]]) -> None:
-    """Store (part_id, rating_key) pairs, replacing any earlier owner of a part id."""
+async def replace_title_parts(pairs: list[tuple[int, str]] | list[tuple[int, str, int]]) -> None:
+    """Store (part_id, rating_key[, version_id]) tuples, replacing any earlier owner of a part id."""
     if not pairs:
         return
+    norm = [(p[0], p[1], p[2] if len(p) > 2 else 0) for p in pairs]
     async with get_connection() as conn:
-        await conn.executemany("INSERT OR REPLACE INTO title_parts(part_id, rating_key) VALUES(?,?)", pairs)
+        await conn.executemany(
+            "INSERT OR REPLACE INTO title_parts(part_id, rating_key, version_id) VALUES(?,?,?)", norm
+        )
         await conn.commit()
 
 
@@ -2656,11 +3889,33 @@ async def count_parts_for_rating_key(rating_key: str) -> int:
     return row[0]
 
 
+async def count_parts_for_version(version_id: int) -> int:
+    """How many Plex parts one media version has."""
+    async with get_connection() as conn:
+        row = await (await conn.execute("SELECT COUNT(*) FROM title_parts WHERE version_id=?", (version_id,))).fetchone()
+        if row and row[0] > 0:
+            return row[0]
+        vrow = await (await conn.execute("SELECT part_files FROM title_versions WHERE id=?", (version_id,))).fetchone()
+    if not vrow:
+        return 0
+    parts = _json_list(vrow["part_files"])
+    return max(len(parts), 1)
+
+
 async def get_rating_key_for_part(part_id: int) -> str | None:
     """Return the rating key a Plex part id belongs to, or None when unknown."""
     async with get_connection() as conn:
         row = await (await conn.execute("SELECT rating_key FROM title_parts WHERE part_id=?", (part_id,))).fetchone()
         return row[0] if row else None
+
+
+async def get_part_info(part_id: int) -> tuple[str, int] | None:
+    """Return (rating_key, version_id) for a Plex part id, or None when unknown."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(
+            "SELECT rating_key, COALESCE(version_id, 0) FROM title_parts WHERE part_id=?", (part_id,)
+        )).fetchone()
+        return (row[0], int(row[1])) if row else None
 
 
 async def get_cast_keys_to_sync(limit: int, refresh_days: int = 30) -> list[str]:
@@ -2783,6 +4038,22 @@ async def get_segment_counts_for_library(library_id: str) -> dict[str, int]:
 
 
 
+async def get_segment_counts_by_version_for_library(library_id: str) -> dict[int, int]:
+    """Return {version_id: active_segment_count} for all versions in a library (single query)."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            """
+            SELECT s.version_id, COUNT(*) AS cnt
+            FROM segments s
+            JOIN scan_jobs j ON j.plex_guid = s.plex_guid
+            WHERE j.library_id = ? AND COALESCE(s.false_positive, 0) = 0 AND s.version_id > 0
+            GROUP BY s.version_id
+            """,
+            (library_id,),
+        )
+        return {int(row["version_id"]): row["cnt"] for row in rows}
+
+
 async def get_false_positive_counts_for_library(library_id: str) -> dict[str, int]:
     """Return {plex_guid: count} of segments marked false positive, for titles in a library.
 
@@ -2801,6 +4072,22 @@ async def get_false_positive_counts_for_library(library_id: str) -> dict[str, in
             (library_id,),
         )
         return {row["plex_guid"]: row["cnt"] for row in rows}
+
+
+async def get_false_positive_counts_by_version_for_library(library_id: str) -> dict[int, int]:
+    """Return {version_id: fp_count} for all versions in a library (single query)."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            """
+            SELECT s.version_id, COUNT(*) AS cnt
+            FROM segments s
+            JOIN scan_jobs j ON j.plex_guid = s.plex_guid
+            WHERE j.library_id = ? AND COALESCE(s.false_positive, 0) IN (1, 2) AND s.version_id > 0
+            GROUP BY s.version_id
+            """,
+            (library_id,),
+        )
+        return {int(row["version_id"]): row["cnt"] for row in rows}
 
 # ── Segment Library Sharing ────────────────────────────────────────────────────
 
@@ -2854,35 +4141,31 @@ async def update_bg_job(job_id: int, status: str = None, progress: int = None, e
 
 
 async def get_local_library_for_sync() -> list[dict]:
-    """Return all locally-scanned titles with their segments, grouped by plex_guid.
-
-    Uses a single JOIN query instead of one query per title to avoid N+1 DB round-trips.
-    Returns: [{plex_guid, title, file_path, segments_count, segments: [{...}]}]
-    """
+    """Return all locally-scanned single-file/primary versions with their segments."""
     async with get_connection() as conn:
-        # Fetch all segment rows for done jobs in a single pass.
         seg_rows = await conn.execute_fetchall(
             """
-            SELECT s.*, j.file_path, j.title AS job_title
+            SELECT s.*, v.file_path, j.title AS job_title
             FROM segments s
-            JOIN scan_jobs j ON j.plex_guid = s.plex_guid
-            WHERE j.status = 'done' AND j.file_path IS NOT NULL AND COALESCE(s.false_positive, 0) = 0
+            JOIN title_versions v ON v.id = s.version_id
+            JOIN scan_jobs j ON j.plex_guid = v.plex_guid
+            WHERE v.status = 'done' AND v.file_path != '' AND COALESCE(s.false_positive, 0) = 0
             ORDER BY j.title, s.start_ms
             """
         )
-        # Also fetch done jobs with no segments so they still appear in the result.
         job_rows = await conn.execute_fetchall(
             """
-            SELECT plex_guid, title, file_path
-            FROM scan_jobs
-            WHERE status = 'done' AND file_path IS NOT NULL
-            ORDER BY title
+            SELECT v.id AS version_id, j.plex_guid, j.title, v.file_path
+            FROM title_versions v
+            JOIN scan_jobs j ON j.plex_guid = v.plex_guid
+            WHERE v.status = 'done' AND v.file_path != ''
+            ORDER BY j.title, v.media_index, v.id
             """
         )
 
-    # Build {plex_guid: {title, file_path, segments: []}} in Python — O(1) per row.
-    job_map: dict[str, dict] = {
-        r["plex_guid"]: {
+    job_map: dict[int, dict] = {
+        int(r["version_id"]): {
+            "version_id": int(r["version_id"]),
             "plex_guid": r["plex_guid"],
             "title": r["title"],
             "file_path": r["file_path"],
@@ -2891,9 +4174,9 @@ async def get_local_library_for_sync() -> list[dict]:
         for r in job_rows
     }
     for row in seg_rows:
-        guid = row["plex_guid"]
-        if guid in job_map:
-            job_map[guid]["segments"].append(dict(row))
+        vid = int(row["version_id"])
+        if vid in job_map:
+            job_map[vid]["segments"].append(dict(row))
 
     result = []
     for item in job_map.values():
@@ -3085,59 +4368,63 @@ async def plex_title_cache_exists(library_id: str) -> bool:
 
 
 
-# ── Hayaa sync (#222) ──────────────────────────────────────────────────────────
+# ── Hayaa sync (#222, #233) ────────────────────────────────────────────────────
 
 async def get_hayaa_sync_titles() -> list[dict]:
-    """Return the titles Hayaa can identify: single-file, not ignored, with a file path.
+    """Return every single-file non-ignored media version Hayaa can identify.
 
-    Multi-part titles are left out because their segment times span several files, and a
-    content key names one file.
+    Each single-file version of a title is its own Hayaa title under its own content key.
+    Multi-part versions are left out because their segment times span several files.
     """
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            "SELECT plex_guid, title, file_path, COALESCE(duration_ms, 0) AS duration_ms, status, "
-            "COALESCE(scan_version, 0) AS scan_version, finished_at, COALESCE(content_key, '') AS content_key, "
-            "COALESCE(content_size, 0) AS content_size, COALESCE(hayaa_sync_state, 'pending') AS hayaa_sync_state "
-            "FROM scan_jobs "
-            "WHERE COALESCE(file_path, '') != '' AND COALESCE(ignored, 0) = 0 "
-            "AND COALESCE(json_array_length(NULLIF(part_files, '')), 0) <= 1"
+            "SELECT v.id AS version_id, v.plex_guid, j.title, v.file_path, "
+            "COALESCE(v.duration_ms, 0) AS duration_ms, v.status, "
+            "COALESCE(v.scan_version, 0) AS scan_version, v.finished_at, "
+            "COALESCE(v.content_key, '') AS content_key, COALESCE(v.content_size, 0) AS content_size, "
+            "COALESCE(v.hayaa_sync_state, 'pending') AS hayaa_sync_state, "
+            "COALESCE(v.resolution, '') AS resolution "
+            "FROM title_versions v JOIN scan_jobs j ON j.plex_guid = v.plex_guid "
+            "WHERE COALESCE(v.file_path, '') != '' AND COALESCE(j.ignored, 0) = 0 "
+            "AND COALESCE(json_array_length(NULLIF(v.part_files, '')), 0) <= 1"
         )
     return [dict(r) for r in rows]
 
 
 async def get_hayaa_removed_titles() -> list[dict]:
-    """Return removed single-file titles whose content key is still cached, for upload-only sync.
+    """Return removed single-file versions whose content key was kept, for upload-only sync.
 
-    Same shape as get_hayaa_sync_titles plus `content_key` and `size`. A path a live title now
-    uses is left out: its cached key may belong to the new file.
+    A path a live version now uses is left out: its key may belong to the new file.
     """
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            "SELECT r.plex_guid, r.title, r.file_path, COALESCE(r.duration_ms, 0) AS duration_ms, "
-            "COALESCE(r.status, '') AS status, COALESCE(r.scan_version, 0) AS scan_version, r.finished_at, "
-            "k.content_key, k.size FROM removed_titles r "
-            "JOIN hayaa_content_keys k ON k.file_path = r.file_path "
-            "WHERE COALESCE(r.file_path, '') != '' "
-            "AND COALESCE(json_array_length(NULLIF(r.part_files, '')), 0) <= 1 "
-            "AND NOT EXISTS (SELECT 1 FROM scan_jobs j WHERE j.file_path = r.file_path)"
+            "SELECT version_id, plex_guid, title, file_path, COALESCE(duration_ms, 0) AS duration_ms, "
+            "COALESCE(status, '') AS status, COALESCE(scan_version, 0) AS scan_version, finished_at, "
+            "content_key, content_size AS size FROM removed_titles "
+            "WHERE COALESCE(content_key, '') != '' AND COALESCE(file_path, '') != '' "
+            "AND COALESCE(json_array_length(NULLIF(part_files, '')), 0) <= 1 "
+            "AND NOT EXISTS (SELECT 1 FROM title_versions v WHERE v.file_path = removed_titles.file_path)"
         )
     return [dict(r) for r in rows]
 
 
-async def get_removed_segments_for_hayaa(guids: list[str]) -> list[dict]:
-    """get_segments_for_hayaa for removed titles: their segments live in removed_segments."""
+async def get_removed_segments_for_hayaa(targets: list[int] | list[str]) -> list[dict]:
+    """get_segments_for_hayaa for removed versions/titles: their segments live in removed_segments."""
+    if not targets:
+        return []
+    col = "version_id" if isinstance(targets[0], int) else "plex_guid"
     out: list[dict] = []
     async with get_connection() as conn:
-        for i in range(0, len(guids), 500):
-            chunk = guids[i:i + 500]
+        for i in range(0, len(targets), 500):
+            chunk = targets[i:i + 500]
             rows = await conn.execute_fetchall(
                 f"""
                 SELECT s.*, COALESCE(f.labels, s.labels) AS detected_labels,
                        COALESCE(f.corrected_labels, '') AS corrected_labels
                 FROM removed_segments s
                 LEFT JOIN segment_feedback f ON f.segment_id = s.id AND f.verdict = 'relabeled'
-                WHERE s.plex_guid IN ({_in(chunk)})
-                ORDER BY s.plex_guid, s.start_ms
+                WHERE s.{col} IN ({_in(chunk)})
+                ORDER BY s.{col}, s.start_ms
                 """,
                 chunk,
             )
@@ -3152,15 +4439,17 @@ async def get_hayaa_titles() -> dict[str, dict]:
     return {r["title_key"]: dict(r) for r in rows}
 
 
-async def upsert_hayaa_titles(pairs: list[tuple[str, str]]) -> None:
-    """Record (content key, plex_guid) pairs; a key moving to another guid keeps its version."""
+async def upsert_hayaa_titles(pairs: list[tuple]) -> None:
+    """Record (content key, plex_guid[, version_id]) tuples; a key moving keeps its version."""
     if not pairs:
         return
+    norm = [(p[0], p[1], p[2] if len(p) > 2 else 0) for p in pairs]
     async with get_connection() as conn:
         await conn.executemany(
-            "INSERT INTO hayaa_titles(title_key, plex_guid) VALUES(?,?) "
-            "ON CONFLICT(title_key) DO UPDATE SET plex_guid=excluded.plex_guid",
-            pairs,
+            "INSERT INTO hayaa_titles(title_key, plex_guid, version_id) VALUES(?,?,?) "
+            "ON CONFLICT(title_key) DO UPDATE SET plex_guid=excluded.plex_guid, "
+            "version_id=CASE WHEN excluded.version_id > 0 THEN excluded.version_id ELSE hayaa_titles.version_id END",
+            norm,
         )
         await conn.commit()
 
@@ -3186,24 +4475,23 @@ async def mark_hayaa_described(keys: list[str]) -> None:
         await conn.commit()
 
 
-async def get_segments_for_hayaa(guids: list[str]) -> list[dict]:
-    """Return every segment of the given titles, false positives included, for reconciling.
-
-    detected_labels is what the detector found: a user's relabel keeps the detector's labels
-    in its 'relabeled' feedback row, so machine evidence is never replaced by a human edit.
-    """
+async def get_segments_for_hayaa(targets: list[int] | list[str]) -> list[dict]:
+    """Return every segment of the given versions (or guids), false positives included, for reconciling."""
+    if not targets:
+        return []
+    col = "version_id" if isinstance(targets[0], int) else "plex_guid"
     out: list[dict] = []
     async with get_connection() as conn:
-        for i in range(0, len(guids), 500):
-            chunk = guids[i:i + 500]
+        for i in range(0, len(targets), 500):
+            chunk = targets[i:i + 500]
             rows = await conn.execute_fetchall(
                 f"""
                 SELECT s.*, COALESCE(f.labels, s.labels) AS detected_labels,
                        COALESCE(f.corrected_labels, '') AS corrected_labels
                 FROM segments s
                 LEFT JOIN segment_feedback f ON f.segment_id = s.id AND f.verdict = 'relabeled'
-                WHERE s.plex_guid IN ({_in(chunk)})
-                ORDER BY s.plex_guid, s.start_ms
+                WHERE s.{col} IN ({_in(chunk)})
+                ORDER BY s.{col}, s.start_ms
                 """,
                 chunk,
             )
@@ -3234,13 +4522,34 @@ async def record_hayaa_sent(rows: list[tuple[str, str, str, str]], retracted: li
         await conn.commit()
 
 
-async def replace_hayaa_claims(title_key: str, plex_guid: str, claims: list[dict]) -> None:
-    """Replace a title's staged claims with a pulled view.
+async def replace_hayaa_claims(
+    title_key: str, plex_guid: str, claims: list[dict], version_id: int = 0
+) -> None:
+    """Replace a version's staged claims with a pulled view.
 
     A claim that keeps its id and bounds keeps its verification result; one whose bounds moved
     is verified again. claims use ms and a JSON 'machine' string.
     """
     async with get_connection() as conn:
+        vid = int(version_id or 0)
+        if vid <= 0:
+            vrow = await (await conn.execute(
+                "SELECT id FROM title_versions WHERE content_key=? AND COALESCE(content_key, '') != '' LIMIT 1",
+                (title_key,),
+            )).fetchone()
+            if not vrow:
+                vrow = await (await conn.execute(
+                    "SELECT version_id AS id FROM hayaa_titles WHERE title_key=? AND version_id > 0 LIMIT 1",
+                    (title_key,),
+                )).fetchone()
+            if not vrow:
+                vrows = await conn.execute_fetchall(
+                    "SELECT id FROM title_versions WHERE plex_guid=? ORDER BY id LIMIT 2",
+                    (plex_guid,),
+                )
+                if len(vrows) == 1:
+                    vrow = vrows[0]
+            vid = int(vrow["id"]) if vrow else 0
         old = {
             r["claim_id"]: dict(r) for r in await conn.execute_fetchall(
                 "SELECT * FROM hayaa_claims WHERE title_key=?", (title_key,)
@@ -3251,10 +4560,10 @@ async def replace_hayaa_claims(title_key: str, plex_guid: str, claims: list[dict
             prev = old.get(c["claim_id"])
             keep = prev is not None and prev["start_ms"] == c["start_ms"] and prev["end_ms"] == c["end_ms"]
             await conn.execute(
-                "INSERT INTO hayaa_claims(title_key, claim_id, plex_guid, start_ms, end_ms, status, basis, labels, "
+                "INSERT INTO hayaa_claims(title_key, claim_id, plex_guid, version_id, start_ms, end_ms, status, basis, labels, "
                 "category, severity, machine, supporters, rejecters, verify_state, verify_conf, verify_family, "
-                "verify_fp_drop, verify_thumb, verify_labels, decision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (title_key, c["claim_id"], plex_guid, c["start_ms"], c["end_ms"], c["status"], c["basis"],
+                "verify_fp_drop, verify_thumb, verify_labels, decision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (title_key, c["claim_id"], plex_guid, vid, c["start_ms"], c["end_ms"], c["status"], c["basis"],
                  c["labels"], c["category"], c["severity"], c["machine"], c["supporters"], c["rejecters"],
                  prev["verify_state"] if keep else "", prev["verify_conf"] if keep else None,
                  prev["verify_family"] if keep else "", prev["verify_fp_drop"] if keep else 0,
@@ -3264,13 +4573,23 @@ async def replace_hayaa_claims(title_key: str, plex_guid: str, claims: list[dict
         await conn.commit()
 
 
-async def get_hayaa_claims(plex_guids: list[str] | None = None) -> list[dict]:
-    """Return staged claims, for the given titles or all of them, by title and start."""
+async def get_hayaa_claims(plex_guids: list[str] | None = None, version_ids: list[int] | None = None) -> list[dict]:
+    """Return staged claims, for the given versions/titles or all of them, by title and start."""
     async with get_connection() as conn:
+        if version_ids is not None:
+            out: list[dict] = []
+            for i in range(0, len(version_ids), 500):
+                chunk = version_ids[i:i + 500]
+                rows = await conn.execute_fetchall(
+                    f"SELECT * FROM hayaa_claims WHERE version_id IN ({_in(chunk)}) ORDER BY version_id, start_ms",
+                    chunk,
+                )
+                out += [dict(r) for r in rows]
+            return out
         if plex_guids is None:
             rows = await conn.execute_fetchall("SELECT * FROM hayaa_claims ORDER BY plex_guid, start_ms")
             return [dict(r) for r in rows]
-        out: list[dict] = []
+        out = []
         for i in range(0, len(plex_guids), 500):
             chunk = plex_guids[i:i + 500]
             rows = await conn.execute_fetchall(
@@ -3281,12 +4600,16 @@ async def get_hayaa_claims(plex_guids: list[str] | None = None) -> list[dict]:
 
 
 async def get_hayaa_claims_to_verify(limit: int) -> list[dict]:
-    """Return claims waiting for a local re-check (verify_state 'pending'), with the title's file."""
+    """Return claims waiting for a local re-check (verify_state 'pending'), with the claim version's file."""
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            "SELECT c.*, j.file_path, j.title, j.rating_key, COALESCE(j.duration_ms, 0) AS duration_ms "
-            "FROM hayaa_claims c JOIN scan_jobs j ON j.plex_guid = c.plex_guid "
-            "WHERE c.verify_state = 'pending' ORDER BY c.updated_at LIMIT ?",
+            "SELECT c.*, COALESCE(v.file_path, j.file_path) AS file_path, j.title, j.rating_key, "
+            "CASE WHEN COALESCE(v.duration_ms, 0) > 0 THEN v.duration_ms ELSE COALESCE(j.duration_ms, 0) END AS duration_ms "
+            "FROM hayaa_claims c "
+            "LEFT JOIN title_versions v ON v.id = c.version_id "
+            "LEFT JOIN scan_jobs j ON j.plex_guid = c.plex_guid "
+            "WHERE c.verify_state = 'pending' AND COALESCE(v.file_path, j.file_path, '') != '' "
+            "ORDER BY c.updated_at LIMIT ?",
             (limit,),
         )
     return [dict(r) for r in rows]
@@ -3350,9 +4673,21 @@ async def set_hayaa_override(title_key: str, claim_id: str, verdict: str | None)
         await conn.commit()
 
 
-async def get_hayaa_title_key(plex_guid: str) -> str | None:
-    """Return the content key Hayaa knows a title by, or None."""
+async def get_hayaa_title_key(plex_guid: str, version_id: int | None = None) -> str | None:
+    """Return the content key Hayaa knows a version (or title) by, or None."""
     async with get_connection() as conn:
+        if version_id is not None and version_id > 0:
+            row = await (await conn.execute(
+                "SELECT title_key FROM hayaa_titles WHERE version_id=? LIMIT 1", (version_id,)
+            )).fetchone()
+            if row:
+                return row[0]
+            vrow = await (await conn.execute(
+                "SELECT content_key FROM title_versions WHERE id=? AND COALESCE(content_key, '') != ''",
+                (version_id,),
+            )).fetchone()
+            if vrow:
+                return vrow[0]
         row = await (await conn.execute(
             "SELECT title_key FROM hayaa_titles WHERE plex_guid=? LIMIT 1", (plex_guid,)
         )).fetchone()
