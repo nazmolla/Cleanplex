@@ -133,23 +133,3 @@ async def scan_subtitles(payload: SubtitleScanPayload):
     )
     plex_summary.refresh_soon(payload.plex_guid)
     return {"imported": count, "source": "subtitles", "title": job.get("title") or ""}
-
-
-@router.get("/export/{plex_guid:path}")
-async def export_segments(plex_guid: str, fmt: str = "edl"):
-    """Export a title's segments as EDL or MCF for use in other players."""
-    from ...importers import edl, mcf
-
-    job = await db.get_scan_job_by_guid(plex_guid)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"Unknown title: {plex_guid}")
-
-    segments = await db.get_segments_for_guid(plex_guid)
-    if fmt == "edl":
-        body = edl.export(segments)
-    elif fmt == "mcf":
-        body = mcf.export(segments, title=job.get("title") or "", year=job.get("year"))
-    else:
-        raise HTTPException(status_code=422, detail=f"Unsupported export format: {fmt}")
-
-    return {"format": fmt, "body": body, "count": len(segments)}

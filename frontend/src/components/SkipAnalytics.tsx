@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import { useLiveRefresh } from '../api/events'
 import { Activity, MonitorSmartphone, Film } from 'lucide-react'
+import { useT, type TranslationKey } from '../i18n'
 
 interface CategoryCount {
   category: string
@@ -24,6 +25,7 @@ interface TitleCount {
 }
 
 export default function SkipAnalytics() {
+  const { t, lang } = useT()
   const [categories, setCategories] = useState<CategoryCount[]>([])
   const [clients, setClients] = useState<ClientStat[]>([])
   const [titles, setTitles] = useState<TitleCount[]>([])
@@ -58,35 +60,41 @@ export default function SkipAnalytics() {
     return () => controller.abort()
   }, [liveTick])
 
-  if (loading) return <div className="text-muted text-sm">Loading skip history...</div>
+  if (loading) return <div className="text-muted text-sm">{t('skip_analytics_loading')}</div>
 
   if (categories.length === 0 && clients.length === 0 && titles.length === 0) {
     return (
       <div className="bg-plex-card border border-plex-border rounded-xl p-8 text-center text-muted text-sm">
-        No skips recorded yet. History appears here once filtering fires during playback.
+        {t('skip_analytics_empty')}
       </div>
     )
   }
 
   const maxCategory = Math.max(...categories.map(c => c.count), 1)
+  const displayCategory = (cat: string) => {
+    if (lang === 'en') return cat
+    const key = `cat_label_${cat}` as TranslationKey
+    const label = t(key)
+    return label === key ? cat : label
+  }
 
   return (
     <div className="grid gap-4 md:grid-cols-2">
       <section className="bg-plex-card border border-plex-border rounded-xl p-4">
         <h3 className="text-sm font-medium text-gray-200 flex items-center gap-1.5 mb-3">
-          <Activity size={14} /> Skips by category
+          <Activity size={14} /> {t('skip_analytics_by_category')}
         </h3>
         <div className="space-y-2">
           {categories.map(c => (
             <div key={c.category} className="flex items-center gap-2">
-              <span className="text-xs text-gray-400 w-28 truncate">{c.category}</span>
+              <span className="text-xs text-gray-400 w-28 truncate">{displayCategory(c.category)}</span>
               <div className="flex-1 h-2 bg-plex-border rounded overflow-hidden">
                 <div
                   className="h-full bg-plex-orange"
                   style={{ width: `${(c.count / maxCategory) * 100}%` }}
                 />
               </div>
-              <span className="text-xs text-muted w-10 text-right">{c.count}</span>
+              <span className="text-xs text-muted w-10 text-end">{c.count}</span>
             </div>
           ))}
         </div>
@@ -94,29 +102,29 @@ export default function SkipAnalytics() {
 
       <section className="bg-plex-card border border-plex-border rounded-xl p-4">
         <h3 className="text-sm font-medium text-gray-200 flex items-center gap-1.5 mb-3">
-          <MonitorSmartphone size={14} /> Clients
+          <MonitorSmartphone size={14} /> {t('skip_analytics_clients')}
         </h3>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead className="text-muted">
               <tr>
-                <th className="text-left font-normal pb-1.5">Client</th>
-                <th className="text-right font-normal pb-1.5">Skips</th>
-                <th className="text-right font-normal pb-1.5">Failed</th>
-                <th className="text-right font-normal pb-1.5">Latency</th>
+                <th className="text-start font-normal pb-1.5">{t('skip_analytics_col_client')}</th>
+                <th className="text-end font-normal pb-1.5">{t('skip_analytics_col_skips')}</th>
+                <th className="text-end font-normal pb-1.5">{t('skip_analytics_col_failed')}</th>
+                <th className="text-end font-normal pb-1.5">{t('skip_analytics_col_latency')}</th>
               </tr>
             </thead>
             <tbody className="text-gray-300">
               {clients.map(c => (
                 <tr key={c.client_identifier || c.client_title} className="border-t border-plex-border">
                   <td className="py-1.5 truncate max-w-[10rem]">{c.client_title}</td>
-                  <td className="text-right">{c.count}</td>
+                  <td className="text-end">{c.count}</td>
                   <td
-                    className={`text-right ${c.failure_rate > 0.1 ? 'text-red-400' : 'text-muted'}`}
+                    className={`text-end ${c.failure_rate > 0.1 ? 'text-red-400' : 'text-muted'}`}
                   >
                     {Math.round(c.failure_rate * 100)}%
                   </td>
-                  <td className="text-right text-muted">{c.avg_latency_ms}ms</td>
+                  <td className="text-end text-muted">{t('common_ms_unit', { value: c.avg_latency_ms })}</td>
                 </tr>
               ))}
             </tbody>
@@ -126,13 +134,13 @@ export default function SkipAnalytics() {
 
       <section className="bg-plex-card border border-plex-border rounded-xl p-4 md:col-span-2">
         <h3 className="text-sm font-medium text-gray-200 flex items-center gap-1.5 mb-3">
-          <Film size={14} /> Most-skipped titles
+          <Film size={14} /> {t('skip_analytics_top_titles')}
         </h3>
         <div className="divide-y divide-plex-border">
           {titles.map(t => (
             <div key={t.plex_guid} className="flex items-center justify-between py-1.5">
               <span className="text-xs text-gray-300 truncate">{t.title}</span>
-              <span className="text-xs text-muted ml-3">{t.count}</span>
+              <span className="text-xs text-muted ms-3">{t.count}</span>
             </div>
           ))}
         </div>

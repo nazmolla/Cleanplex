@@ -164,12 +164,8 @@ def test_edl_rejects_unknown_action_code():
         edl.parse("10 20 9\n")
 
 
-def test_edl_round_trips_times_and_actions():
-    original = edl.parse("30.5 45.0 0\n60.0 61.5 1\n")
-    reparsed = edl.parse(edl.export(original))
-
-    assert [(s["start_ms"], s["end_ms"], s["action"]) for s in reparsed] == \
-           [(s["start_ms"], s["end_ms"], s["action"]) for s in original]
+def test_importers_offer_no_export():
+    assert not hasattr(edl, "export") and not hasattr(mcf, "export")
 
 
 # ── MovieContentFilter .mcf (issue #66) ────────────────────────────────────────
@@ -256,14 +252,6 @@ def test_mcf_unknown_category_falls_back_to_other():
 def test_mcf_requires_its_header():
     with pytest.raises(ParseError, match="header"):
         mcf.parse("00:00:01.000 --> 00:00:02.000\nviolence=high\n")
-
-
-def test_mcf_round_trips():
-    original = mcf.parse(SPEC_EXAMPLE)
-    reparsed = mcf.parse(mcf.export(original, title="Ozymandias", year=2013))
-
-    assert [(s["start_ms"], s["end_ms"], s["category"], s["severity"]) for s in reparsed] == \
-           [(s["start_ms"], s["end_ms"], s["category"], s["severity"]) for s in original]
 
 
 # ── Pasted lists (issue #67) ───────────────────────────────────────────────────

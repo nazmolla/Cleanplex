@@ -16,7 +16,7 @@ async def test_new_user_renders_at_the_inherited_defaults(http_client):
 
     assert resp.status_code == 200
     assert body["uses_defaults"] is True
-    assert all(c["level"] == 3 for c in body["categories"])
+    assert all(c["level"] == 4 for c in body["categories"])
 
 
 async def test_stored_prefs_are_returned(http_client):
@@ -28,7 +28,7 @@ async def test_stored_prefs_are_returned(http_client):
     assert body["uses_defaults"] is False
     assert levels["nudity"] == 3
     # Unset categories stay at Everything once another one is saved (#77).
-    assert levels["violence"] == 3
+    assert levels["violence"] == 4
 
 
 async def test_unset_categories_report_everything_after_a_change(http_client):
@@ -38,7 +38,7 @@ async def test_unset_categories_report_everything_after_a_change(http_client):
     levels = {c["category"]: c["level"] for c in body["categories"]}
 
     assert levels["language"] == 1
-    assert all(level == 3 for cat, level in levels.items() if cat != "language")
+    assert all(level == 4 for cat, level in levels.items() if cat != "language")
 
 
 async def test_categories_report_whether_segments_exist(http_client):

@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import { useLiveRefresh } from '../api/events'
 import { UserCircle2, ShieldCheck, ShieldOff, ChevronDown, ChevronRight } from 'lucide-react'
 import CategoryMatrix from '../components/CategoryMatrix'
+import { useT } from '../i18n'
 
 interface User {
   username: string
@@ -13,6 +14,7 @@ interface User {
 
 /** Per-account filtering, shown as the Users section of Settings (#118). */
 export function UsersPanel() {
+  const { t } = useT()
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState<Record<string, boolean>>({})
@@ -42,17 +44,16 @@ export function UsersPanel() {
 
   return (
     <div>
-      <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">Users</h2>
+      <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">{t('users_title')}</h2>
       <p className="text-sm text-muted mb-6">
-        Toggle content filtering per Plex account, and set how strict each content category should be.
-        Accounts with filtering enabled will have flagged scenes skipped or muted automatically.
+        {t('users_subtitle')}
       </p>
 
       {loading ? (
-        <div className="text-muted text-sm">Loading users...</div>
+        <div className="text-muted text-sm">{t('users_loading')}</div>
       ) : users.length === 0 ? (
         <div className="bg-plex-darker border border-plex-border rounded-xl p-8 text-center text-muted text-sm">
-          No users found. Make sure Plex is configured in Settings.
+          {t('users_empty')}
         </div>
       ) : (
         <div className="bg-plex-darker border border-plex-border rounded-xl divide-y divide-plex-border">
@@ -75,17 +76,17 @@ export function UsersPanel() {
               <button
                 onClick={() => setExpanded(e => (e === user.username ? null : user.username))}
                 className="text-gray-400 hover:text-gray-300"
-                aria-label={expanded === user.username ? 'Hide categories' : 'Show categories'}
+                aria-label={expanded === user.username ? t('users_hide_categories') : t('users_show_categories')}
               >
-                {expanded === user.username ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                {expanded === user.username ? <ChevronDown size={16} /> : <ChevronRight size={16} className="rtl:-scale-x-100" />}
               </button>
 
               <div className="flex-1 min-w-0">
                 <p className="font-medium text-gray-100">{user.username}</p>
                 <p className="text-xs text-muted mt-0.5 flex items-center gap-1">
                   {user.enabled
-                    ? <><ShieldCheck size={11} className="text-green-400" /> Filtering active</>
-                    : <><ShieldOff size={11} className="text-faint" /> Filtering off</>
+                    ? <><ShieldCheck size={11} className="text-green-400" /> {t('users_filtering_active')}</>
+                    : <><ShieldOff size={11} className="text-faint" /> {t('users_filtering_off')}</>
                   }
                 </p>
               </div>
@@ -100,7 +101,7 @@ export function UsersPanel() {
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-                    user.enabled ? 'translate-x-6' : 'translate-x-1'
+                    user.enabled ? 'translate-x-6 rtl:-translate-x-6' : 'translate-x-1 rtl:-translate-x-1'
                   }`}
                 />
               </button>

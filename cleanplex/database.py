@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 _DB_PATH: Path | None = None
 # Level a category filters at when a user has no row for it: 3 is "Everything".
 # Turning a category down is always an explicit user choice.
-DEFAULT_CATEGORY_LEVEL = 3
+DEFAULT_CATEGORY_LEVEL = 4  # importers._common.MAX_LEVEL: everything
 # Serializes concurrent upsert_plex_markers calls so DELETE+INSERT never interleave.
 _marker_upsert_lock = asyncio.Lock()
 
@@ -219,6 +219,12 @@ CREATE TABLE IF NOT EXISTS title_cast (
     PRIMARY KEY (rating_key, actor)
 );
 CREATE INDEX IF NOT EXISTS idx_title_cast_actor ON title_cast(actor);
+-- Each actor's photo as Plex lists it (#227): usually a metadata-static.plex.tv URL, shown in the
+-- actor filter through Plex's photo transcoder and the /api/plex-image cache.
+CREATE TABLE IF NOT EXISTS actor_photos (
+    actor TEXT PRIMARY KEY,
+    thumb TEXT NOT NULL
+);
 -- Stream proxy sessions (#184), so an edit survives a restart and live skipping can stand down
 -- for streams the proxy already edits.
 CREATE TABLE IF NOT EXISTS proxy_sessions (
@@ -243,6 +249,75 @@ CREATE TABLE IF NOT EXISTS keyframe_index (
     mtime      INTEGER NOT NULL,
     keyframes  TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Hayaa content keys per media file (#221): reading 16 sampled chunks is cheap but not free,
+-- so a key is recomputed only when the file's path, size or mtime changes (§5.7).
+CREATE TABLE IF NOT EXISTS hayaa_content_keys (
+    file_path   TEXT PRIMARY KEY,
+    size        INTEGER NOT NULL,
+    mtime       INTEGER NOT NULL,
+    content_key TEXT NOT NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Hayaa sync (#222). Titles are identified by their content key (see hayaa_content_keys).
+-- hayaa_titles: which local title a key belongs to, the consensus version last pulled, and
+-- whether its media descriptor was sent.
+CREATE TABLE IF NOT EXISTS hayaa_titles (
+    title_key  TEXT PRIMARY KEY,
+    plex_guid  TEXT NOT NULL,
+    version    TEXT DEFAULT '',
+    described  INTEGER DEFAULT 0,
+    pulled_at  TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_hayaa_titles_guid ON hayaa_titles(plex_guid);
+-- Every observation this instance sent. Hayaa ignores a repeated id, so an assertion that is
+-- withdrawn and later made again needs a new id: obs_id = base_id plus a generation.
+CREATE TABLE IF NOT EXISTS hayaa_sent (
+    obs_id     TEXT PRIMARY KEY,
+    base_id    TEXT NOT NULL,
+    title_key  TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    live       INTEGER DEFAULT 1,
+    sent_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_hayaa_sent_title ON hayaa_sent(title_key);
+CREATE INDEX IF NOT EXISTS idx_hayaa_sent_base ON hayaa_sent(base_id);
+-- Pulled consensus claims (staging): nothing here acts until the apply step puts it in segments.
+CREATE TABLE IF NOT EXISTS hayaa_claims (
+    title_key      TEXT NOT NULL,
+    claim_id       TEXT NOT NULL,
+    plex_guid      TEXT NOT NULL,
+    start_ms       INTEGER NOT NULL,
+    end_ms         INTEGER NOT NULL,
+    status         TEXT NOT NULL,
+    basis          TEXT NOT NULL,
+    labels         TEXT DEFAULT '',
+    category       TEXT DEFAULT 'nudity',
+    severity       TEXT DEFAULT 'high',
+    machine        TEXT DEFAULT '{}',
+    supporters     INTEGER DEFAULT 0,
+    rejecters      INTEGER DEFAULT 0,
+    verify_state   TEXT DEFAULT '',
+    verify_conf    REAL,
+    verify_family  TEXT DEFAULT '',
+    verify_fp_drop INTEGER DEFAULT 0,
+    verify_thumb   TEXT DEFAULT '',
+    verify_labels  TEXT DEFAULT '',
+    decision       TEXT DEFAULT '',
+    updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (title_key, claim_id)
+);
+CREATE INDEX IF NOT EXISTS idx_hayaa_claims_guid ON hayaa_claims(plex_guid);
+CREATE INDEX IF NOT EXISTS idx_hayaa_claims_verify ON hayaa_claims(verify_state);
+-- The user's own verdict on a pulled claim; always wins over the service (keep, delete, restore).
+CREATE TABLE IF NOT EXISTS hayaa_overrides (
+    title_key  TEXT NOT NULL,
+    claim_id   TEXT NOT NULL,
+    verdict    TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (title_key, claim_id)
 );
 
 -- Titles Plex no longer reports (#191). Their segments (the marks) move to removed_segments, which
@@ -444,11 +519,52 @@ async def init_db() -> None:
             # Hover preview state (#114): '' not rendered yet, then done, failed or
             # missing (source file unreachable; retried on the next run).
             "ALTER TABLE segments ADD COLUMN hover_status TEXT DEFAULT ''",
+            # Hayaa claim a segment belongs to (#222): pulled segments, and local ones matched to a claim.
+            "ALTER TABLE segments ADD COLUMN hayaa_claim_id TEXT DEFAULT ''",
             "CREATE INDEX IF NOT EXISTS idx_segments_hover_status ON segments(hover_status)",
             "CREATE INDEX IF NOT EXISTS idx_scan_jobs_status ON scan_jobs(status)",
             # Scan queue position (#174): NULL = not queued; lower runs first. The queue lives
             # in the database so workers claim from it and every view reads the same order.
             "ALTER TABLE scan_jobs ADD COLUMN queue_pos INTEGER",
+            # Hayaa sync per title (#231): the file's content key, computed once (scan end or first
+            # sync) so sync never reads media files, and whether what it shares changed since the
+            # last accepted push. Triggers below set 'pending'; a sync sets 'synced'.
+            "ALTER TABLE scan_jobs ADD COLUMN content_key TEXT DEFAULT ''",
+            "ALTER TABLE scan_jobs ADD COLUMN content_size INTEGER DEFAULT 0",
+            "ALTER TABLE scan_jobs ADD COLUMN hayaa_sync_state TEXT DEFAULT 'pending'",
+            "UPDATE scan_jobs SET content_key = (SELECT k.content_key FROM hayaa_content_keys k WHERE k.file_path = scan_jobs.file_path), "
+            "content_size = (SELECT k.size FROM hayaa_content_keys k WHERE k.file_path = scan_jobs.file_path) "
+            "WHERE COALESCE(content_key, '') = '' AND file_path IN (SELECT file_path FROM hayaa_content_keys)",
+            "CREATE INDEX IF NOT EXISTS idx_scan_jobs_sync_state ON scan_jobs(hayaa_sync_state)",
+            "CREATE INDEX IF NOT EXISTS idx_scan_jobs_content_key ON scan_jobs(content_key)",
+            # A finished scan, an own segment added, edited or removed, a false positive or
+            # relabel, a kept claim or a local re-check: each is something to share again.
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_scan AFTER UPDATE OF status, finished_at, scan_version ON scan_jobs "
+            "WHEN NEW.status = 'done' BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = NEW.plex_guid; END",
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_seg_ins AFTER INSERT ON segments WHEN NEW.source != 'hayaa' "
+            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = NEW.plex_guid; END",
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_seg_upd AFTER UPDATE OF false_positive, labels, start_ms, end_ms ON segments "
+            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = NEW.plex_guid; END",
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_seg_del AFTER DELETE ON segments WHEN OLD.source != 'hayaa' "
+            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = OLD.plex_guid; END",
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_feedback AFTER INSERT ON segment_feedback "
+            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = NEW.plex_guid; END",
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_override_ins AFTER INSERT ON hayaa_overrides "
+            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE content_key = NEW.title_key; END",
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_override_upd AFTER UPDATE ON hayaa_overrides "
+            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE content_key = NEW.title_key; END",
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_override_del AFTER DELETE ON hayaa_overrides "
+            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE content_key = OLD.title_key; END",
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_verify AFTER UPDATE OF verify_state ON hayaa_claims "
+            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = NEW.plex_guid; END",
+            # What Hayaa sync needs to push the scan of a removed title (#228).
+            "ALTER TABLE removed_titles ADD COLUMN duration_ms INTEGER DEFAULT 0",
+            "ALTER TABLE removed_titles ADD COLUMN status TEXT DEFAULT ''",
+            "ALTER TABLE removed_titles ADD COLUMN scan_version INTEGER DEFAULT 0",
+            "ALTER TABLE removed_titles ADD COLUMN finished_at TIMESTAMP",
+            # Labels the local re-check found for a pulled claim: Hayaa sends none
+            # (ABUSE_RESISTANCE §7), so a pulled segment takes its labels from this server's scan.
+            "ALTER TABLE hayaa_claims ADD COLUMN verify_labels TEXT DEFAULT ''",
             "CREATE INDEX IF NOT EXISTS idx_scan_jobs_queue ON scan_jobs(status, queue_pos)",
         ]
         for stmt in migrations:
@@ -520,6 +636,24 @@ async def init_db() -> None:
                     (severity_for_labels(row["labels"]), row["labels"]),
                 )
             await conn.execute("INSERT INTO settings(key, value) VALUES('label_severity_migrated', '1')")
+
+        # Four detector tiers and five viewer levels (#230): re-derive detector severities from
+        # labels, and move level 3 (was "everything") to 4 so nobody's filtering loosens.
+        tiers = await (await conn.execute(
+            "SELECT 1 FROM settings WHERE key='severity_tiers_v2'"
+        )).fetchone()
+        if not tiers:
+            for table in ("segments", "removed_segments"):
+                label_sets = await conn.execute_fetchall(
+                    f"SELECT DISTINCT labels FROM {table} WHERE source IN ('scanner','siglip','hayaa') AND labels != ''"
+                )
+                for row in label_sets:
+                    await conn.execute(
+                        f"UPDATE {table} SET severity=? WHERE source IN ('scanner','siglip','hayaa') AND labels=?",
+                        (severity_for_labels(row["labels"]), row["labels"]),
+                    )
+            await conn.execute("UPDATE user_category_prefs SET level = 4 WHERE level = 3")
+            await conn.execute("INSERT INTO settings(key, value) VALUES('severity_tiers_v2', '1')")
 
         for key, value in DEFAULT_SETTINGS.items():
             await conn.execute(
@@ -718,7 +852,7 @@ async def get_user_category_prefs(username: str) -> dict[str, dict]:
 
 
 async def upsert_user_category_pref(username: str, category: str, level: int, action: str = "") -> None:
-    """Set one user's filtering level (0-3) and optional action override for a category."""
+    """Set one user's filtering level (0-4) and optional action override for a category."""
     async with get_connection() as conn:
         await conn.execute(
             "INSERT INTO user_category_prefs(plex_username, category, level, action) VALUES(?,?,?,?) "
@@ -807,6 +941,8 @@ async def upsert_user_filter(username: str, enabled: bool) -> None:
 # Both non-zero states are inactive; only 1 is a human verdict.
 FP_MARKED = 1
 FP_VERIFIER = 2
+# Hidden because Hayaa's community rejected the claim (#222); restorable like the others.
+FP_COMMUNITY = 3
 _ACTIVE = "COALESCE(false_positive, 0) = 0"
 _ACTIVE_S = "COALESCE(s.false_positive, 0) = 0"
 
@@ -1050,15 +1186,18 @@ async def remove_titles_not_in(library_id: str, keep_guids: list[str]) -> int:
         return 0
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
-            f"SELECT plex_guid, title, rating_key, file_path, part_files FROM scan_jobs "
+            f"SELECT plex_guid, title, rating_key, file_path, part_files, COALESCE(duration_ms, 0) AS duration_ms, "
+            f"status, COALESCE(scan_version, 0) AS scan_version, finished_at FROM scan_jobs "
             f"WHERE library_id=? AND plex_guid NOT IN ({_in(keep_guids)})",
             [library_id, *keep_guids],
         )
         if not rows:
             return 0
         await conn.executemany(
-            "INSERT OR REPLACE INTO removed_titles(plex_guid, title, rating_key, file_path, part_files) VALUES(?,?,?,?,?)",
-            [(r["plex_guid"], r["title"], r["rating_key"], r["file_path"], r["part_files"] or "") for r in rows],
+            "INSERT OR REPLACE INTO removed_titles(plex_guid, title, rating_key, file_path, part_files, "
+            "duration_ms, status, scan_version, finished_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            [(r["plex_guid"], r["title"], r["rating_key"], r["file_path"], r["part_files"] or "",
+              r["duration_ms"], r["status"] or "", r["scan_version"], r["finished_at"]) for r in rows],
         )
         guids = [r["plex_guid"] for r in rows]
         await archive_segments(conn, guids)
@@ -1171,6 +1310,14 @@ async def purge_removed_titles(older_than_days: int) -> list[tuple[int, str]]:
             await conn.execute(f"UPDATE removed_segments SET thumbnail_path='', hover_status='' WHERE plex_guid IN ({_in(chunk)})", chunk)
             await conn.execute(f"DELETE FROM skip_events WHERE plex_guid IN ({_in(chunk)})", chunk)
             await conn.execute(f"DELETE FROM plex_markers WHERE plex_guid IN ({_in(chunk)})", chunk)
+            # Staged Hayaa claims and the key mapping; the sent-ledger and the user's overrides stay,
+            # so a title that comes back neither re-sends nor forgets the user's verdicts.
+            for table in ("hayaa_claims", "hayaa_titles"):
+                await conn.execute(
+                    f"DELETE FROM {table} WHERE plex_guid IN ({_in(chunk)}) "
+                    f"AND NOT EXISTS (SELECT 1 FROM scan_jobs j WHERE j.plex_guid = {table}.plex_guid)",
+                    chunk,
+                )
             await conn.execute(
                 f"DELETE FROM plex_title_cache WHERE plex_guid IN ({_in(chunk)}) "
                 "AND NOT EXISTS (SELECT 1 FROM scan_jobs j WHERE j.plex_guid = plex_title_cache.plex_guid)",
@@ -1183,6 +1330,13 @@ async def purge_removed_titles(older_than_days: int) -> list[tuple[int, str]]:
         for i in range(0, len(files), 500):
             chunk = files[i:i + 500]
             await conn.execute(f"DELETE FROM keyframe_index WHERE file_path IN ({_in(chunk)})", chunk)
+            # A content key nothing was sent for yet is kept: Hayaa sync can still push the
+            # removed title's scan under it (#228).
+            await conn.execute(
+                f"DELETE FROM hayaa_content_keys WHERE file_path IN ({_in(chunk)}) "
+                "AND EXISTS (SELECT 1 FROM hayaa_sent s WHERE s.title_key = hayaa_content_keys.content_key)",
+                chunk,
+            )
         for i in range(0, len(guids), 500):
             chunk = guids[i:i + 500]
             await conn.execute(f"UPDATE removed_titles SET purged_at=CURRENT_TIMESTAMP WHERE plex_guid IN ({_in(chunk)})", chunk)
@@ -2384,6 +2538,73 @@ async def put_keyframes(file_path: str, size: int, mtime: int, keyframes: list[i
         await conn.commit()
 
 
+async def get_hayaa_content_key(file_path: str, size: int, mtime: int) -> str | None:
+    """Return the cached Hayaa content key for a file, or None when missing or the file changed."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(
+            "SELECT content_key FROM hayaa_content_keys WHERE file_path=? AND size=? AND mtime=?",
+            (file_path, size, mtime),
+        )).fetchone()
+    return row[0] if row else None
+
+
+async def set_title_content_key(plex_guid: str, content_key: str, size: int) -> None:
+    """Keep a title's content key on its row (#231): computed once, never read from the file again."""
+    async with get_connection() as conn:
+        await conn.execute("UPDATE scan_jobs SET content_key=?, content_size=? WHERE plex_guid=?",
+                           (content_key, size, plex_guid))
+        await conn.commit()
+
+
+async def mark_hayaa_sending(guids: list[str]) -> None:
+    """Titles about to be pushed; a change while the push runs sets them back to pending."""
+    async with get_connection() as conn:
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            await conn.execute(f"UPDATE scan_jobs SET hayaa_sync_state='sending' WHERE plex_guid IN ({_in(chunk)})", chunk)
+        await conn.commit()
+
+
+async def mark_hayaa_synced(guids: list[str]) -> None:
+    """Hayaa accepted everything for these titles; only those not changed since are marked."""
+    async with get_connection() as conn:
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            await conn.execute(
+                f"UPDATE scan_jobs SET hayaa_sync_state='synced' WHERE hayaa_sync_state='sending' AND plex_guid IN ({_in(chunk)})",
+                chunk)
+        await conn.commit()
+
+
+async def count_hayaa_pending() -> int:
+    """Titles with something not yet accepted by Hayaa (scanned, single file)."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(
+            "SELECT COUNT(*) FROM scan_jobs WHERE COALESCE(hayaa_sync_state, 'pending') != 'synced' "
+            "AND status = 'done' AND COALESCE(file_path, '') != '' AND COALESCE(ignored, 0) = 0 "
+            "AND COALESCE(json_array_length(NULLIF(part_files, '')), 0) <= 1")).fetchone()
+    return int(row[0])
+
+
+async def mark_all_hayaa_pending() -> None:
+    """Force sync: everything is sent again (Hayaa ignores what it already has)."""
+    async with get_connection() as conn:
+        await conn.execute("UPDATE scan_jobs SET hayaa_sync_state='pending'")
+        await conn.commit()
+
+
+async def put_hayaa_content_key(file_path: str, size: int, mtime: int, content_key: str) -> None:
+    """Store a file's Hayaa content key, replacing an older one for the same path."""
+    async with get_connection() as conn:
+        await conn.execute(
+            "INSERT OR REPLACE INTO hayaa_content_keys(file_path, size, mtime, content_key) VALUES(?,?,?,?)",
+            (file_path, size, mtime, content_key),
+        )
+        await conn.execute("UPDATE scan_jobs SET content_key=?, content_size=? WHERE file_path=?",
+                           (content_key, size, file_path))
+        await conn.commit()
+
+
 async def get_flagged_files_without_keyframes(limit: int) -> list[str]:
     """Return single-file media paths of titles with active skip segments and no keyframe index yet.
 
@@ -2482,6 +2703,42 @@ async def replace_cast(cast_by_key: dict[str, list[str]]) -> None:
         await conn.commit()
 
 
+async def put_actor_photos(photos: dict[str, str]) -> None:
+    """Store or replace each actor's photo URL ({actor: thumb}); empty input is a no-op."""
+    if not photos:
+        return
+    async with get_connection() as conn:
+        await conn.executemany(
+            "INSERT INTO actor_photos(actor, thumb) VALUES(?,?) ON CONFLICT(actor) DO UPDATE SET thumb=excluded.thumb",
+            list(photos.items()),
+        )
+        await conn.commit()
+
+
+async def get_actor_photos_for_library(library_id: str) -> dict[str, str]:
+    """Return {actor: photo URL} for every actor in a library's titles that has one (single query)."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            """
+            SELECT DISTINCT p.actor, p.thumb FROM scan_jobs j
+            JOIN title_cast c ON c.rating_key =
+                CASE WHEN j.media_type='episode' AND COALESCE(j.show_rating_key,'') != ''
+                     THEN j.show_rating_key ELSE j.rating_key END
+            JOIN actor_photos p ON p.actor = c.actor
+            WHERE j.library_id = ?
+            """,
+            (library_id,),
+        )
+    return {r[0]: r[1] for r in rows}
+
+
+async def reset_cast_synced() -> None:
+    """Forget which titles' cast was synced, so the cast job fetches every title again."""
+    async with get_connection() as conn:
+        await conn.execute("DELETE FROM cast_synced")
+        await conn.commit()
+
+
 async def get_cast_for_library(library_id: str) -> dict[str, list[str]]:
     """Return {plex_guid: [actor, ...]} for a library's titles in one query; episodes get their show's cast."""
     out: dict[str, list[str]] = {}
@@ -2546,128 +2803,6 @@ async def get_false_positive_counts_for_library(library_id: str) -> dict[str, in
         return {row["plex_guid"]: row["cnt"] for row in rows}
 
 # ── Segment Library Sharing ────────────────────────────────────────────────────
-
-async def upsert_segment_library_entry(
-    file_hash: str,
-    file_name: str,
-    file_size: int,
-    duration_ms: int,
-    segments_json: str,
-    source_instance: str,
-    confidence_level: str = "local",
-) -> int:
-    """Insert or update a segment library entry with source tracking."""
-    async with get_connection() as conn:
-        cursor = await conn.execute(
-            """
-            INSERT INTO segment_library_entries(
-                file_hash, file_name, file_size, duration_ms, 
-                segments_json, source_instance, confidence_level, updated_at
-            )
-            VALUES(?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(file_hash, source_instance) 
-            DO UPDATE SET 
-                segments_json=excluded.segments_json,
-                confidence_level=excluded.confidence_level,
-                updated_at=CURRENT_TIMESTAMP
-            """,
-            (file_hash, file_name, file_size, duration_ms, segments_json, source_instance, confidence_level),
-        )
-        await conn.commit()
-        return cursor.lastrowid
-
-
-async def get_segment_library_entries_by_hashes(file_hashes: list[str]) -> list[dict]:
-    """Get all library entries matching the given file hashes, grouped by hash."""
-    if not file_hashes:
-        return []
-    
-    placeholders = ",".join(["?"] * len(file_hashes))
-    async with get_connection() as conn:
-        rows = await conn.execute_fetchall(
-            f"SELECT * FROM segment_library_entries WHERE file_hash IN ({placeholders}) ORDER BY file_hash, created_at DESC",
-            file_hashes,
-        )
-        return [dict(r) for r in rows]
-
-
-async def get_segment_library_entries_by_hash(file_hash: str) -> list[dict]:
-    """Get all sources for a single file hash."""
-    async with get_connection() as conn:
-        rows = await conn.execute_fetchall(
-            "SELECT * FROM segment_library_entries WHERE file_hash=? ORDER BY created_at DESC",
-            (file_hash,),
-        )
-        return [dict(r) for r in rows]
-
-
-async def delete_segment_library_entry(file_hash: str, source_instance: str) -> bool:
-    """Delete a specific entry (useful for removing outdated sources)."""
-    async with get_connection() as conn:
-        cursor = await conn.execute(
-            "DELETE FROM segment_library_entries WHERE file_hash=? AND source_instance=?",
-            (file_hash, source_instance),
-        )
-        await conn.commit()
-        return cursor.rowcount > 0
-
-
-async def get_sync_metadata() -> dict | None:
-    """Get sync configuration for this instance."""
-    async with get_connection() as conn:
-        row = await (
-            await conn.execute(
-                "SELECT * FROM sync_metadata LIMIT 1"
-            )
-        ).fetchone()
-        return dict(row) if row else None
-
-
-async def upsert_sync_metadata(
-    instance_name: str,
-    github_repo: str | None = None,
-    github_token: str | None = None,
-    sync_enabled: bool = False,
-    conflict_resolution: str = "consensus",
-    verified_threshold: int = 2,
-    timing_tolerance_ms: int = 2000,
-) -> int:
-    """Update or create sync metadata for this instance."""
-    async with get_connection() as conn:
-        # Delete existing if it exists (to update)
-        await conn.execute("DELETE FROM sync_metadata")
-        
-        cursor = await conn.execute(
-            """
-            INSERT INTO sync_metadata(
-                instance_name, github_repo, github_token, sync_enabled,
-                conflict_resolution, verified_threshold, timing_tolerance_ms,
-                last_sync_time
-            )
-            VALUES(?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            """,
-            (
-                instance_name,
-                github_repo,
-                github_token,
-                1 if sync_enabled else 0,
-                conflict_resolution,
-                verified_threshold,
-                timing_tolerance_ms,
-            ),
-        )
-        await conn.commit()
-        return cursor.lastrowid
-
-
-async def update_sync_last_time() -> None:
-    """Update last_sync_time to current timestamp."""
-    async with get_connection() as conn:
-        await conn.execute("UPDATE sync_metadata SET last_sync_time=CURRENT_TIMESTAMP")
-        await conn.commit()
-
-
-# ── Background Job Management ──────────────────────────────────────────────────
 
 async def create_bg_job(job_type: str) -> int:
     """Create a new background job. Returns job_id."""
@@ -2948,3 +3083,338 @@ async def plex_title_cache_exists(library_id: str) -> bool:
         )).fetchone()
         return row is not None
 
+
+
+# ── Hayaa sync (#222) ──────────────────────────────────────────────────────────
+
+async def get_hayaa_sync_titles() -> list[dict]:
+    """Return the titles Hayaa can identify: single-file, not ignored, with a file path.
+
+    Multi-part titles are left out because their segment times span several files, and a
+    content key names one file.
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT plex_guid, title, file_path, COALESCE(duration_ms, 0) AS duration_ms, status, "
+            "COALESCE(scan_version, 0) AS scan_version, finished_at, COALESCE(content_key, '') AS content_key, "
+            "COALESCE(content_size, 0) AS content_size, COALESCE(hayaa_sync_state, 'pending') AS hayaa_sync_state "
+            "FROM scan_jobs "
+            "WHERE COALESCE(file_path, '') != '' AND COALESCE(ignored, 0) = 0 "
+            "AND COALESCE(json_array_length(NULLIF(part_files, '')), 0) <= 1"
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_hayaa_removed_titles() -> list[dict]:
+    """Return removed single-file titles whose content key is still cached, for upload-only sync.
+
+    Same shape as get_hayaa_sync_titles plus `content_key` and `size`. A path a live title now
+    uses is left out: its cached key may belong to the new file.
+    """
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT r.plex_guid, r.title, r.file_path, COALESCE(r.duration_ms, 0) AS duration_ms, "
+            "COALESCE(r.status, '') AS status, COALESCE(r.scan_version, 0) AS scan_version, r.finished_at, "
+            "k.content_key, k.size FROM removed_titles r "
+            "JOIN hayaa_content_keys k ON k.file_path = r.file_path "
+            "WHERE COALESCE(r.file_path, '') != '' "
+            "AND COALESCE(json_array_length(NULLIF(r.part_files, '')), 0) <= 1 "
+            "AND NOT EXISTS (SELECT 1 FROM scan_jobs j WHERE j.file_path = r.file_path)"
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_removed_segments_for_hayaa(guids: list[str]) -> list[dict]:
+    """get_segments_for_hayaa for removed titles: their segments live in removed_segments."""
+    out: list[dict] = []
+    async with get_connection() as conn:
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            rows = await conn.execute_fetchall(
+                f"""
+                SELECT s.*, COALESCE(f.labels, s.labels) AS detected_labels,
+                       COALESCE(f.corrected_labels, '') AS corrected_labels
+                FROM removed_segments s
+                LEFT JOIN segment_feedback f ON f.segment_id = s.id AND f.verdict = 'relabeled'
+                WHERE s.plex_guid IN ({_in(chunk)})
+                ORDER BY s.plex_guid, s.start_ms
+                """,
+                chunk,
+            )
+            out += [dict(r) for r in rows]
+    return out
+
+
+async def get_hayaa_titles() -> dict[str, dict]:
+    """Return every known Hayaa title row, keyed by content key."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall("SELECT * FROM hayaa_titles")
+    return {r["title_key"]: dict(r) for r in rows}
+
+
+async def upsert_hayaa_titles(pairs: list[tuple[str, str]]) -> None:
+    """Record (content key, plex_guid) pairs; a key moving to another guid keeps its version."""
+    if not pairs:
+        return
+    async with get_connection() as conn:
+        await conn.executemany(
+            "INSERT INTO hayaa_titles(title_key, plex_guid) VALUES(?,?) "
+            "ON CONFLICT(title_key) DO UPDATE SET plex_guid=excluded.plex_guid",
+            pairs,
+        )
+        await conn.commit()
+
+
+async def set_hayaa_title_versions(versions: dict[str, str]) -> None:
+    """Store the consensus version pulled for each title key."""
+    if not versions:
+        return
+    async with get_connection() as conn:
+        await conn.executemany(
+            "UPDATE hayaa_titles SET version=?, pulled_at=CURRENT_TIMESTAMP WHERE title_key=?",
+            [(v, k) for k, v in versions.items()],
+        )
+        await conn.commit()
+
+
+async def mark_hayaa_described(keys: list[str]) -> None:
+    """Flag title keys whose media descriptor was sent."""
+    async with get_connection() as conn:
+        for i in range(0, len(keys), 500):
+            chunk = keys[i:i + 500]
+            await conn.execute(f"UPDATE hayaa_titles SET described=1 WHERE title_key IN ({_in(chunk)})", chunk)
+        await conn.commit()
+
+
+async def get_segments_for_hayaa(guids: list[str]) -> list[dict]:
+    """Return every segment of the given titles, false positives included, for reconciling.
+
+    detected_labels is what the detector found: a user's relabel keeps the detector's labels
+    in its 'relabeled' feedback row, so machine evidence is never replaced by a human edit.
+    """
+    out: list[dict] = []
+    async with get_connection() as conn:
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            rows = await conn.execute_fetchall(
+                f"""
+                SELECT s.*, COALESCE(f.labels, s.labels) AS detected_labels,
+                       COALESCE(f.corrected_labels, '') AS corrected_labels
+                FROM segments s
+                LEFT JOIN segment_feedback f ON f.segment_id = s.id AND f.verdict = 'relabeled'
+                WHERE s.plex_guid IN ({_in(chunk)})
+                ORDER BY s.plex_guid, s.start_ms
+                """,
+                chunk,
+            )
+            out += [dict(r) for r in rows]
+    return out
+
+
+async def get_hayaa_sent(title_keys: list[str]) -> list[dict]:
+    """Return the sent-ledger rows of the given title keys."""
+    out: list[dict] = []
+    async with get_connection() as conn:
+        for i in range(0, len(title_keys), 500):
+            chunk = title_keys[i:i + 500]
+            rows = await conn.execute_fetchall(f"SELECT * FROM hayaa_sent WHERE title_key IN ({_in(chunk)})", chunk)
+            out += [dict(r) for r in rows]
+    return out
+
+
+async def record_hayaa_sent(rows: list[tuple[str, str, str, str]], retracted: list[str]) -> None:
+    """Record sent observations (obs_id, base_id, title_key, kind) and mark retracted ids not live."""
+    async with get_connection() as conn:
+        await conn.executemany(
+            "INSERT OR IGNORE INTO hayaa_sent(obs_id, base_id, title_key, kind) VALUES(?,?,?,?)", rows
+        )
+        for i in range(0, len(retracted), 500):
+            chunk = retracted[i:i + 500]
+            await conn.execute(f"UPDATE hayaa_sent SET live=0 WHERE obs_id IN ({_in(chunk)})", chunk)
+        await conn.commit()
+
+
+async def replace_hayaa_claims(title_key: str, plex_guid: str, claims: list[dict]) -> None:
+    """Replace a title's staged claims with a pulled view.
+
+    A claim that keeps its id and bounds keeps its verification result; one whose bounds moved
+    is verified again. claims use ms and a JSON 'machine' string.
+    """
+    async with get_connection() as conn:
+        old = {
+            r["claim_id"]: dict(r) for r in await conn.execute_fetchall(
+                "SELECT * FROM hayaa_claims WHERE title_key=?", (title_key,)
+            )
+        }
+        await conn.execute("DELETE FROM hayaa_claims WHERE title_key=?", (title_key,))
+        for c in claims:
+            prev = old.get(c["claim_id"])
+            keep = prev is not None and prev["start_ms"] == c["start_ms"] and prev["end_ms"] == c["end_ms"]
+            await conn.execute(
+                "INSERT INTO hayaa_claims(title_key, claim_id, plex_guid, start_ms, end_ms, status, basis, labels, "
+                "category, severity, machine, supporters, rejecters, verify_state, verify_conf, verify_family, "
+                "verify_fp_drop, verify_thumb, verify_labels, decision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (title_key, c["claim_id"], plex_guid, c["start_ms"], c["end_ms"], c["status"], c["basis"],
+                 c["labels"], c["category"], c["severity"], c["machine"], c["supporters"], c["rejecters"],
+                 prev["verify_state"] if keep else "", prev["verify_conf"] if keep else None,
+                 prev["verify_family"] if keep else "", prev["verify_fp_drop"] if keep else 0,
+                 prev["verify_thumb"] if keep else "", prev["verify_labels"] if keep else "",
+                 prev["decision"] if prev else ""),
+            )
+        await conn.commit()
+
+
+async def get_hayaa_claims(plex_guids: list[str] | None = None) -> list[dict]:
+    """Return staged claims, for the given titles or all of them, by title and start."""
+    async with get_connection() as conn:
+        if plex_guids is None:
+            rows = await conn.execute_fetchall("SELECT * FROM hayaa_claims ORDER BY plex_guid, start_ms")
+            return [dict(r) for r in rows]
+        out: list[dict] = []
+        for i in range(0, len(plex_guids), 500):
+            chunk = plex_guids[i:i + 500]
+            rows = await conn.execute_fetchall(
+                f"SELECT * FROM hayaa_claims WHERE plex_guid IN ({_in(chunk)}) ORDER BY plex_guid, start_ms", chunk
+            )
+            out += [dict(r) for r in rows]
+        return out
+
+
+async def get_hayaa_claims_to_verify(limit: int) -> list[dict]:
+    """Return claims waiting for a local re-check (verify_state 'pending'), with the title's file."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT c.*, j.file_path, j.title, j.rating_key, COALESCE(j.duration_ms, 0) AS duration_ms "
+            "FROM hayaa_claims c JOIN scan_jobs j ON j.plex_guid = c.plex_guid "
+            "WHERE c.verify_state = 'pending' ORDER BY c.updated_at LIMIT ?",
+            (limit,),
+        )
+    return [dict(r) for r in rows]
+
+
+async def count_hayaa_claims(verify_state: str | None = None, decision: str | None = None) -> int:
+    """Count staged claims, optionally by verify state and/or apply decision."""
+    where, args = [], []
+    if verify_state is not None:
+        where.append("verify_state=?")
+        args.append(verify_state)
+    if decision is not None:
+        where.append("decision=?")
+        args.append(decision)
+    sql = "SELECT COUNT(*) FROM hayaa_claims" + (f" WHERE {' AND '.join(where)}" if where else "")
+    async with get_connection() as conn:
+        return (await (await conn.execute(sql, args)).fetchone())[0]
+
+
+async def update_hayaa_claim(title_key: str, claim_id: str, **fields) -> None:
+    """Set verify_* or decision fields of one staged claim."""
+    allowed = {"verify_state", "verify_conf", "verify_family", "verify_fp_drop", "verify_thumb", "verify_labels",
+               "decision"}
+    cols = [k for k in fields if k in allowed]
+    if not cols:
+        return
+    async with get_connection() as conn:
+        await conn.execute(
+            f"UPDATE hayaa_claims SET {', '.join(f'{c}=?' for c in cols)}, updated_at=CURRENT_TIMESTAMP "
+            "WHERE title_key=? AND claim_id=?",
+            [fields[c] for c in cols] + [title_key, claim_id],
+        )
+        await conn.commit()
+
+
+async def get_hayaa_overrides(title_keys: list[str] | None = None) -> dict[tuple[str, str], str]:
+    """Return the user's verdicts {(title_key, claim_id): verdict}."""
+    async with get_connection() as conn:
+        if title_keys is None:
+            rows = await conn.execute_fetchall("SELECT * FROM hayaa_overrides")
+        else:
+            rows = []
+            for i in range(0, len(title_keys), 500):
+                chunk = title_keys[i:i + 500]
+                rows += await conn.execute_fetchall(
+                    f"SELECT * FROM hayaa_overrides WHERE title_key IN ({_in(chunk)})", chunk
+                )
+    return {(r["title_key"], r["claim_id"]): r["verdict"] for r in rows}
+
+
+async def set_hayaa_override(title_key: str, claim_id: str, verdict: str | None) -> None:
+    """Record the user's verdict on a claim ('keep', 'delete', 'restore'); None clears it."""
+    async with get_connection() as conn:
+        if verdict is None:
+            await conn.execute("DELETE FROM hayaa_overrides WHERE title_key=? AND claim_id=?", (title_key, claim_id))
+        else:
+            await conn.execute(
+                "INSERT OR REPLACE INTO hayaa_overrides(title_key, claim_id, verdict) VALUES(?,?,?)",
+                (title_key, claim_id, verdict),
+            )
+        await conn.commit()
+
+
+async def get_hayaa_title_key(plex_guid: str) -> str | None:
+    """Return the content key Hayaa knows a title by, or None."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(
+            "SELECT title_key FROM hayaa_titles WHERE plex_guid=? LIMIT 1", (plex_guid,)
+        )).fetchone()
+    return row[0] if row else None
+
+
+async def fill_hayaa_segment_labels(segment_id: int, labels: str) -> bool:
+    """Give a pulled (source='hayaa') segment without labels the labels its local re-check found.
+
+    Never overwrites labels already set (a user relabel or an earlier fill). Returns True if updated.
+    """
+    if not labels:
+        return False
+    async with get_connection() as conn:
+        cur = await conn.execute(
+            "UPDATE segments SET labels=? WHERE id=? AND source='hayaa' AND COALESCE(labels, '')=''",
+            (labels, segment_id),
+        )
+        await conn.commit()
+        return cur.rowcount > 0
+
+
+async def set_segment_hayaa_claims(pairs: list[tuple[str, int]]) -> None:
+    """Link segments to Hayaa claims: (claim_id or '', segment_id) pairs."""
+    if not pairs:
+        return
+    async with get_connection() as conn:
+        await conn.executemany("UPDATE segments SET hayaa_claim_id=? WHERE id=?", pairs)
+        await conn.commit()
+
+
+async def set_segments_false_positive(segment_ids: list[int], value: int) -> None:
+    """Set false_positive on segments (Hayaa: 3 hides a community-rejected one, 0 restores it)."""
+    async with get_connection() as conn:
+        for i in range(0, len(segment_ids), 500):
+            chunk = segment_ids[i:i + 500]
+            await conn.execute(f"UPDATE segments SET false_positive=? WHERE id IN ({_in(chunk)})", [value, *chunk])
+        await conn.commit()
+
+
+async def get_hayaa_review(limit: int = 200) -> list[dict]:
+    """Return claims held for review (decision 'hold' or 'verify') without a user verdict, with the title."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT c.title_key, c.claim_id, c.plex_guid, c.start_ms, c.end_ms, c.status, c.basis, c.labels, "
+            "c.category, c.severity, c.supporters, c.rejecters, c.verify_state, c.verify_thumb, c.decision, "
+            "COALESCE(j.title, '') AS title FROM hayaa_claims c "
+            "LEFT JOIN scan_jobs j ON j.plex_guid = c.plex_guid "
+            "LEFT JOIN hayaa_overrides o ON o.title_key = c.title_key AND o.claim_id = c.claim_id "
+            "WHERE c.decision IN ('hold', 'verify') AND o.verdict IS NULL "
+            "ORDER BY j.title, c.start_ms LIMIT ?",
+            (limit,),
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_community_false_positives(limit: int = 200) -> list[dict]:
+    """Return segments hidden because Hayaa's community rejected their claim (false_positive = 3)."""
+    async with get_connection() as conn:
+        rows = await conn.execute_fetchall(
+            "SELECT id, plex_guid, title, start_ms, end_ms, labels, severity, source, thumbnail_path "
+            "FROM segments WHERE false_positive = 3 ORDER BY title, start_ms LIMIT ?",
+            (limit,),
+        )
+    return [dict(r) for r in rows]

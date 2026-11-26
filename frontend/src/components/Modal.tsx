@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
+import { useT } from '../i18n'
 
 interface Props {
   title: string
@@ -26,6 +27,7 @@ const FOCUSABLE =
  * back to the control that opened them.
  */
 export default function Modal({ title, subtitle, onClose, dismissible = true, size = 'md', children, footer }: Props) {
+  const { t } = useT()
   const panelRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
   // Read through refs so the effect below runs once per open, not on every parent render.
@@ -105,7 +107,7 @@ export default function Modal({ title, subtitle, onClose, dismissible = true, si
             data-modal-close
             onClick={onClose}
             disabled={!dismissible}
-            aria-label="Close"
+            aria-label={t('common_close')}
             className="p-1 -m-1 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-colors disabled:opacity-40"
           >
             <X size={16} />

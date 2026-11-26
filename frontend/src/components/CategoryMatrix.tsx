@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { useLiveRefresh } from '../api/events'
 import { RotateCcw, Volume2, SkipForward } from 'lucide-react'
+import { useT, type TranslationKey } from '../i18n'
 
 interface CategoryPref {
   category: string
@@ -17,38 +18,41 @@ interface CategoriesResponse {
 }
 
 // Levels follow the threshold model the filter engine uses: a segment fires when
-// the viewer's level plus its severity rank exceeds 3. Labelling them by what
+// the viewer's level plus its severity rank exceeds 4 (#230). Labelling them by what
 // they let through is far clearer than showing the raw number.
-const LEVEL_LABELS = ['Off', 'Severe only', 'Moderate and up', 'Everything']
+const LEVEL_KEYS = ['cat_level_0', 'cat_level_1', 'cat_level_2', 'cat_level_3', 'cat_level_4'] as const
+const MAX_LEVEL = LEVEL_KEYS.length - 1
 
 // What each level skips for detector (scanner) segments, whose severity follows the
 // detected label (#126). Imported segments carry their author's own severities.
-const NUDITY_LEVEL_HINTS = [
-  'Skips nothing.',
-  'Skips exposed genitalia and anus only.',
-  'Skips exposed nudity: genitalia, anus, breasts and buttocks.',
-  'Skips everything detected, including covered body parts.',
-]
+const NUDITY_HINT_KEYS = [
+  'cat_nudity_hint_0',
+  'cat_nudity_hint_1',
+  'cat_nudity_hint_2',
+  'cat_nudity_hint_3',
+  'cat_nudity_hint_4',
+] as const
 
 // Detector severities and the labels behind them (kept in step with LABEL_SEVERITY in
 // importers/_common.py). Rank is what the filter adds to the viewer's level.
 const SEVERITY_COLUMNS = [
-  { rank: 3, name: 'High', examples: 'Exposed genitalia, anus' },
-  { rank: 2, name: 'Medium', examples: 'Exposed breast, buttocks' },
-  { rank: 1, name: 'Low', examples: 'Covered parts, belly, feet, faces' },
+  { rank: 4, nameKey: 'cat_sev_high' as const, examplesKey: 'cat_sev_high_examples' as const },
+  { rank: 3, nameKey: 'cat_sev_medium' as const, examplesKey: 'cat_sev_medium_examples' as const },
+  { rank: 2, nameKey: 'cat_sev_low' as const, examplesKey: 'cat_sev_low_examples' as const },
+  { rank: 1, nameKey: 'cat_sev_minimal' as const, examplesKey: 'cat_sev_minimal_examples' as const },
 ]
 
-const CATEGORY_LABELS: Record<string, string> = {
-  commercial: 'Commercials',
-  discrimination: 'Discrimination',
-  dispensable: 'Filler',
-  drugs: 'Drugs and alcohol',
-  fear: 'Frightening scenes',
-  language: 'Profanity',
-  nudity: 'Nudity',
-  sex: 'Sexual content',
-  violence: 'Violence and gore',
-  other: 'Other',
+const CATEGORY_KEYS: Record<string, TranslationKey> = {
+  commercial: 'cat_label_commercial',
+  discrimination: 'cat_label_discrimination',
+  dispensable: 'cat_label_dispensable',
+  drugs: 'cat_label_drugs',
+  fear: 'cat_label_fear',
+  language: 'cat_label_language',
+  nudity: 'cat_label_nudity',
+  sex: 'cat_label_sex',
+  violence: 'cat_label_violence',
+  other: 'cat_label_other',
 }
 
 interface Props {
@@ -58,6 +62,7 @@ interface Props {
 }
 
 export default function CategoryMatrix({ username, enabled }: Props) {
+  const { t } = useT()
   const [data, setData] = useState<CategoriesResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState<Record<string, boolean>>({})
@@ -87,12 +92,12 @@ export default function CategoryMatrix({ username, enabled }: Props) {
       })
       .catch(err => {
         if (err.name !== 'AbortError') {
-          setError('Could not load category preferences.')
+          setError(t('cat_load_error'))
           setLoading(false)
         }
       })
     return () => controller.abort()
-  }, [username, liveTick])
+  }, [username, liveTick, t])
 
   const update = async (category: string, level: number, action: string) => {
     setSaving(s => ({ ...s, [category]: true }))
@@ -114,7 +119,7 @@ export default function CategoryMatrix({ username, enabled }: Props) {
           : d,
       )
     } catch {
-      setError('Could not save that change.')
+      setError(t('cat_save_error'))
     } finally {
       setSaving(s => ({ ...s, [category]: false }))
     }
@@ -128,19 +133,19 @@ export default function CategoryMatrix({ username, enabled }: Props) {
     setData(fresh)
   }
 
-  if (loading) return <div className="text-muted text-sm px-5 py-4">Loading categories...</div>
+  if (loading) return <div className="text-muted text-sm px-5 py-4">{t('cat_loading')}</div>
   if (!data) return null
 
   return (
     <div className={enabled ? '' : 'opacity-40 pointer-events-none'}>
       <div className="flex items-center justify-between px-5 py-3 border-b border-plex-border">
         <div>
-          <p className="text-sm font-medium text-gray-200">Category filtering</p>
+          <p className="text-sm font-medium text-gray-200">{t('cat_title')}</p>
           <p className="text-xs text-muted mt-0.5">
             {data.uses_defaults
-              ? 'Using defaults: everything is filtered.'
-              : 'Customised for this user.'}
-            {!enabled && ' Filtering is off for this user.'}
+              ? t('cat_using_defaults')
+              : t('cat_customised')}
+            {!enabled && ` ${t('cat_filtering_off_note')}`}
           </p>
         </div>
         {!data.uses_defaults && (
@@ -148,37 +153,36 @@ export default function CategoryMatrix({ username, enabled }: Props) {
             onClick={reset}
             className="text-xs text-gray-400 hover:text-gray-200 flex items-center gap-1"
           >
-            <RotateCcw size={12} /> Reset
+            <RotateCcw size={12} /> {t('common_reset')}
           </button>
         )}
       </div>
 
-      {/* The levels, spelled out, so nobody has to work out level + severity > 3. */}
+      {/* The levels, spelled out, so nobody has to work out level + severity > 4. */}
       <details className="px-5 py-3 border-b border-plex-border text-xs text-gray-400">
-        <summary className="cursor-pointer text-gray-300">What does each level skip?</summary>
+        <summary className="cursor-pointer text-gray-300">{t('cat_details_summary')}</summary>
         <p className="mt-2 mb-2 text-muted">
-          A detected segment is skipped when the level plus its severity (low 1, medium 2, high 3) is more than 3.
-          Imported segments use the severity their author set.
+          {t('cat_details_desc')}
         </p>
-        <table className="w-full text-left">
+        <table className="w-full text-start">
           <thead>
             <tr className="text-muted">
-              <th className="font-normal py-1 pr-3">Level</th>
+              <th className="font-normal py-1 pe-3">{t('cat_table_level')}</th>
               {SEVERITY_COLUMNS.map(col => (
-                <th key={col.name} className="font-normal py-1 pr-3">
-                  {col.name}
-                  <span className="block text-[10px] text-muted">{col.examples}</span>
+                <th key={col.nameKey} className="font-normal py-1 pe-3">
+                  {t(col.nameKey)}
+                  <span className="block text-[10px] text-muted">{t(col.examplesKey)}</span>
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {LEVEL_LABELS.map((name, level) => (
+            {LEVEL_KEYS.map((key, level) => (
               <tr key={level} className="border-t border-plex-border/60">
-                <td className="py-1 pr-3 text-gray-300">{level} · {name}</td>
+                <td className="py-1 pe-3 text-gray-300">{level} · {t(key)}</td>
                 {SEVERITY_COLUMNS.map(col => (
-                  <td key={col.name} className={`py-1 pr-3 ${level + col.rank > 3 ? 'text-red-300' : 'text-muted'}`}>
-                    {level + col.rank > 3 ? 'skipped' : 'allowed'}
+                  <td key={col.nameKey} className={`py-1 pe-3 ${level + col.rank > MAX_LEVEL ? 'text-red-300' : 'text-muted'}`}>
+                    {level + col.rank > MAX_LEVEL ? t('cat_cell_skipped') : t('cat_cell_allowed')}
                   </td>
                 ))}
               </tr>
@@ -194,13 +198,13 @@ export default function CategoryMatrix({ username, enabled }: Props) {
           <div key={cat.category} className="px-5 py-3 flex items-center gap-4">
             <div className="w-44 flex-shrink-0">
               <p className="text-sm text-gray-200">
-                {CATEGORY_LABELS[cat.category] ?? cat.category}
+                {CATEGORY_KEYS[cat.category] ? t(CATEGORY_KEYS[cat.category]) : cat.category}
               </p>
               {!cat.has_segments && (
-                <p className="text-[11px] text-muted mt-0.5">No segments yet</p>
+                <p className="text-[11px] text-muted mt-0.5">{t('cat_no_segments_yet')}</p>
               )}
               {cat.category === 'nudity' && (
-                <p className="text-[11px] text-muted mt-0.5">{NUDITY_LEVEL_HINTS[cat.level]}</p>
+                <p className="text-[11px] text-muted mt-0.5">{t(NUDITY_HINT_KEYS[cat.level] ?? NUDITY_HINT_KEYS[0])}</p>
               )}
             </div>
 
@@ -208,15 +212,15 @@ export default function CategoryMatrix({ username, enabled }: Props) {
               <input
                 type="range"
                 min={0}
-                max={3}
+                max={MAX_LEVEL}
                 step={1}
                 value={cat.level}
                 disabled={saving[cat.category]}
                 onChange={e => update(cat.category, Number(e.target.value), cat.action)}
                 className="flex-1 accent-plex-orange"
               />
-              <span className="text-xs text-muted w-32" title={cat.category === 'nudity' ? NUDITY_LEVEL_HINTS[cat.level] : undefined}>
-                {LEVEL_LABELS[cat.level]}
+              <span className="text-xs text-muted w-32" title={cat.category === 'nudity' ? t(NUDITY_HINT_KEYS[cat.level] ?? NUDITY_HINT_KEYS[0]) : undefined}>
+                {t(LEVEL_KEYS[cat.level] ?? LEVEL_KEYS[0])}
               </span>
             </div>
 
@@ -228,14 +232,14 @@ export default function CategoryMatrix({ username, enabled }: Props) {
                   key={act || 'auto'}
                   onClick={() => update(cat.category, cat.level, act)}
                   disabled={saving[cat.category]}
-                  title={act === '' ? 'Use the segment’s own action' : `Always ${act}`}
+                  title={act === '' ? t('cat_action_auto_title') : act === 'skip' ? t('cat_action_always_skip') : t('cat_action_always_mute')}
                   className={`px-2 py-1 rounded text-[11px] border transition-colors ${
                     cat.action === act
                       ? 'bg-plex-orange border-plex-orange text-black'
                       : 'border-plex-border text-gray-400 hover:text-gray-300'
                   }`}
                 >
-                  {act === '' ? 'Auto' : act === 'skip' ? <SkipForward size={11} /> : <Volume2 size={11} />}
+                  {act === '' ? t('cat_action_auto') : act === 'skip' ? <SkipForward size={11} /> : <Volume2 size={11} />}
                 </button>
               ))}
             </div>

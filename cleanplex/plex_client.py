@@ -518,17 +518,24 @@ class PlexClient:
         # Thousands of items: parse off the event loop so polling and the API stay responsive.
         return await asyncio.to_thread(_parse)
 
-    async def get_cast(self, rating_keys: list[str]) -> dict[str, list[str]]:
+    async def get_cast(self, rating_keys: list[str], photos: dict[str, str] | None = None) -> dict[str, list[str]]:
         """Return {rating_key: [actor names]} for movies or shows, fetching them in one request per chunk.
 
         Plex's bulk section listing omits cast, so the full metadata is read here. A rating key
-        Plex no longer has comes back with an empty cast (#180).
+        Plex no longer has comes back with an empty cast (#180). When *photos* is given it is
+        filled with {actor: photo URL} from the same responses (#227), at no extra request.
         """
         out: dict[str, list[str]] = {}
         srv = await asyncio.to_thread(self._get_server)
 
         def roles_of(item) -> list[str]:
-            return [r.tag for r in (getattr(item, "roles", None) or []) if r.tag][:MAX_CAST]
+            roles = [r for r in (getattr(item, "roles", None) or []) if r.tag][:MAX_CAST]
+            if photos is not None:
+                for r in roles:
+                    thumb = getattr(r, "thumb", None)
+                    if thumb:
+                        photos[r.tag] = thumb
+            return [r.tag for r in roles]
 
         for i in range(0, len(rating_keys), CAST_CHUNK):
             chunk = rating_keys[i:i + CAST_CHUNK]

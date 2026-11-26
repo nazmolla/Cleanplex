@@ -106,7 +106,7 @@ async def test_labels_found_in_the_window_are_added_and_severity_follows(tmp_pat
 
     seg = await db.get_segment_by_id(sid)
     assert seg["labels"] == "BUTTOCKS_EXPOSED,FEMALE_BREAST_EXPOSED"
-    assert seg["severity"] == "medium"
+    assert seg["severity"] == "high"  # the added exposed breast outranks buttocks (#230)
 
 
 async def test_a_window_with_no_hits_is_marked_refined_and_otherwise_left_alone(tmp_path, cfg):

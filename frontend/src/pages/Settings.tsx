@@ -6,7 +6,10 @@ import { UsersPanel } from './Users'
 import BulkRescan from '../components/BulkRescan'
 import VerifierPanel from '../components/VerifierPanel'
 import EnforcementPanel from '../components/EnforcementPanel'
+import HayaaPanel from '../components/HayaaPanel'
 import { normalizeRating } from '../utils/ratings'
+import { useT } from '../i18n'
+import { prettyLabel } from '../utils/labels'
 
 // A content rating in the libraries as Scan ratings compares it (#219); sources are Plex's spellings.
 interface LibraryRating { rating: string; count: number; sources: string[] }
@@ -46,23 +49,13 @@ interface Settings {
   hover_window_end: string
 }
 
-type SectionId = 'connection' | 'playback' | 'filtering' | 'schedule' | 'nudenet' | 'siglip' | 'segments' | 'sync' | 'users'
-const SECTION_IDS: SectionId[] = ['connection', 'users', 'playback', 'filtering', 'schedule', 'nudenet', 'siglip', 'segments', 'sync']
+type SectionId = 'connection' | 'playback' | 'filtering' | 'schedule' | 'nudenet' | 'siglip' | 'segments' | 'hayaa' | 'users' | 'language'
+const SECTION_IDS: SectionId[] = ['connection', 'users', 'playback', 'filtering', 'schedule', 'nudenet', 'siglip', 'segments', 'hayaa', 'language']
 
 interface Library {
   id: string
   title: string
   type: string
-}
-
-interface SyncStatus {
-  sync_enabled: boolean
-  instance_name: string | null
-  github_repo: string | null
-  conflict_resolution: string
-  verified_threshold: number
-  timing_tolerance_ms: number
-  last_sync_time: string | null
 }
 
 const DEFAULT: Settings = {
@@ -117,6 +110,7 @@ function LabelThresholds({ labels, value, globalValue, disabled, onChange }: {
   disabled?: boolean
   onChange: (next: string) => void
 }) {
+  const { t } = useT()
   const map: Record<string, number> = (() => { try { return JSON.parse(value) } catch { return {} } })()
   const update = (label: string, raw: string) => {
     const next = { ...map }
@@ -128,14 +122,14 @@ function LabelThresholds({ labels, value, globalValue, disabled, onChange }: {
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
       {labels.map(label => (
         <label key={label} className="flex items-center justify-between gap-3 text-sm text-gray-300">
-          <span className="truncate">{label}</span>
+          <span className="truncate" title={label}>{prettyLabel(label, t)}</span>
           <input
             type="number" min="0" max="1" step="0.05"
             value={map[label] ?? ''}
             placeholder={globalValue}
             disabled={disabled}
             onChange={e => update(label, e.target.value)}
-            aria-label={`${label} threshold`}
+            aria-label={t('settings_label_threshold_aria', { label: prettyLabel(label, t) })}
             className="w-24 bg-plex-card border border-plex-border rounded px-2 py-1 text-sm text-gray-100 disabled:opacity-40"
           />
         </label>
@@ -145,6 +139,7 @@ function LabelThresholds({ labels, value, globalValue, disabled, onChange }: {
 }
 
 export default function SettingsPage() {
+  const { t, formatNumber, lang, setLang } = useT()
   const [form, setForm] = useState<Settings>(DEFAULT)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -159,14 +154,6 @@ export default function SettingsPage() {
   const [refineRemaining, setRefineRemaining] = useState(0)
   const [detectorLabels, setDetectorLabels] = useState<string[]>([])
   const [libraryRatings, setLibraryRatings] = useState<LibraryRating[]>([])
-  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
-  const [syncForm, setSyncForm] = useState({ sync_enabled: false, instance_name: '' })
-  const [savingSync, setSavingSync] = useState(false)
-  const [savedSync, setSavedSync] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const [uploadResult, setUploadResult] = useState<{ ok: boolean; message: string } | null>(null)
-  const [downloading, setDownloading] = useState(false)
-  const [downloadResult, setDownloadResult] = useState<{ ok: boolean; message: string } | null>(null)
   const [restarting, setRestarting] = useState(false)
   const [restarted, setRestarted] = useState(false)
   // The open section lives in ?section= so it can be linked (e.g. /users redirects here).
@@ -181,23 +168,14 @@ export default function SettingsPage() {
       api.get<Settings>('/api/settings'),
       api.get<{ libraries: Library[] }>('/api/libraries').catch(() => ({ libraries: [] })),
       api.get<{ labels: string[] }>('/api/settings/detector-labels').catch(() => ({ labels: [] })),
-      api.get<SyncStatus>('/api/sync/status').catch(() => null),
       api.get<{ remaining: number; enabled: boolean }>('/api/segments/refine-status').catch(() => null),
       api.get<LibraryRating[]>('/api/settings/ratings').catch(() => []),
-    ]).then(([settings, libs, labels, sync, refine, ratings]) => {
+    ]).then(([settings, libs, labels, refine, ratings]) => {
       setLibraryRatings(Array.isArray(ratings) ? ratings : [])
       setRefineRemaining(refine?.enabled ? refine.remaining : 0)
       setForm({ ...DEFAULT, ...settings })
       setLibraries(libs.libraries)
       setDetectorLabels(labels.labels)
-      if (sync) {
-        setSyncStatus(sync)
-        setSyncForm(f => ({
-          ...f,
-          sync_enabled: sync.sync_enabled,
-          instance_name: sync.instance_name ?? '',
-        }))
-      }
       setLoading(false)
     })
   }, [])
@@ -243,98 +221,6 @@ export default function SettingsPage() {
     }
   }
 
-  const saveSync = async () => {
-    setSavingSync(true)
-    setSavedSync(false)
-    try {
-      await api.post('/api/sync/settings', {
-        instance_name: syncForm.instance_name || 'default',
-        sync_enabled: syncForm.sync_enabled,
-      })
-      setSavedSync(true)
-      const updated = await api.get<SyncStatus>('/api/sync/status').catch(() => null)
-      if (updated) setSyncStatus(updated)
-      setTimeout(() => setSavedSync(false), 3000)
-    } catch (e: any) {
-      setUploadResult({ ok: false, message: e?.message ?? 'Failed to save sync settings' })
-    } finally {
-      setSavingSync(false)
-    }
-  }
-
-  const doUpload = async () => {
-    setUploading(true)
-    setUploadResult(null)
-    try {
-      // Step 1: Enqueue the upload job
-      const r = await api.post<{ status: string; job_id: number; message: string }>('/api/sync/upload-segment-library')
-      const jobId = r.job_id
-      setUploadResult({ ok: true, message: `Upload job ${jobId} queued. Starting...` })
-      
-      // Step 2: Poll for job status — max 120 attempts (≈2 min) before timing out.
-      const MAX_POLLS = 120
-      let completed = false
-      let isSuccess = false
-      let finalMessage = ''
-
-      for (let attempt = 0; attempt < MAX_POLLS && !completed; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 1000))
-
-        try {
-          const status = await api.get<any>(`/api/sync/job-status/${jobId}`)
-
-          if (status.status === 'completed') {
-            completed = true
-            isSuccess = true
-            const result = status.result || {}
-            finalMessage = result.message || 'Upload completed'
-          } else if (status.status === 'failed') {
-            completed = true
-            isSuccess = false
-            finalMessage = status.error || 'Upload failed'
-          } else {
-            const progress = status.progress || 0
-            finalMessage = `Uploading... ${progress}%`
-          }
-
-          setUploadResult({ ok: isSuccess, message: finalMessage })
-        } catch {
-          // Transient poll error — keep trying until max attempts
-        }
-      }
-
-      if (!completed) {
-        isSuccess = false
-        finalMessage = 'Upload timed out — check server logs'
-        setUploadResult({ ok: false, message: finalMessage })
-      }
-      
-      const updated = await api.get<SyncStatus>('/api/sync/status').catch(() => null)
-      if (updated) setSyncStatus(updated)
-    } catch (e: any) {
-      setUploadResult({ ok: false, message: 'Upload failed to start' })
-    } finally {
-      setUploading(false)
-    }
-  }
-
-  const doDownload = async () => {
-    setDownloading(true)
-    setDownloadResult(null)
-    try {
-      const r = await api.get<{ status: string; results: Record<string, any[]>; merge_results: Record<string, any> }>('/api/sync/download-local-library')
-      const fileCount = Object.keys(r.results || {}).length
-      const ok = r.status === 'success' || r.status === 'no_data'
-      setDownloadResult({ ok, message: ok ? `Downloaded/merged ${fileCount} file(s) from GitHub library` : 'Download failed' })
-      const updated = await api.get<SyncStatus>('/api/sync/status').catch(() => null)
-      if (updated) setSyncStatus(updated)
-    } catch (e: any) {
-      setDownloadResult({ ok: false, message: e?.message ?? 'Download failed' })
-    } finally {
-      setDownloading(false)
-    }
-  }
-
   const validateModelPath = async () => {
     setValidatingModel(true)
     setModelValidationResult(null)
@@ -344,8 +230,8 @@ export default function SettingsPage() {
         nudenet_model_path: form.nudenet_model_path,
       })
       setModelValidationResult(r)
-    } catch (e) {
-      setModelValidationResult({ ok: false, message: 'Validation request failed' })
+    } catch {
+      setModelValidationResult({ ok: false, message: t('settings_validation_failed') })
     } finally {
       setValidatingModel(false)
     }
@@ -367,32 +253,33 @@ export default function SettingsPage() {
   const h2Cls = "text-sm font-semibold text-gray-400 uppercase tracking-wide mb-4"
   const inputCls = "w-full px-3 py-2 bg-plex-darker border border-plex-border rounded-lg text-sm text-gray-100 placeholder-muted focus:border-plex-orange/60 transition-colors"
 
-  if (loading) return <div className="text-muted text-sm">Loading...</div>
+  if (loading) return <div className="text-muted text-sm">{t('common_loading_dots')}</div>
 
   const sections: { id: SectionId; label: string }[] = [
-    { id: 'connection', label: 'Plex Connection' },
-    { id: 'users', label: 'Users' },
-    { id: 'playback', label: 'Playback' },
-    { id: 'filtering', label: 'Stream Filtering' },
-    { id: 'schedule', label: 'Scan Scope & Schedule' },
-    { id: 'nudenet', label: 'NudeNet Detection' },
-    { id: 'siglip', label: 'SigLIP Fallback' },
-    { id: 'segments', label: 'Segments' },
-    { id: 'sync', label: 'Sharing' },
+    { id: 'connection', label: t('settings_sec_connection') },
+    { id: 'users', label: t('settings_sec_users') },
+    { id: 'playback', label: t('settings_sec_playback') },
+    { id: 'filtering', label: t('settings_sec_filtering') },
+    { id: 'schedule', label: t('settings_sec_schedule') },
+    { id: 'nudenet', label: t('settings_sec_nudenet') },
+    { id: 'siglip', label: t('settings_sec_siglip') },
+    { id: 'segments', label: t('settings_sec_segments') },
+    { id: 'hayaa', label: t('settings_sec_hayaa') },
+    { id: 'language', label: t('settings_sec_language') },
   ]
 
   return (
     <div className="w-full">
-      <h1 className="text-2xl font-bold text-gray-100 mb-4">Settings</h1>
+      <h1 className="text-2xl font-bold text-gray-100 mb-4">{t('settings_title')}</h1>
       <div className="flex flex-col md:flex-row gap-6">
         {/* Section nav: a column on desktop, a scrolling row on phones. */}
-        <nav aria-label="Settings sections" className="flex md:flex-col gap-1 md:w-48 flex-shrink-0 overflow-x-auto">
+        <nav aria-label={t('settings_nav_aria')} className="flex md:flex-col gap-1 md:w-48 flex-shrink-0 overflow-x-auto">
           {sections.map(sec => (
             <button
               key={sec.id}
               onClick={() => setSection(sec.id)}
               aria-current={section === sec.id ? 'page' : undefined}
-              className={`text-left whitespace-nowrap px-3 py-2 rounded-lg text-sm transition-colors ${
+              className={`text-start whitespace-nowrap px-3 py-2 rounded-lg text-sm transition-colors ${
                 section === sec.id ? 'bg-plex-orange/20 text-plex-orange' : 'text-gray-300 hover:text-gray-100 hover:bg-white/5'
               }`}
             >
@@ -404,6 +291,26 @@ export default function SettingsPage() {
         {/* Each section's blocks are cards on a two-column grid on wide screens (#118);
             a section with a single block spans both columns. */}
         <div className="flex-1 min-w-0 grid gap-6 xl:grid-cols-2 items-start content-start pb-6 [&>section]:bg-plex-card [&>section]:border [&>section]:border-plex-border [&>section]:rounded-xl [&>section]:p-5 xl:[&>section:only-child]:col-span-2">
+          {section === 'language' && (
+            <section>
+              <h2 className={h2Cls}>{t('settings_sec_language')}</h2>
+              <p className="text-xs text-muted mb-3">{t('settings_language_hint')}</p>
+              <div role="group" aria-label={t('lang_toggle_label')} className="inline-flex p-0.5 gap-0.5 rounded-lg bg-black/25 border border-plex-border">
+                {(['en', 'ar'] as const).map(code => (
+                  <button
+                    key={code}
+                    type="button"
+                    onClick={() => setLang(code)}
+                    aria-pressed={lang === code}
+                    className={`py-1.5 px-4 rounded-md text-sm font-medium transition-colors ${lang === code ? 'bg-plex-orange text-black' : 'text-gray-400 hover:text-gray-100'}`}
+                  >
+                    {code === 'en' ? t('lang_english') : t('lang_arabic')}
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
           {section === 'users' && (
             <section>
               <UsersPanel />
@@ -412,11 +319,12 @@ export default function SettingsPage() {
 
           {section === 'connection' && (
             <section>
-              <h2 className={h2Cls}>Plex Connection</h2>
+              <h2 className={h2Cls}>{t('settings_sec_connection')}</h2>
               <div className="grid gap-4 lg:grid-cols-2 items-start">
-                <Field label="Plex Server URL" hint="e.g. http://192.168.1.10:32400">
+                <Field label={t('settings_plex_url')} hint={t('settings_plex_url_hint')}>
                   <input
                     type="url"
+                    dir="ltr"
                     value={form.plex_url}
                     onChange={set('plex_url')}
                     placeholder="http://localhost:32400"
@@ -424,19 +332,20 @@ export default function SettingsPage() {
                   />
                 </Field>
 
-                <Field label="Plex Token" hint="Find yours at plex.tv/devices.xml or in Plex logs">
+                <Field label={t('settings_plex_token')} hint={t('settings_plex_token_hint')}>
                   <div className="relative">
                     <input
                       type={showToken ? 'text' : 'password'}
+                      dir="ltr"
                       value={form.plex_token}
                       onChange={set('plex_token')}
-                      placeholder={form.plex_token_set ? 'Saved. Leave blank to keep it' : 'xxxxxxxxxxxxxxxxxxxx'}
-                      className={inputCls + ' pr-10'}
+                      placeholder={form.plex_token_set ? t('settings_plex_token_saved_placeholder') : 'xxxxxxxxxxxxxxxxxxxx'}
+                      className={inputCls + ' pe-10'}
                     />
                     <button
                       type="button"
                       onClick={() => setShowToken(v => !v)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-300"
+                      className="absolute end-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-300"
                     >
                       {showToken ? <EyeOff size={15} /> : <Eye size={15} />}
                     </button>
@@ -450,7 +359,7 @@ export default function SettingsPage() {
                     className="btn-outline text-sm"
                   >
                     {testing && <Loader2 size={14} className="animate-spin" />}
-                    Test Connection
+                    {t('settings_test_connection')}
                   </button>
                   {testResult && (
                     <span className={`flex items-center gap-1.5 text-sm ${testResult.ok ? 'text-green-400' : 'text-red-400'}`}>
@@ -465,13 +374,13 @@ export default function SettingsPage() {
 
           {section === 'playback' && (
             <section>
-              <h2 className={h2Cls}>Playback</h2>
-              <p className="text-xs text-muted mb-4">How Cleanplex watches active streams and acts on segments.</p>
+              <h2 className={h2Cls}>{t('settings_sec_playback')}</h2>
+              <p className="text-xs text-muted mb-4">{t('settings_playback_desc')}</p>
               <div className="grid gap-4 lg:grid-cols-2 items-start">
-                <Field label="Poll Interval (seconds)" hint="How often to check active streams for scenes to skip">
+                <Field label={t('settings_poll_interval')} hint={t('settings_poll_interval_hint')}>
                             <input type="number" min="2" max="30" value={form.poll_interval} onChange={set('poll_interval')} className={inputCls} />
                           </Field>
-                <Field label="Skip Buffer (ms)" hint="Extra milliseconds to seek past the end of a detected segment">
+                <Field label={t('settings_skip_buffer')} hint={t('settings_skip_buffer_hint')}>
                             <input type="number" min="0" step="500" value={form.skip_buffer_ms} onChange={set('skip_buffer_ms')} className={inputCls} />
                           </Field>
               </div>
@@ -480,10 +389,9 @@ export default function SettingsPage() {
 
           {section === 'filtering' && (
             <section>
-              <h2 className={h2Cls}>Stream Filtering</h2>
+              <h2 className={h2Cls}>{t('settings_sec_filtering')}</h2>
               <p className="text-xs text-muted mb-4">
-                Filters every Plex app, in or out of the house, by removing filtered scenes from the stream itself.
-                These settings apply immediately.
+                {t('settings_filtering_desc')}
               </p>
               <EnforcementPanel />
             </section>
@@ -492,32 +400,28 @@ export default function SettingsPage() {
           {section === 'schedule' && (
             <>
               <section>
-                <h2 className={h2Cls}>Scan Schedule</h2>
-                <p className="text-xs text-muted mb-4">Background video scanning only runs within this time window to avoid slowing your device during the day.</p>
+                <h2 className={h2Cls}>{t('settings_scan_schedule')}</h2>
+                <p className="text-xs text-muted mb-4">{t('settings_scan_schedule_desc')}</p>
                 <div className="flex gap-4">
-                  <Field label="Start Time">
+                  <Field label={t('settings_start_time')}>
                     <input type="time" value={form.scan_window_start} onChange={set('scan_window_start')} className={inputCls} />
                   </Field>
-                  <Field label="End Time">
+                  <Field label={t('settings_end_time')}>
                     <input type="time" value={form.scan_window_end} onChange={set('scan_window_end')} className={inputCls} />
                   </Field>
                 </div>
       </section>
               <section>
-                <h2 className={h2Cls}>Rescan Titles</h2>
+                <h2 className={h2Cls}>{t('settings_rescan_titles')}</h2>
                 <p className="text-xs text-muted mb-4">
-                  Queue many titles to be scanned again, for example after an update to the detector. They wait for the scan
-                  window like any scheduled scan, in the usual order, and their current segments stay in use until the new scan
-                  replaces them.
+                  {t('settings_rescan_titles_desc')}
                 </p>
                 <BulkRescan libraries={libraries} />
               </section>
               <section>
-                <h2 className={h2Cls}>Hover Previews</h2>
+                <h2 className={h2Cls}>{t('settings_hover_previews')}</h2>
                 <p className="text-xs text-muted mb-4">
-                  A separate job renders a short silent loop of each segment (about 20 KB each), played when you hover its
-                  thumbnail. It runs in this window, and when the scan queue is empty if that option is on, one segment at a time, and picks up segments it has not done yet.
-                  The window may cross midnight (e.g. 22:00 to 07:00).
+                  {t('settings_hover_previews_desc')}
                 </p>
                 <label className="flex items-start gap-3 cursor-pointer mb-4">
                   <input
@@ -526,7 +430,7 @@ export default function SettingsPage() {
                     onChange={e => setForm(f => ({ ...f, hover_previews_enabled: e.target.checked ? '1' : '0' }))}
                     className="w-4 h-4 mt-0.5 accent-plex-orange"
                   />
-                  <span className="text-sm text-gray-300">Render hover previews</span>
+                  <span className="text-sm text-gray-300">{t('settings_hover_enable')}</span>
                 </label>
                 <label className="flex items-start gap-3 cursor-pointer mb-4">
                   <input
@@ -537,23 +441,23 @@ export default function SettingsPage() {
                     className="w-4 h-4 mt-0.5 accent-plex-orange disabled:opacity-40"
                   />
                   <span className="text-sm text-gray-300">
-                    Also render as soon as the scan queue is empty
-                    <span className="block text-xs text-muted">Stops again when a scan starts. Outside this, it only runs in the window below.</span>
+                    {t('settings_hover_when_idle')}
+                    <span className="block text-xs text-muted">{t('settings_hover_when_idle_hint')}</span>
                   </span>
                 </label>
                 <div className="flex gap-4">
-                  <Field label="Start Time">
+                  <Field label={t('settings_start_time')}>
                     <input type="time" value={form.hover_window_start} onChange={set('hover_window_start')} className={inputCls} />
                   </Field>
-                  <Field label="End Time">
+                  <Field label={t('settings_end_time')}>
                     <input type="time" value={form.hover_window_end} onChange={set('hover_window_end')} className={inputCls} />
                   </Field>
                 </div>
               </section>
               <section>
-                <h2 className={h2Cls}>Workers</h2>
+                <h2 className={h2Cls}>{t('settings_workers')}</h2>
                 <div className="space-y-4">
-                  <Field label="Scanner Workers" hint="How many titles can be scanned in parallel. Higher values use more CPU, disk, and memory.">
+                  <Field label={t('settings_scan_workers')} hint={t('settings_scan_workers_hint')}>
                               <input type="number" min="1" max="12" step="1" value={form.scan_workers} onChange={set('scan_workers')} className={inputCls} />
                             </Field>
                   <label className="flex items-start gap-3 cursor-pointer">
@@ -564,18 +468,17 @@ export default function SettingsPage() {
                       className="w-4 h-4 mt-0.5 accent-plex-orange"
                     />
                     <span className="text-sm text-gray-300">
-                      Hardware video decoding
+                      {t('settings_hw_decode')}
                       <span className="block text-xs text-muted">
-                        Uses this machine's video decoder when it has one (much faster on 4K HEVC). Files it cannot
-                        handle are decoded in software automatically; turn off only if scans misbehave.
+                        {t('settings_hw_decode_hint')}
                       </span>
                     </span>
                   </label>
                 </div>
               </section>
               <section>
-                <h2 className={h2Cls}>Scan Ratings</h2>
-                <p className="text-xs text-muted mb-3">Only scan titles with these content ratings. Leave all unchecked to scan everything.</p>
+                <h2 className={h2Cls}>{t('settings_scan_ratings')}</h2>
+                <p className="text-xs text-muted mb-3">{t('settings_scan_ratings_desc')}</p>
                 <div className="grid grid-cols-2 gap-2">
                   {/* The ratings the libraries hold (#219), normalized the way the scanner compares them, so
                       "eg/16" is under R. A checked rating no title has any more stays listed so it can be unchecked.
@@ -586,7 +489,7 @@ export default function SettingsPage() {
                     const rows = [...libraryRatings]
                     for (const r of selectedNorm) if (!rows.some(x => x.rating === r)) rows.push({ rating: r, count: 0, sources: [] })
                     rows.sort((x, y) => (x.rating === '' ? 1 : y.rating === '' ? -1 : x.rating.localeCompare(y.rating)))
-                    if (rows.length === 0) return <p className="text-sm text-muted col-span-2">No titles in the libraries yet.</p>
+                    if (rows.length === 0) return <p className="text-sm text-muted col-span-2">{t('settings_no_titles_yet')}</p>
                     return rows.map(({ rating, count, sources }) => {
                       const checked = selectedNorm.has(rating)
                       const toggle = () => {
@@ -599,9 +502,9 @@ export default function SettingsPage() {
                         <label key={rating === '' ? '__unrated__' : rating} className="flex items-start gap-2 cursor-pointer">
                           <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 mt-0.5 accent-plex-orange" />
                           <span className={`text-sm ${checked ? 'text-gray-100' : 'text-muted'}`}>
-                            {rating === '' ? 'Unrated (no rating set in Plex)' : rating}
+                            {rating === '' ? t('settings_unrated_plex') : rating}
                             <span className="text-xs text-muted"> · {count}</span>
-                            {also.length > 0 && <span className="block text-xs text-muted">includes {also.join(', ')}</span>}
+                            {also.length > 0 && <span className="block text-xs text-muted">{t('settings_includes_sources', { sources: also.join(', ') })}</span>}
                           </span>
                         </label>
                       )
@@ -611,8 +514,8 @@ export default function SettingsPage() {
       </section>
               {libraries.length > 0 && (
                 <section>
-                  <h2 className={h2Cls}>Library Exclusions</h2>
-                    <p className="text-xs text-muted mb-3">Excluded libraries will not be scanned or synced.</p>
+                  <h2 className={h2Cls}>{t('settings_library_exclusions')}</h2>
+                    <p className="text-xs text-muted mb-3">{t('settings_library_exclusions_desc')}</p>
                     <div className="space-y-2">
                       {libraries.map(lib => (
                         <label key={lib.id} className="flex items-center gap-3 cursor-pointer group">
@@ -625,7 +528,9 @@ export default function SettingsPage() {
                           <span className={`text-sm ${excludedIds.includes(lib.id) ? 'text-muted line-through' : 'text-gray-200'}`}>
                             {lib.title}
                           </span>
-                          <span className="text-xs text-muted">{lib.type}</span>
+                          <span className="text-xs text-muted">
+                            {lib.type === 'movie' ? t('settings_lib_type_movie') : lib.type === 'show' ? t('settings_lib_type_show') : lib.type}
+                          </span>
                         </label>
                       ))}
                     </div>
@@ -637,15 +542,15 @@ export default function SettingsPage() {
           {section === 'nudenet' && (
             <>
               <section>
-                <h2 className={h2Cls}>NudeNet Model</h2>
+                <h2 className={h2Cls}>{t('settings_nudenet_model')}</h2>
                 <div className="space-y-4">
-                  <Field label="NudeNet Model" hint="320n is bundled and fastest. 640m is downloaded by Cleanplex automatically and then cached locally.">
+                  <Field label={t('settings_nudenet_model')} hint={t('settings_nudenet_model_hint')}>
                               <select value={form.nudenet_model} onChange={set('nudenet_model')} className={inputCls}>
-                                <option value="320n">320n (default, fast)</option>
-                                <option value="640m">640m (higher accuracy, slower)</option>
+                                <option value="320n">{t('settings_nudenet_320n')}</option>
+                                <option value="640m">{t('settings_nudenet_640m')}</option>
                               </select>
                             </Field>
-                  <Field label="Prepare 640m Model" hint="Optional: click once to pre-download 640m now. Otherwise it will auto-download on first 640m scan.">
+                  <Field label={t('settings_prepare_640m')} hint={t('settings_prepare_640m_hint')}>
                               <div className="mt-2 flex items-center gap-3">
                                 <button
                                   type="button"
@@ -654,7 +559,7 @@ export default function SettingsPage() {
                                   className="btn-outline text-xs"
                                 >
                                   {validatingModel && <Loader2 size={13} className="animate-spin" />}
-                                  Download/Check 640m model
+                                  {t('settings_download_check_640m')}
                                 </button>
                                 {modelValidationResult && (
                                   <span className={`flex items-center gap-1.5 text-xs ${modelValidationResult.ok ? 'text-green-400' : 'text-red-400'}`}>
@@ -664,17 +569,17 @@ export default function SettingsPage() {
                                 )}
                               </div>
                             </Field>
-                  <Field label="Detection Confidence Threshold" hint="Frames scoring above this value (0–1) are flagged as nudity. Lower = more sensitive.">
+                  <Field label={t('settings_confidence_threshold')} hint={t('settings_confidence_threshold_hint')}>
                               <input type="number" min="0.1" max="1" step="0.05" value={form.confidence_threshold} onChange={set('confidence_threshold')} className={inputCls} />
                             </Field>
-                  <Field label="Scan Frame Interval (ms)" hint="How often frames are sampled during scanning. Lower catches more scenes but takes longer.">
+                  <Field label={t('settings_scan_step')} hint={t('settings_scan_step_hint')}>
                               <input type="number" min="1000" max="20000" step="500" value={form.scan_step_ms} onChange={set('scan_step_ms')} className={inputCls} />
                             </Field>
                 </div>
               </section>
               <section>
-                <h2 className={h2Cls}>Detector Labels</h2>
-                <p className="text-xs text-muted mb-3">Choose which NudeNet labels should count toward detection. Exposed-only labels are usually less noisy.</p>
+                <h2 className={h2Cls}>{t('settings_detector_labels')}</h2>
+                <p className="text-xs text-muted mb-3">{t('settings_detector_labels_desc')}</p>
                 <div className="grid grid-cols-2 gap-2">
                   {detectorLabels.map(label => {
                     const selected = (() => { try { return JSON.parse(form.scan_labels) } catch { return [] } })()
@@ -686,16 +591,16 @@ export default function SettingsPage() {
                     return (
                       <label key={label} className="flex items-center gap-2 cursor-pointer">
                         <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 accent-plex-orange" />
-                        <span className={`text-sm ${checked ? 'text-gray-100' : 'text-muted'}`}>{label}</span>
+                        <span className={`text-sm ${checked ? 'text-gray-100' : 'text-muted'}`} title={label}>{prettyLabel(label, t)}</span>
                       </label>
                     )
                   })}
                 </div>
       </section>
               <section>
-                <h2 className={h2Cls}>Per-Label Thresholds</h2>
+                <h2 className={h2Cls}>{t('settings_per_label_thresholds')}</h2>
                 <p className="text-xs text-muted mb-3">
-                  Override the confidence threshold for a single label. A blank box uses the global threshold shown inside it.
+                  {t('settings_per_label_thresholds_desc')}
                 </p>
                 <LabelThresholds
                   labels={enabledLabels}
@@ -709,12 +614,9 @@ export default function SettingsPage() {
 
           {section === 'siglip' && (
             <section>
-              <h2 className={h2Cls}>SigLIP Fallback</h2>
+              <h2 className={h2Cls}>{t('settings_sec_siglip')}</h2>
               <p className="text-xs text-muted mb-4">
-                A light whole-frame check that only looks at frames NudeNet did not flag, to catch scenes it misses.
-                It follows the Detector Labels: enabled labels count as hits, the others as counter-examples.
-                Its segments are marked <span className="text-gray-300">siglip</span> with medium severity.
-                Turning it on downloads about 815 MB of model files on the next scan.
+                {t('settings_siglip_desc_before')} <span className="text-gray-300">siglip</span>{t('settings_siglip_desc_after')}
               </p>
               <div className="grid gap-4 lg:grid-cols-2 items-start">
                 <label className="flex items-center gap-3 cursor-pointer">
@@ -724,9 +626,9 @@ export default function SettingsPage() {
                     onChange={e => setForm(f => ({ ...f, siglip_enabled: e.target.checked ? '1' : '0' }))}
                     className="w-4 h-4 accent-plex-orange"
                   />
-                  <span className="text-sm text-gray-300">Enable SigLIP fallback</span>
+                  <span className="text-sm text-gray-300">{t('settings_siglip_enable')}</span>
                 </label>
-                <Field label="SigLIP Threshold" hint="Share of the frame's match that goes to enabled-label descriptions (0–1). Separate from the NudeNet threshold. Lower = catches more, with more false positives.">
+                <Field label={t('settings_siglip_threshold')} hint={t('settings_siglip_threshold_hint')}>
                   <input type="number" min="0.05" max="0.95" step="0.05" value={form.siglip_threshold} onChange={set('siglip_threshold')} disabled={form.siglip_enabled !== '1'} className={inputCls + ' disabled:opacity-40'} />
                 </Field>
                 <label className="flex items-center gap-3 cursor-pointer">
@@ -737,11 +639,11 @@ export default function SettingsPage() {
                     disabled={form.siglip_enabled !== '1'}
                     className="w-4 h-4 accent-plex-orange"
                   />
-                  <span className="text-sm text-gray-300">Ignore end credits (uses Plex credits markers)</span>
+                  <span className="text-sm text-gray-300">{t('settings_ignore_credits')}</span>
                 </label>
                 <div className="lg:col-span-2">
-                  <p className="text-sm font-medium text-gray-300 mb-1">Per-label SigLIP thresholds</p>
-                  <p className="text-xs text-muted mb-2">A hit is judged by the threshold of the label it is tagged with. Blank uses the SigLIP threshold above.</p>
+                  <p className="text-sm font-medium text-gray-300 mb-1">{t('settings_siglip_per_label')}</p>
+                  <p className="text-xs text-muted mb-2">{t('settings_siglip_per_label_desc')}</p>
                   <LabelThresholds
                     labels={enabledLabels}
                     value={form.siglip_label_thresholds}
@@ -750,7 +652,7 @@ export default function SettingsPage() {
                     onChange={next => setForm(f => ({ ...f, siglip_label_thresholds: next }))}
                   />
                 </div>
-                <Field label="Consecutive Frames Required" hint="A SigLIP-only hit must repeat on this many consecutive sampled frames before a segment is created. Filters one-off false alarms.">
+                <Field label={t('settings_siglip_min_hits')} hint={t('settings_siglip_min_hits_hint')}>
                   <input type="number" min="1" max="6" step="1" value={form.siglip_min_hits} onChange={set('siglip_min_hits')} disabled={form.siglip_enabled !== '1'} className={inputCls + ' disabled:opacity-40'} />
                 </Field>
                 <VerifierPanel value={form.verifier_loss_pct} onChange={v => setForm(f => ({ ...f, verifier_loss_pct: v }))} />
@@ -760,116 +662,34 @@ export default function SettingsPage() {
 
           {section === 'segments' && (
             <section>
-              <h2 className={h2Cls}>Segments</h2>
-              <p className="text-xs text-muted mb-4">How flagged frames are grouped into segments.</p>
+              <h2 className={h2Cls}>{t('settings_sec_segments')}</h2>
+              <p className="text-xs text-muted mb-4">{t('settings_segments_desc')}</p>
               <div className="grid gap-4 lg:grid-cols-2 items-start">
-                <Field label="Segment Merge Gap (ms)" hint="Flagged frames closer than this are merged into one segment.">
+                <Field label={t('settings_segment_gap')} hint={t('settings_segment_gap_hint')}>
                             <input type="number" min="1000" max="30000" step="500" value={form.segment_gap_ms} onChange={set('segment_gap_ms')} className={inputCls} />
                           </Field>
-                <Field label="Refinement Step (ms)" hint="After a segment is found, its window is re-checked this finely to pick the best thumbnail and catch scenes that start or run on between samples. Smaller is more precise and slower for every flagged segment; 0 turns it off.">
+                <Field label={t('settings_refine_step')} hint={t('settings_refine_step_hint')}>
                             <input type="number" min="0" max="5000" step="100" value={form.refine_step_ms} onChange={set('refine_step_ms')} className={inputCls} />
                           </Field>
                 {refineRemaining > 0 && (
                   <p className="text-xs text-gray-400 lg:col-span-2" role="status">
-                    {refineRemaining.toLocaleString()} existing segment{refineRemaining === 1 ? ' is' : 's are'} still waiting to
-                    be refined. A background job re-checks each one's thumbnail and bounds, one at a time, inside the scan window.
+                    {t('settings_refine_remaining', { count: refineRemaining, formatted: formatNumber(refineRemaining) })}
                   </p>
                 )}
-                <Field label="Minimum Hits Per Segment" hint="Require at least this many flagged frames in a cluster to keep a segment. Increase to reduce false positives.">
+                <Field label={t('settings_min_hits')} hint={t('settings_min_hits_hint')}>
                             <input type="number" min="1" max="6" step="1" value={form.segment_min_hits} onChange={set('segment_min_hits')} className={inputCls} />
                           </Field>
               </div>
             </section>
           )}
 
-          {section === 'sync' && (
+          {section === 'hayaa' && (
             <section>
-              <h2 className={h2Cls}>Segment Library Sync</h2>
-              <p className="text-xs text-muted mb-4">Crowdsource segment detections through one shared GitHub repository. Upload and download are always manual.</p>
-              <div className="grid gap-4 lg:grid-cols-2 items-start">
-                <Field label="Repository" hint="Fixed shared repository used by all users.">
-                  <input
-                    type="text"
-                    value={syncStatus?.github_repo || 'nazmolla/cleanplex-segments'}
-                    readOnly
-                    className={inputCls + ' opacity-80'}
-                  />
-                </Field>
-                <Field label="Instance Name" hint="Name attached to your submissions in the crowdsourced dataset.">
-                  <input
-                    type="text"
-                    value={syncForm.instance_name}
-                    onChange={e => setSyncForm(f => ({ ...f, instance_name: e.target.value }))}
-                    placeholder="e.g. home-server"
-                    className={inputCls}
-                  />
-                </Field>
-                <label className="flex items-center gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={syncForm.sync_enabled}
-                    onChange={e => setSyncForm(f => ({ ...f, sync_enabled: e.target.checked }))}
-                    className="w-4 h-4 accent-plex-orange"
-                  />
-                  <span className="text-sm text-gray-300">Enable sync</span>
-                </label>
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={saveSync}
-                    disabled={savingSync}
-                    className="btn-outline text-xs"
-                  >
-                    {savingSync && <Loader2 size={13} className="animate-spin" />}
-                    Save Sync Settings
-                  </button>
-                  {savedSync && (
-                    <span className="flex items-center gap-1.5 text-xs text-green-400">
-                      <CheckCircle2 size={13} /> Saved
-                    </span>
-                  )}
-                </div>
-                <div className="pt-2 border-t border-plex-border/50 space-y-3">
-                  <p className="text-xs text-muted">Upload and download crowdsourced segment detections from the shared library.</p>
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <button
-                      type="button"
-                      onClick={doUpload}
-                      disabled={uploading || !syncForm.sync_enabled}
-                      className="btn-outline text-xs"
-                    >
-                      {uploading && <Loader2 size={13} className="animate-spin" />}
-                      Upload My Segments
-                    </button>
-                    <button
-                      type="button"
-                      onClick={doDownload}
-                      disabled={downloading || !syncForm.sync_enabled}
-                      className="btn-outline text-xs"
-                    >
-                      {downloading && <Loader2 size={13} className="animate-spin" />}
-                      Download Crowdsourced Segments
-                    </button>
-                    {uploadResult && (
-                      <span className={`flex items-center gap-1.5 text-xs ${uploadResult.ok ? 'text-green-400' : 'text-red-400'}`}>
-                        {uploadResult.ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
-                        {uploadResult.message}
-                      </span>
-                    )}
-                    {downloadResult && (
-                      <span className={`flex items-center gap-1.5 text-xs ${downloadResult.ok ? 'text-green-400' : 'text-red-400'}`}>
-                        {downloadResult.ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
-                        {downloadResult.message}
-                      </span>
-                    )}
-                  </div>
-                  {syncStatus?.last_sync_time && (
-                    <p className="text-xs text-muted">Last sync: {syncStatus.last_sync_time}</p>
-                  )}
-                </div>
-              </div>
-      </section>
+              <h2 className={h2Cls}>{t('settings_sec_hayaa')}</h2>
+              <HayaaPanel />
+            </section>
           )}
+
         </div>
       </div>
 
@@ -884,25 +704,25 @@ export default function SettingsPage() {
             className="btn-primary px-5 py-2"
           >
             {saving && <Loader2 size={14} className="animate-spin" />}
-            Save Settings
+            {t('settings_save')}
           </button>
           {saved && (
             <span className="flex items-center gap-1.5 text-sm text-green-400">
-              <CheckCircle2 size={15} /> Saved
+              <CheckCircle2 size={15} /> {t('common_saved')}
             </span>
           )}
           <button
             onClick={restartScanner}
             disabled={restarting}
             className="btn-outline py-2"
-            title="Restart the scanner pool — picks up config changes and reorders the queue"
+            title={t('settings_restart_scanner_title')}
           >
             <RotateCcw size={14} className={restarting ? 'animate-spin' : ''} />
-            Restart Scanner
+            {t('settings_restart_scanner')}
           </button>
           {restarted && (
             <span className="flex items-center gap-1.5 text-sm text-green-400">
-              <CheckCircle2 size={15} /> Restarting — queue will reorder within ~10s
+              <CheckCircle2 size={15} /> {t('settings_restarting_msg')}
             </span>
           )}
         </div>

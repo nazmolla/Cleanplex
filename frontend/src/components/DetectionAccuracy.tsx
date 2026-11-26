@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { useLiveRefresh } from '../api/events'
 import { segmentOrigin } from '../utils/segmentOrigin'
+import { useT } from '../i18n'
+import { prettyLabel } from '../utils/labels'
 
 interface Row {
   source: string
@@ -22,6 +24,7 @@ const pct = (v: number | null) => (v == null ? '—' : `${Math.round(v * 100)}%`
  * them; this is the sample threshold tuning, and later retraining, is based on.
  */
 export default function DetectionAccuracy() {
+  const { t } = useT()
   const [rows, setRows] = useState<Row[]>([])
   const [marked, setMarked] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -48,42 +51,41 @@ export default function DetectionAccuracy() {
   // Marks and rescans both change these numbers.
   useLiveRefresh(['segments_changed'], load, { debounceMs: 2000 })
 
-  if (loading) return <div className="text-muted text-sm">Loading detection accuracy...</div>
-  if (rows.length === 0) return <div className="text-muted text-sm">No detected segments yet.</div>
+  if (loading) return <div className="text-muted text-sm">{t('acc_loading')}</div>
+  if (rows.length === 0) return <div className="text-muted text-sm">{t('acc_empty')}</div>
 
   return (
     <div className="space-y-2">
       {marked === 0 && (
         <p className="text-xs text-muted">
-          No false positives marked yet. Use the thumbs-down button on a segment that is not nudity; the numbers
-          below then show which detector and label get it wrong, and at what scores.
+          {t('acc_no_fps_hint')}
         </p>
       )}
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
-            <tr className="text-left text-muted border-b border-plex-border">
-              <th className="py-1.5 pr-3 font-medium">Detector</th>
-              <th className="py-1.5 pr-3 font-medium">Label</th>
-              <th className="py-1.5 pr-3 font-medium text-right">Found</th>
-              <th className="py-1.5 pr-3 font-medium text-right">False</th>
-              <th className="py-1.5 pr-3 font-medium text-right">False rate</th>
-              <th className="py-1.5 pr-3 font-medium text-right">Avg score kept</th>
-              <th className="py-1.5 font-medium text-right">Avg score false</th>
+            <tr className="text-start text-muted border-b border-plex-border">
+              <th className="py-1.5 pe-3 font-medium">{t('acc_col_detector')}</th>
+              <th className="py-1.5 pe-3 font-medium">{t('acc_col_label')}</th>
+              <th className="py-1.5 pe-3 font-medium text-end">{t('acc_col_found')}</th>
+              <th className="py-1.5 pe-3 font-medium text-end">{t('acc_col_false')}</th>
+              <th className="py-1.5 pe-3 font-medium text-end">{t('acc_col_false_rate')}</th>
+              <th className="py-1.5 pe-3 font-medium text-end">{t('acc_col_avg_kept')}</th>
+              <th className="py-1.5 font-medium text-end">{t('acc_col_avg_false')}</th>
             </tr>
           </thead>
           <tbody>
             {rows.map(r => (
               <tr key={`${r.source}|${r.detector}|${r.label}`} className="border-b border-plex-border/50 text-gray-300">
-                <td className="py-1.5 pr-3 whitespace-nowrap">{segmentOrigin(r)}</td>
-                <td className="py-1.5 pr-3 whitespace-nowrap">{r.label}</td>
-                <td className="py-1.5 pr-3 text-right">{r.total}</td>
-                <td className="py-1.5 pr-3 text-right">{r.false_positives}</td>
-                <td className={`py-1.5 pr-3 text-right ${r.false_positive_rate >= 0.3 ? 'text-amber-300' : ''}`}>
+                <td className="py-1.5 pe-3 whitespace-nowrap">{segmentOrigin(r, t)}</td>
+                <td className="py-1.5 pe-3 whitespace-nowrap" title={r.label}>{prettyLabel(r.label, t)}</td>
+                <td className="py-1.5 pe-3 text-end">{r.total}</td>
+                <td className="py-1.5 pe-3 text-end">{r.false_positives}</td>
+                <td className={`py-1.5 pe-3 text-end ${r.false_positive_rate >= 0.3 ? 'text-amber-300' : ''}`}>
                   {pct(r.false_positive_rate)}
                 </td>
-                <td className="py-1.5 pr-3 text-right">{pct(r.avg_score_kept)}</td>
-                <td className="py-1.5 text-right">{pct(r.avg_score_false)}</td>
+                <td className="py-1.5 pe-3 text-end">{pct(r.avg_score_kept)}</td>
+                <td className="py-1.5 text-end">{pct(r.avg_score_false)}</td>
               </tr>
             ))}
           </tbody>

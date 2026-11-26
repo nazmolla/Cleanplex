@@ -123,12 +123,14 @@ Rules for every layout:
 
 ## Configuration
 
-All configuration is done via the **web UI** at `http://your-server:7979/settings`, grouped into sections (Plex Connection, Users, Playback, Stream Filtering, Scan Scope & Schedule, NudeNet Detection, SigLIP Fallback, Segments, Sharing). No config files to edit.
+All configuration is done via the **web UI** at `http://your-server:7979/settings`, grouped into sections (Plex Connection, Users, Playback, Stream Filtering, Scan Scope & Schedule, NudeNet Detection, SigLIP Fallback, Segments, Hayaa). No config files to edit.
 
 | Setting | Default | Description |
 |---|---|---|
 | Plex Server URL | — | e.g. `http://192.168.1.10:32400` |
 | Plex Token | — | Your Plex authentication token |
+| Hayaa service URL | — | Hayaa sync API, https (plain http only to this machine, for Hayaa's dev server) |
+| Hayaa sign-in URL | — | Hayaa's sign-in (OAuth) host, https |
 | Poll Interval | 5s | How often to check active streams |
 | Confidence Threshold | 0.6 | NudeNet score threshold (0–1). Lower = more sensitive. |
 | NudeNet Model | 320n | `320n` is bundled and fastest; `640m` is larger and more accurate, downloaded once on first use (or pre-download it in the same section) |
@@ -198,9 +200,10 @@ Segments carry a **category** (nudity, sex, violence, language, drugs, fear, com
 | `skip` | Seeks past the segment |
 | `mute` | Drops the volume for the segment and restores it after — used for profanity |
 
-Each user gets a 0–3 level per category. A segment fires when *level + severity* exceeds 3, so
-level 3 filters everything in that category and level 0 filters nothing. Every category starts
-at level 3 when filtering is on; lowering or turning one off is always an explicit choice, and
+Each user gets a 0–4 level per category (Off, Severe only, Moderate and up, Mild and up,
+Everything). A segment fires when *level + severity* exceeds 4 (minimal 1, low 2, medium 3,
+high 4), so level 4 filters everything in that category and level 0 filters nothing. Every
+category starts at level 4 when filtering is on; lowering or turning one off is always an explicit choice, and
 changing one category never affects the others.
 
 **Scanner segments get their severity from the detected label**, so a level has a concrete meaning
@@ -208,9 +211,12 @@ for nudity:
 
 | Detected | Severity | Skipped at level |
 |---|---|---|
-| Exposed genitalia, anus | high | 1, 2, 3 |
-| Exposed breast, exposed buttocks | medium | 2, 3 |
-| Covered body parts, belly, feet, faces | low | 3 |
+| Exposed genitalia, exposed female breast | high | 1, 2, 3, 4 |
+| Exposed buttocks, anus, belly | medium | 2, 3, 4 |
+| Covered genitalia, covered female breast | low | 3, 4 |
+| Everything else: other covered parts, feet, armpits, faces, male chest | minimal | 4 |
+
+Imported skip files use MovieContentFilter's low, medium and high, which keep their order.
 
 A segment with several labels takes the highest. Covered labels are not scanned by default; enable
 them under Detector Labels if level 3 should skip them. Imported segments keep the severity their
@@ -230,8 +236,8 @@ ML-scanned**, so this is by far the cheapest way to fill your library.
 | Format | Extension | Notes |
 |---|---|---|
 | VideoSkip | `.skp` | Categories, 1–3 severity, and skip/mute/blank handling. The VideoSkip Exchange has ~563 movies and ~110 series, free and without an account |
-| Kodi / MPlayer EDL | `.edl` | `start end action`; 0 cut, 1 mute, 2 scene marker, 3 commercial. Also exported |
-| MovieContentFilter | `.mcf` | Spec 1.1.0, ~130 hierarchical categories. Also exported |
+| Kodi / MPlayer EDL | `.edl` | `start end action`; 0 cut, 1 mute, 2 scene marker, 3 commercial. |
+| MovieContentFilter | `.mcf` | Spec 1.1.0, ~130 hierarchical categories. |
 | Pasted list | `.txt` | Loose `00:12:30 - 00:13:05 nudity` lines, for lists that have no machine format |
 
 Two ways in:
@@ -244,7 +250,7 @@ Imported timings are authored against a specific cut of a film. Cleanplex checks
 title's runtime and warns when they do not line up, since an extended edition will throw every
 timestamp out.
 
-Plex itself does not read `.edl` files, so EDL/MCF export is for Kodi, Jellyfin and mpv.
+Cleanplex imports skip files but never exports segments, so its detections and synced segments cannot be redistributed as cutting lists.
 
 ## Profanity Filtering
 
@@ -280,11 +286,11 @@ Once saved, the token is never sent back to the browser: Settings shows "Saved. 
 #### Browse
 Titles, segments and Plex markers share one page. The sidebar lists your libraries; the main list always shows what is inside the current level (libraries, shows, seasons, movies, episodes) in the same rows, and clicking a row opens it. *Titles / Segments / Markers* choose what is listed for that level, and a movie or episode opens on its own page with its segments and markers. The level and view are part of the address, so a level can be bookmarked; the old `/library`, `/segments` and `/markers` addresses open Browse.
 
-- **Search and filters** — the search box is always in the toolbar; *Filters* opens the rest below it, and active filters show as chips you can remove. While a filter is active the list shows the matches directly (a show whose name matches as one row, episodes with their show and season beside them). Filters: name, **actor** (the cast is copied from Plex in the background; type a name or pick a suggestion), rating, release-year range, scan-date range, scan status and ignored titles. The numbers in the tree count the titles that pass them
+- **Search and filters** — the search box is always in the toolbar; *Filters* opens the rest below it, and active filters show as chips you can remove. While a filter is active the list shows the matches directly (a show whose name matches as one row, episodes with their show and season beside them). Filters: name, **actors** (the cast and the actors' photos are copied from Plex in the background; search the list, order it by most titles, name or most segments, and pick several actors, matching titles with any or all of them), rating, release-year range, scan-date range, scan status and ignored titles. The numbers in the tree count the titles that pass them
 - **Sort** — date added, scan date, name, release year or segments, with the direction spelled out (*Newest first / Oldest first*); defaults to date added, newest first
-- **Segments at any level** — the Segments view lists every segment of the matching titles as rows with a 240 px frame (hover plays the preview, click opens the player), with segment filters in the same panel: state (active, marked false positive, rejected by the verifier), what found it, and label. Import and export sit behind *Import or export skip files* on a title's page
+- **Segments at any level** — the Segments view lists every segment of the matching titles as rows with a 240 px frame (hover plays the preview, click opens the player), with segment filters in the same panel: state (active, marked false positive, rejected by the verifier), what found it, and label. Import sits behind *Import skip files* on a title's page
 - **Bulk actions** — tick titles, shows or seasons (or *select all filtered*) to scan, ignore, un-ignore or delete the segments of the selection; deleting segments of a whole title, show or selection asks first
-- **Import skip files** — Upload `.skp` / `.edl` / `.mcf`, paste a timestamp list, or export segments as EDL/MCF
+- **Import skip files** — Upload `.skp` / `.edl` / `.mcf`, or paste a timestamp list. There is no export
 - **Browse all titles** with scan status icons
 - **Trigger scans** per title or entire library
 - **"Scan Now"** to prioritize a title — moves it to the front of the scanning queue for immediate processing
@@ -317,7 +323,7 @@ Tabs (linkable with `?tab=`), and sections that can be minimised (remembered per
 
 #### Users (under Settings)
 - **Toggle filtering per Plex account** — Turn skipping on/off for specific user accounts
-- **Category preferences** — Expand a user to set a 0–3 strictness level per content category, with an optional skip/mute override
+- **Category preferences** — Expand a user to set a 0–4 strictness level per content category, with an optional skip/mute override
 
 #### Settings
 - **Plex Connection** — Server URL and token, with a connection test
@@ -327,12 +333,34 @@ Tabs (linkable with `?tab=`), and sections that can be minimised (remembered per
 - **NudeNet Detection** — Model (320n / 640m), confidence threshold, scan frame interval, detector labels, per-label thresholds
 - **SigLIP Fallback** — Enable it, threshold, per-label thresholds, consecutive frames, end-credits handling, the false-positive verifier
 - **Segments** — Merge gap, refinement step (with how many older segments still wait for refinement), minimum hits
-- **Sharing** — Optional crowdsourced segment library (below)
+- **Hayaa** — Share segments with other Cleanplex servers through the Hayaa service (below)
 - Profanity wordlist and log level are stored as settings (`profanity_wordlist`, `log_level`)
 
-## Segment Library Sharing
+## Hayaa
 
-Optional and **always manual**: Settings → Sharing connects to one shared GitHub repository where users publish detections keyed by a hash of the media file. *Upload* sends your segments (labelled with your instance name); *Download* fetches other instances' segments for titles you have, merging them by consensus: segments agreed by at least *verified threshold* instances (2 by default) within *timing tolerance* (2 s) count as verified, and a conflict-resolution mode decides disagreements. Nothing syncs in the background.
+Hayaa is a shared segment service: Cleanplex servers share what their scans found, and what their users confirmed or rejected, so a title scanned once helps everyone with the same file. Only time ranges, labels and votes are sent, keyed by a fingerprint of the file; titles, file names, frames, subtitle words and your preferences (category levels, thresholds) never leave your server, and neither do segments imported from skip files.
+
+**Signing in.** Settings → Hayaa takes the service and sign-in URLs (https), then **Sign in to Hayaa** shows a short code: open the link on any phone or computer, sign in with a passkey or an emailed code, confirm your Plex account once (it must own a Plex server and be at least 90 days old; one Hayaa account per Plex account and per server), and confirm the code. New accounts beyond Hayaa's daily limit join a waitlist and get in on a later day by signing in again. Cleanplex registers its own signing key with your account. The key and sign-in token stay in `hayaa/` in the data directory, never in the database or its backups. **Unlink** revokes this server; you can also unlink it from the Hayaa account page.
+
+**Syncing.** **Sync with Hayaa** sends what changed since the last sync and fetches updated titles. Turn on **Sync automatically** to do this every few hours (3 to 48); automatic syncs use at most four fifths of Hayaa's daily quota, so a manual sync always fits. When Hayaa asks to wait (busy or over quota), syncing pauses until the time it gives.
+
+**Deleted files.** A finished scan remembers the file's fingerprint, so you can delete a file you only downloaded to scan and its scan is still shared on the next sync. Such titles are upload-only: nothing comes back for a file you no longer have. Files deleted before this change have no fingerprint and cannot be shared.
+
+**What you get back, and when.** Hayaa guards its data against people who would use it to cut scenes out of films. It returns segments only for files this server has scanned itself, after Hayaa has checked that the file is really here (Cleanplex answers by reading a few small parts of the file), and only once your account is 14 days old with 25 titles scanned. Each day's titles count against a viewing allowance (about 8 hours of runtime a day), long films arrive a part at a time at about playback speed, and times are rounded outward by a few seconds. The sync summary says how many titles were held back and why; they come on later syncs.
+
+**What your actions share.** Marking a segment a false positive is a vote that nothing is there; to stop skipping a kind of scene, lower the viewer's category level instead (nothing is shared). Deleting your own segment withdraws your support; a relabel is a label vote. Deleting a segment that came from Hayaa only hides it here, for good.
+
+**How shared segments are applied.** Nothing from Hayaa acts until it passes these checks:
+
+| Preset | Applies |
+|---|---|
+| Balanced (default) | Segments other users agree on; unconfirmed ones wait for a re-check on this server |
+| Cautious | Also unconfirmed segments; ignores segments the community rejected |
+| Verify first | Only what this server re-checked and found itself |
+
+Re-checks run in the scan window and look only at the shared segment's few seconds, with your own detectors and thresholds. Shared segments that only a detector found also have to pass your thresholds. A segment of yours the community rejected is hidden (low and medium severity) and listed under **Community false positives**, with Restore. Unconfirmed ones wait under **Waiting for review**: Keep applies one and vouches for it, Dismiss hides it for good. If this server's re-checks keep disagreeing with shared segments, the preset switches itself to Verify first and says so.
+
+Only titles made of a single file are synced.
 
 ## AI Agent (MCP) Endpoint
 

@@ -17,6 +17,7 @@ import cleanplex.plex_client as plex_mod
 from ... import database as db
 from ... import events
 from ... import frame_extractor
+from ... import hayaa_sync
 from ... import hover_previews
 from ... import plex_summary
 from ... import scanner as scan_mod
@@ -170,6 +171,7 @@ async def get_titles_in_library(library_id: str):
     seg_counts = await db.get_segment_counts_for_library(library_id)
     fp_counts = await db.get_false_positive_counts_for_library(library_id)
     cast = await db.get_cast_for_library(library_id)
+    photos = await db.get_actor_photos_for_library(library_id)
 
     try:
         client = plex_mod.get_client()
@@ -240,7 +242,11 @@ async def get_titles_in_library(library_id: str):
             "cast": cast.get(job["plex_guid"], []),
             "ignored": bool(job.get("ignored", 0)),
         })
-    return {"titles": result}
+    # Actor photos for the actor filter (#227), as /api/plex-image paths: Plex's photo transcoder
+    # fetches and shrinks the remote image, and the image proxy caches it and keeps the token server-side.
+    actor_photos = {a: "/photo/:/transcode?width=96&height=96&minSize=1&upscale=1&url=" + quote(t, safe="")
+                    for a, t in photos.items()}
+    return {"titles": result, "actor_photos": actor_photos}
 
 
 def _poster_disk_path(image_path: str) -> Path:
@@ -376,6 +382,7 @@ async def get_segments_batch(data: dict):
             "detector": seg.get("detector") or "",
             "false_positive": bool(seg.get("false_positive")),
             "auto_rejected": seg.get("false_positive") == db.FP_VERIFIER,
+            "community_rejected": seg.get("false_positive") == db.FP_COMMUNITY,
         })
     return Response(
         content=json.dumps({"segments": result}),
@@ -435,6 +442,7 @@ async def get_segments_for_title(plex_guid: str):
             "detector": seg.get("detector") or "",
             "false_positive": bool(seg.get("false_positive")),
             "auto_rejected": seg.get("false_positive") == db.FP_VERIFIER,
+            "community_rejected": seg.get("false_positive") == db.FP_COMMUNITY,
         })
     return Response(
         content=json.dumps({"segments": result}),
@@ -662,6 +670,7 @@ async def set_segment_false_positive(segment_id: int, body: FalsePositiveUpdate)
             frame_path = str(dest)
         await db.mark_segment_false_positive(segment_id, frame_path)
     else:
+        await hayaa_sync.on_false_positive_cleared(seg)
         for frame in await db.unmark_segment_false_positive(segment_id):
             Path(frame).unlink(missing_ok=True)
     _refresh_cleanplex_summary_for_guid(seg["plex_guid"])
@@ -719,6 +728,7 @@ async def delete_segment(segment_id: int):
     if not seg:
         raise HTTPException(status_code=404, detail="Segment not found")
 
+    await hayaa_sync.on_segment_deleted(seg)
     deleted = await segment_files.delete_segment(segment_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Segment not found")
@@ -732,6 +742,8 @@ async def delete_segment(segment_id: int):
 @router.delete("/titles/{plex_guid:path}/segments")
 async def delete_all_segments_for_title(plex_guid: str):
     """Delete all segments for a specific title."""
+    for seg in await db.get_segments_for_guid(plex_guid, include_false_positives=True):
+        await hayaa_sync.on_segment_deleted(seg)
     deleted = await segment_files.delete_segments_for_guid(plex_guid)
     _refresh_cleanplex_summary_for_guid(plex_guid)
     events.publish("segments_changed", guid=plex_guid)

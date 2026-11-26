@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { Zap, Moon } from 'lucide-react'
+import { useT } from '../i18n'
 
 export interface ScanTarget {
   x: number
@@ -29,6 +30,7 @@ interface Props {
 }
 
 export default function ScanContextMenu({ target, onScan, onClose }: Props) {
+  const { t } = useT()
   const ref = useRef<HTMLDivElement>(null)
 
   // Any click outside, Escape, scroll or resize dismisses the menu, like a native one.
@@ -63,7 +65,7 @@ export default function ScanContextMenu({ target, onScan, onClose }: Props) {
         onScan(target, now, whole)
         onClose()
       }}
-      className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-gray-300 hover:bg-white/10 hover:text-gray-100"
+      className="w-full flex items-center gap-2 px-3 py-1.5 text-start text-gray-300 hover:bg-white/10 hover:text-gray-100"
     >
       {icon}
       {text}
@@ -74,29 +76,55 @@ export default function ScanContextMenu({ target, onScan, onClose }: Props) {
     <div
       ref={ref}
       role="menu"
-      aria-label={`Rescan ${target.label}`}
+      aria-label={t('ctx_rescan_aria', { label: target.label })}
       style={{ left, top }}
       className="fixed z-50 w-48 bg-plex-card border border-plex-border rounded-lg shadow-xl py-1 text-xs"
     >
       <div className="px-3 py-1 text-muted truncate">
         {target.label}
-        {count > 1 ? ` · ${count} titles` : ''}
+        {count > 1 ? ` · ${t('unit_title', { count })}` : ''}
       </div>
       {count > 0 && (
         <>
-          {target.whole && <div className="px-3 pt-1 text-[10px] uppercase tracking-wide text-muted">Listed {target.whole.kind === 'library' ? 'titles' : 'episodes'} ({count})</div>}
-          {item(true, <Zap size={12} className="text-plex-orange" />, 'Rescan now')}
-          {item(false, <Moon size={12} className="text-blue-400" />, 'Rescan tonight')}
+          {target.whole && (
+            <div className="px-3 pt-1 text-[10px] uppercase tracking-wide text-muted">
+              {t(target.whole.kind === 'library' ? 'ctx_listed_titles' : 'ctx_listed_episodes', { count })}
+            </div>
+          )}
+          {item(true, <Zap size={12} className="text-plex-orange" />, t('ctx_rescan_now'))}
+          {item(false, <Moon size={12} className="text-blue-400" />, t('ctx_rescan_tonight'))}
         </>
       )}
       {target.whole && (
         <>
           <div className="px-3 pt-2 text-[10px] uppercase tracking-wide text-muted">
-            {target.whole.kind === 'library' ? 'Whole library, every title' : `Whole ${target.whole.kind}, every episode`}
+            {t(
+              target.whole.kind === 'library'
+                ? 'ctx_whole_library_header'
+                : target.whole.kind === 'show'
+                  ? 'ctx_whole_show_header'
+                  : 'ctx_whole_season_header',
+            )}
           </div>
           {/* A library is thousands of titles: only ever scheduled, never jumped to the front. */}
-          {target.whole.kind !== 'library' && item(true, <Zap size={12} className="text-plex-orange" />, `Rescan whole ${target.whole.kind} now`, true)}
-          {item(false, <Moon size={12} className="text-blue-400" />, `Rescan whole ${target.whole.kind} tonight`, true)}
+          {target.whole.kind !== 'library' && item(
+            true,
+            <Zap size={12} className="text-plex-orange" />,
+            t(target.whole.kind === 'show' ? 'ctx_rescan_whole_show_now' : 'ctx_rescan_whole_season_now'),
+            true,
+          )}
+          {item(
+            false,
+            <Moon size={12} className="text-blue-400" />,
+            t(
+              target.whole.kind === 'library'
+                ? 'ctx_rescan_whole_library_tonight'
+                : target.whole.kind === 'show'
+                  ? 'ctx_rescan_whole_show_tonight'
+                  : 'ctx_rescan_whole_season_tonight',
+            ),
+            true,
+          )}
         </>
       )}
     </div>

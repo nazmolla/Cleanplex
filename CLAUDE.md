@@ -42,7 +42,7 @@ Every change, whatever its size, follows these rules; the only exceptions are th
 | `scanner.py` | Frame extraction, NudeNet inference, segment writing, and the queue API (`enqueue`, `force_scan_job`, `rebuild_queue`, `sync_queue`) over the DB-backed scan queue |
 | `siglip_detector.py` | SigLIP zero-shot fallback for frames NudeNet did not flag — model download, prompts from `scan_labels`, scoring |
 | `verifier.py` | Feedback-trained false-positive filter (#165): trains a logistic head on SigLIP image embeddings of the frames users marked as false positives versus the thumbnails of kept segments, one model per detector family and label (`siglip:BUTTOCKS_EXPOSED`; a label without enough accepted and rejected examples has no model and is never rejected, #178), and judges a flagged cluster's peak frame at scan time. Only filters detections; never creates segments. A rejected cluster is stored with `segments.false_positive = 2` (`db.FP_VERIFIER`): inactive like a user mark (1), shown in the false-positive list, restorable, and excluded from accuracy rates and from training as a kept example |
-| `cast_sync.py` | Background job (#180): copies each movie's and show's cast from Plex (`PlexClient.get_cast`, chunked metadata requests) into `title_cast`; episodes use their show's cast. Drains unsynced titles in batches, re-syncs after 30 days, never runs inside the library pass |
+| `cast_sync.py` | Background job (#180): copies each movie's and show's cast from Plex (`PlexClient.get_cast`, chunked metadata requests) into `title_cast`, and each actor's photo URL into `actor_photos` (served through Plex's photo transcoder and `/api/plex-image`, #227); episodes use their show's cast. Drains unsynced titles in batches, re-syncs after 30 days, never runs inside the library pass |
 | `ort_runtime.py` | Shared onnxruntime session options: caps threads per inference session so scan workers do not oversubscribe the CPU. Every `InferenceSession` the scanner or SigLIP builds goes through it |
 | `stream_proxy.py` | The enforcement proxy (#132, #184), run by `main.py` on `CLEANPLEX_PROXY_PORT` behind the front door. For a filtered viewer and a title with segments their levels skip: refuses direct play, gets an HLS stream (video copied when the file's keyframes are indexed, else re-encoded), removes the overlapping segments from the playlist, re-times subtitles, maps progress back, records played cuts as skip events, and fails closed (403) on original files, downloads and non-HLS streams. Sessions persist in `proxy_sessions`. Only decisions, playlists, subtitles and progress reach it; nginx streams all bytes |
 | `frontdoor.py` | Front door (#184): extracts Plex's `plex.direct` certificate (cert-v2.p12, password SHA-512 of "plex"+ProcessedMachineIdentifier) per OS, renders the nginx config (TLS/plain split on one port, PROXY protocol, X-Forwarded-For only for public client addresses), and reloads nginx when Plex renews the certificate. Installed by `scripts/frontdoor/install.sh` (pf anchor `com.apple/cleanplex` on macOS, nftables on Linux) |
@@ -55,12 +55,14 @@ Every change, whatever its size, follows these rules; the only exceptions are th
 | `db_backup.py` | Daily `VACUUM INTO` backup to `~/.cleanplex/backups/` (newest 7 kept) and pruning of deploy-time `cleanplex.db.bak-*` copies (newest 3 kept) |
 | `hover_previews.py` | Job rendering each active segment's hover preview (small silent MP4) inside its own window (default 00:00–07:00); separate from the scanner, never part of a scan |
 | `subtitle_scanner.py` | Subtitle parsing and profanity matching — emits muted language segments |
-| `importers/` | Skip file parsers and exporters (`.skp`, `.edl`, `.mcf`, pasted lists). One module per format; all return the same normalized segment dict |
+| `importers/` | Skip file parsers (`.skp`, `.edl`, `.mcf`, pasted lists). One module per format; all return the same normalized segment dict. Import only: Cleanplex never exports segments (#226) |
 | `plex_client.py` | All Plex API calls — no `plexapi` imports elsewhere |
 | `filter_engine.py` | Playback position checks and seek decisions (live skipping). Stands down for streams the proxy edited (`db.is_proxied`); seeks to the widened segment end (#185) |
 | `watcher.py` | Polling loops only — no business logic. The library pass runs every 5 min and must look titles up in chunks, never per item. The session loop also runs the enforcement backstop (stops a filtered stream that bypassed the front door, only when `enforcement_enabled`) |
-| `sync.py` / `sync_merge.py` | GitHub sync and segment merge logic |
-| `bg_jobs.py` | Background job lifecycle — no domain logic |
+| `hayaa.py` | Client of the Hayaa segment service (#221): device-flow sign-in, refresh-token rotation, the Ed25519 instance key and request signing, content and release keys (pinned to Hayaa's own outputs by test vectors). Key and refresh token live in `<data dir>/hayaa/` (0600), never in the DB or an API response. Design: `docs/SYNC_SERVICE.md` |
+| `hayaa_sync.py` | Hayaa sync (#222): derives each synced title's observations from its segments, verdicts and verify results and diffs them against the sent-ledger (`hayaa_sent`); pushes, answers Hayaa's possession challenges from the file (`hayaa.proofs_for_file`), pulls changed views into `hayaa_claims` (Hayaa may hold titles back or release them a window at a time; partly released titles are re-pulled first), and applies them through the apply matrix (`decide`) with the user's `hayaa_overrides` first. Manual sync and the opt-in automatic loop, within the daily quotas |
+| `hayaa_verify.py` | Background job re-checking pulled claims locally inside the scan window (refinement sampler, claim ± 5 s, never grown); the false-positive model judges disputed claims |
+| `bg_jobs.py` | Background job records: stale-job recovery and status — no domain logic |
 | `events.py` | In-process event bus streamed to browsers by `GET /api/events` (SSE). Publish where a change happens; events name what changed, not the new state |
 | `web/routes/` | HTTP surface only — call domain modules, never raw DB |
 
@@ -258,11 +260,11 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 
 - **Categories come from the MovieContentFilter 1.1.0 vocabulary.** Never invent a category name; map onto an existing group or use `other`.
 - **Every segment carries `category`, `severity`, `action`, `channel` and `source`.** Importers set them from the file; the scanner uses its defaults.
-- **A detector segment's severity comes from its labels** via `severity_for_labels` / `LABEL_SEVERITY` in `importers/_common.py` (exposed genitalia and anus high, exposed breast and buttocks medium, everything else low). Never hardcode a scanner severity; imported segments keep the file's.
+- **A detector segment's severity comes from its labels** via `severity_for_labels` / `LABEL_SEVERITY` in `importers/_common.py` (exposed genitalia and female breast high; exposed buttocks, anus and belly medium; covered genitalia and female breast low; everything else minimal — #230). Never hardcode a scanner severity; imported segments keep the file's.
 - **Only `skip` and `mute` are executable.** Plex exposes playback position and volume, nothing else. `blank` and `blur` must be logged and ignored, never downgraded to a skip.
 - **Filtering is a threshold, not a boolean**: a segment fires when the user's category level plus its severity rank exceeds 3.
 - **A new parser goes in `importers/`** and must return normalized segment dicts through `validate_segment`. Never let a parser write to the database itself.
-- **Never redistribute third-party segment data.** Parse what a user supplies; do not bundle or mirror another project's catalogue.
+- **Never redistribute third-party segment data.** Parse what a user supplies; do not bundle or mirror another project's catalogue. Segments whose `source` is not the scanner, SigLIP or the subtitle scanner never reach Hayaa.
 
 ### 5.5 Scanner
 
@@ -296,13 +298,16 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 
 ### 5.7 Sync
 
-- **Sync is always manually triggered.** No background task or watcher may initiate a sync operation automatically.
-- **File hash cache is keyed by `(path, size, mtime)`.** Recompute SHA256 only when any of these change.
-- **Segment merge complexity must be sub-quadratic on practical inputs.** Use time-bucketed or sorted interval matching.
+- **Automatic sync is allowed** (opt-in). Shared segments are protected by Hayaa's consensus, holds and the client-side stage/verify/apply step, not by keeping sync manual. An automatic sync must respect the service's daily quotas and stop on 429/503 until its Retry-After, never retry in a loop.
+- **File identity caches are keyed by `(path, size, mtime)`.** Recompute a SHA-256 or Hayaa content key only when any of these change.
+- **Outgoing sync data is derived, never queued.** What an instance asserts comes from `hayaa_sync.desired_observations`; a new path that changes segments needs no sync hook. Only verdicts on pulled segments (deleting one, restoring a community false positive) are recorded, in `hayaa_overrides`, because the segment row is gone or changed.
+- **Pulled claims act only through the apply matrix.** Never insert a `source='hayaa'` segment outside `hayaa_sync.apply_titles`, and never let a pull overwrite a user verdict.
+- **Only the instance's own detections and verdicts are sent**: sources `scanner`, `siglip`, `subtitles` and the user's votes. Imported skip files never (§5.4), subtitle words never (severity only).
 
 ### 5.8 Security & Resource Hygiene
 
 - **Never return secrets from the API.** `GET /api/settings` masks `plex_token` (`plex_token_set` instead) and a blank token on save means unchanged; CORS is same-origin unless `CLEANPLEX_CORS_ORIGINS` is set.
+- **The Hayaa private key and refresh token never leave `<data dir>/hayaa/`**: not in the database (so not in backups), not in any API response, not in logs.
 - **Close async generators you stop iterating early.** Wrap ffmpeg frame streams in `contextlib.aclosing` so a pause, skip or error closes them at once instead of at shutdown.
 
 
@@ -326,8 +331,7 @@ These rules are invariants. Breaking them requires an explicit discussion issue 
 tests/
 ├── unit/
 │   ├── test_database.py       # DB helpers — real in-memory SQLite
-│   ├── test_sync_merge.py     # SegmentMerger logic
-│   ├── test_filter_engine.py  # FilterEngine seek decisions
+│   │   ├── test_filter_engine.py  # FilterEngine seek decisions
 │   └── test_plex_client.py    # PlexClient (httpx mocked)
 ├── integration/
 │   ├── test_routes_segments.py
@@ -342,7 +346,7 @@ tests/
 |---|---|
 | New `database.py` function | Unit test: happy path + empty/missing input |
 | New route handler | Integration test: happy path + 404/422 error cases |
-| New sync / merge logic | Unit test: correctness + edge cases (empty, single source, conflict) |
+| New sync logic | Unit test: correctness + edge cases (empty, single source, conflict); end to end against Hayaa's dev server |
 | Bug fix | Regression test that fails before the fix and passes after |
 | Performance optimisation | Before/after assertion (row count, call count, or timing) |
 | New filter / skip logic | Unit test covering the boundary conditions |

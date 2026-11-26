@@ -14,13 +14,22 @@ PAUSE_BETWEEN_S = 5    # between rounds, so a first sync of a large library does
 IDLE_S = 600           # nothing left to sync: look again for new titles after this long
 
 
+PHOTOS_MARK = "cast_photos_v1"  # set once every title was queued again to pick up actor photos (#227)
+
+
 async def sync_cast_once(get_client_fn) -> int:
-    """Sync one batch of titles; return how many were stored (0 means nothing was left)."""
+    """Sync one batch of titles with their actors' photos; return how many were stored (0: nothing left)."""
+    if await db.get_setting(PHOTOS_MARK, "") != "1":
+        # Casts synced before photos were kept have none; fetch every title once more.
+        await db.reset_cast_synced()
+        await db.set_setting(PHOTOS_MARK, "1")
     keys = await db.get_cast_keys_to_sync(BATCH)
     if not keys:
         return 0
-    cast = await get_client_fn().get_cast(keys)
+    photos: dict[str, str] = {}
+    cast = await get_client_fn().get_cast(keys, photos=photos)
     await db.replace_cast(cast)
+    await db.put_actor_photos(photos)
     return len(cast)
 
 

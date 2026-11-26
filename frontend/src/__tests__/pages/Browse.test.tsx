@@ -70,7 +70,7 @@ beforeEach(() => {
   mockApi.get.mockImplementation((path: string) => {
     if (path.includes('scanner-status')) return Promise.resolve(scanner)
     if (path === '/api/libraries') return Promise.resolve({ libraries })
-    if (path === '/api/libraries/lib1/titles') return Promise.resolve({ titles: movieList })
+    if (path === '/api/libraries/lib1/titles') return Promise.resolve({ titles: movieList, actor_photos: { 'Ann Actor': '/photo/ann' } })
     if (path === '/api/libraries/lib2/titles') return Promise.resolve({ titles: episodes })
     if (path === '/api/settings') return Promise.resolve(settings)
     if (path.startsWith('/api/markers/libraries/')) return Promise.resolve({ titles: [{ ...movies[0], marker_count: 2 }], cached: true })
@@ -167,16 +167,22 @@ describe('Browse search and filters (#207, #208)', () => {
     expect(rowNames()).toEqual(['Movie B'])
   })
 
-  it('filters by actor and shows the filter as a removable chip', async () => {
+  it('filters by actors picked from a searchable list with photos (#227)', async () => {
     renderAt('/browse?lib=lib1')
     await screen.findByText('Movie A')
     openFilters()
-    fireEvent.change(screen.getByLabelText('Filter by actor'), { target: { value: 'ann' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Filter by actor/ }))
+    fireEvent.change(screen.getByLabelText('Search actors'), { target: { value: 'ann' } })
+    const option = screen.getByRole('option', { name: /Ann Actor/ })
+    expect(option.querySelector('img')?.getAttribute('src')).toBe('/api/plex-image?path=%2Fphoto%2Fann')
+    fireEvent.click(within(option).getByRole('button'))
+    expect(option).toHaveAttribute('aria-selected', 'true')
     expect(rowNames()).toEqual(['Movie A'])
     expect(screen.getByRole('button', { name: /^Filters/ })).toHaveTextContent('1')
 
+    fireEvent.keyDown(document, { key: 'Escape' })
     openFilters()
-    fireEvent.click(screen.getByRole('button', { name: 'Remove filter Actor: ann' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove filter Actor: Ann Actor' }))
     expect(rowNames()).toHaveLength(3)
   })
 
@@ -369,7 +375,7 @@ describe('Browse segments view (#207, #208)', () => {
     renderAt('/browse?title=g1')
     await screen.findByText('2 segments')
     expect(screen.queryByText('Paste list')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Import or export skip files' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Import skip files' }))
     expect(screen.getByText('Paste list')).toBeInTheDocument()
   })
 })

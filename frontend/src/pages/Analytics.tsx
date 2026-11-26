@@ -17,6 +17,8 @@ import { toast } from '../components/Toast'
 import CollapsibleSection from '../components/CollapsibleSection'
 import SegmentCard from '../components/browse/SegmentCard'
 import type { Segment as CardSegment } from '../components/browse/model'
+import { useT, type TranslationKey } from '../i18n'
+import { shortLabel } from '../utils/labels'
 
 interface LabelCount {
   label: string
@@ -59,16 +61,16 @@ const PAGE_SIZE = 50
 
 // Tabs, selected by ?tab= so each one can be linked like a sub-page (#117).
 const TABS = [
-  { id: 'detections', label: 'Detections' },
-  { id: 'skips', label: 'Skips' },
-  { id: 'accuracy', label: 'Accuracy' },
-  { id: 'false-positives', label: 'False positives' },
+  { id: 'detections', labelKey: 'analytics_tab_detections' },
+  { id: 'skips', labelKey: 'analytics_tab_skips' },
+  { id: 'accuracy', labelKey: 'analytics_tab_accuracy' },
+  { id: 'false-positives', labelKey: 'analytics_tab_fps' },
 ] as const
 type TabId = typeof TABS[number]['id']
 
-function formatMarkedAt(v: string): string {
+function formatMarkedAt(v: string, formatDate: (d: Date) => string): string {
   const d = parseDbTimestamp(v)
-  return isNaN(d.getTime()) ? v : d.toLocaleDateString()
+  return isNaN(d.getTime()) ? v : formatDate(d)
 }
 
 function msToTimecode(ms: number): string {
@@ -77,17 +79,6 @@ function msToTimecode(ms: number): string {
   const m = Math.floor((s % 3600) / 60)
   const sec = s % 60
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
-}
-
-function shortLabel(label: string): string {
-  return label
-    .replace('_EXPOSED', '')
-    .replace('FEMALE_', 'F ')
-    .replace('MALE_', 'M ')
-    .replace('GENITALIA', 'Gen.')
-    .replace('BREAST', 'Breast')
-    .replace(/_/g, ' ')
-    .trim()
 }
 
 // Pure-CSS horizontal bar chart
@@ -104,13 +95,15 @@ function BarChart({
   onBarClick?: (key: string) => void
   colorClass?: string
 }) {
-  if (!data.length) return <p className="text-muted text-sm">No data</p>
+  const { t } = useT()
+  if (!data.length) return <p className="text-muted text-sm">{t('analytics_no_data')}</p>
 
   return (
     <div className="space-y-2">
       {data.map(({ key, count, label }) => {
         const pct = maxVal > 0 ? (count / maxVal) * 100 : 0
         const isSelected = selectedBar === key
+        const displayLabel = label ?? shortLabel(key, t)
         // A clickable row is a real button so it can be reached and pressed from the keyboard.
         const Row = onBarClick ? 'button' : 'div'
         return (
@@ -119,16 +112,16 @@ function BarChart({
             {...(onBarClick ? {
               type: 'button' as const,
               'aria-pressed': isSelected,
-              'aria-label': `${label ?? shortLabel(key)}, ${count} segments: show by rating`,
+              'aria-label': t('analytics_bar_aria', { label: displayLabel, count }),
               onClick: () => onBarClick(key),
             } : {})}
-            className={`w-full text-left flex items-center gap-3 rounded-lg px-3 py-1.5 transition-colors ${
+            className={`w-full text-start flex items-center gap-3 rounded-lg px-3 py-1.5 transition-colors ${
               onBarClick ? 'hover:bg-white/5' : ''
             } ${isSelected ? 'bg-plex-orange/10 ring-1 ring-plex-orange/30' : ''}`}
           >
             {/* The label column gives way on a narrow screen so the bar keeps some width. */}
             <div className="w-24 sm:w-44 flex-shrink-0 text-xs text-gray-300 truncate" title={label ?? key}>
-              {label ?? shortLabel(key)}
+              {displayLabel}
             </div>
             <div className="flex-1 h-2.5 bg-plex-border rounded-full overflow-hidden">
               <div
@@ -136,7 +129,7 @@ function BarChart({
                 style={{ width: `${pct}%` }}
               />
             </div>
-            <div className="w-10 text-right text-xs text-gray-400 flex-shrink-0 tabular-nums">{count}</div>
+            <div className="w-10 text-end text-xs text-gray-400 flex-shrink-0 tabular-nums">{count}</div>
           </Row>
         )
       })}
@@ -147,13 +140,18 @@ function BarChart({
 type SortKey = 'score' | 'added' | 'marked'
 interface SortSpec { sort: SortKey; order: 'asc' | 'desc' }
 
-const SORT_LABELS: Record<SortKey, string> = { score: 'Score', added: 'Date added', marked: 'Date marked' }
+const SORT_LABELS: Record<SortKey, TranslationKey> = {
+  score: 'analytics_sort_score',
+  added: 'analytics_sort_added',
+  marked: 'analytics_sort_marked',
+}
 
 // Sort picker for a segment list: the key, plus a button flipping ascending/descending.
 type Layout = 'list' | 'gallery'
 
 /** List or gallery (large frames, #208) for the segment lists; the choice is remembered per browser. */
 function LayoutToggle({ value, onChange }: { value: Layout; onChange: (next: Layout) => void }) {
+  const { t } = useT()
   const btn = (id: Layout, label: string, Icon: typeof List) => (
     <button
       type="button"
@@ -168,8 +166,8 @@ function LayoutToggle({ value, onChange }: { value: Layout; onChange: (next: Lay
   )
   return (
     <div className="flex p-0.5 gap-0.5 rounded-lg bg-black/25 border border-plex-border">
-      {btn('list', 'Show as a list', List)}
-      {btn('gallery', 'Show as a gallery', LayoutGrid)}
+      {btn('list', t('analytics_layout_list'), List)}
+      {btn('gallery', t('analytics_layout_gallery'), LayoutGrid)}
     </div>
   )
 }
@@ -179,22 +177,23 @@ function SortControl({ value, options, onChange }: {
   options: SortKey[]
   onChange: (next: SortSpec) => void
 }) {
+  const { t } = useT()
   return (
     <div className="flex items-center gap-1.5 text-xs text-gray-400">
-      <label htmlFor="segment-sort" className="sr-only">Sort by</label>
+      <label htmlFor="segment-sort" className="sr-only">{t('analytics_sort_by')}</label>
       <select
         id="segment-sort"
         value={value.sort}
         onChange={e => onChange({ ...value, sort: e.target.value as SortKey })}
         className="bg-plex-card border border-plex-border rounded px-2 py-1 text-gray-200"
       >
-        {options.map(k => <option key={k} value={k}>{SORT_LABELS[k]}</option>)}
+        {options.map(k => <option key={k} value={k}>{t(SORT_LABELS[k])}</option>)}
       </select>
       <button
         type="button"
         onClick={() => onChange({ ...value, order: value.order === 'desc' ? 'asc' : 'desc' })}
-        aria-label={value.order === 'desc' ? 'Sort descending' : 'Sort ascending'}
-        title={value.order === 'desc' ? 'Highest / newest first' : 'Lowest / oldest first'}
+        aria-label={value.order === 'desc' ? t('analytics_sort_desc') : t('analytics_sort_asc')}
+        title={value.order === 'desc' ? t('analytics_sort_desc_title') : t('analytics_sort_asc_title')}
         className="px-2 py-1 rounded border border-plex-border text-gray-200 hover:bg-plex-card"
       >
         {value.order === 'desc' ? '↓' : '↑'}
@@ -209,24 +208,26 @@ function Pager({ page, totalPages, onPage, compact = false }: {
   onPage: (p: number) => void
   compact?: boolean
 }) {
+  const { t } = useT()
   if (totalPages <= 1) return null
   const btn = compact
     ? 'p-1 rounded hover:bg-white/5 disabled:opacity-40'
     : 'flex items-center gap-1 px-3 py-1.5 bg-plex-card border border-plex-border rounded-lg hover:text-white hover:border-gray-500 disabled:opacity-40 transition-colors'
   return (
     <div className={`flex items-center text-xs text-gray-400 ${compact ? "gap-2" : "gap-3 justify-center mt-4"}`}>
-      <button onClick={() => onPage(Math.max(0, page - 1))} disabled={page === 0} className={btn} aria-label="Previous page">
-        <ChevronLeft size={compact ? 14 : 13} />{!compact && ' Prev'}
+      <button onClick={() => onPage(Math.max(0, page - 1))} disabled={page === 0} className={btn} aria-label={t('analytics_prev_aria')}>
+        <ChevronLeft size={compact ? 14 : 13} className="rtl:-scale-x-100" />{!compact && <> {t('analytics_prev')}</>}
       </button>
       <span>{page + 1} / {totalPages}</span>
-      <button onClick={() => onPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1} className={btn} aria-label="Next page">
-        {!compact && 'Next '}<ChevronRight size={compact ? 14 : 13} />
+      <button onClick={() => onPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1} className={btn} aria-label={t('analytics_next_aria')}>
+        {!compact && <>{t('analytics_next')} </>}<ChevronRight size={compact ? 14 : 13} className="rtl:-scale-x-100" />
       </button>
     </div>
   )
 }
 
 export default function Analytics() {
+  const { t, formatDate } = useT()
   const [params, setParams] = useSearchParams()
   const tab: TabId = TABS.some(t => t.id === params.get('tab')) ? (params.get('tab') as TabId) : 'detections'
   const selectTab = (id: TabId) => setParams(id === 'detections' ? {} : { tab: id }, { replace: true })
@@ -424,10 +425,10 @@ export default function Analytics() {
         `/api/segments/${seg.id}/jump`
       )
       if (d.ok) {
-        toast.success(`Jumped to ${msToTimecode(d.seek_to_ms)} on ${d.client} (${d.user}).`)
+        toast.success(t('analytics_jump_success', { time: msToTimecode(d.seek_to_ms), client: d.client, user: d.user }))
       }
     } catch (err: any) {
-      toast.error(err?.message || 'Could not jump to this segment. Start the title in Plex first.')
+      toast.error(err?.message || t('analytics_jump_error'))
     } finally {
       setJumpingSegs(j => ({ ...j, [seg.id]: false }))
     }
@@ -454,7 +455,7 @@ export default function Analytics() {
           caption={
             <span title={seg.title}>
               {seg.title}
-              {seg.marked_at && <span className="ml-2 text-xs text-amber-300/80">Marked {formatMarkedAt(seg.marked_at)}</span>}
+              {seg.marked_at && <span className="ms-2 text-xs text-amber-300/80">{t('analytics_marked_at', { date: formatMarkedAt(seg.marked_at, formatDate) })}</span>}
             </span>
           }
           onPreview={() => setPreviewSeg(seg)}
@@ -491,7 +492,7 @@ export default function Analytics() {
                     {seg.has_thumbnail ? (
                       <img
                         src={seg.thumbnail_url}
-                        alt="Flagged frame"
+                        alt={t('analytics_flagged_frame')}
                         loading="lazy"
                         className="w-full object-cover"
                         style={{ height: '100px' }}
@@ -501,7 +502,7 @@ export default function Analytics() {
                         <AlertTriangle size={18} />
                       </div>
                     )}
-                    <div className="absolute bottom-0.5 left-0.5 bg-black/70 text-[10px] text-gray-300 px-1 py-0.5 rounded">
+                    <div className="absolute bottom-0.5 start-0.5 bg-black/70 text-[10px] text-gray-300 px-1 py-0.5 rounded">
                       {Math.round(seg.confidence * 100)}%
                     </div>
                     <ThumbnailTime ms={seg.thumbnail_ms} />
@@ -514,11 +515,11 @@ export default function Analytics() {
                         {seg.title}
                       </p>
                       <div className="flex flex-wrap items-center gap-2 mt-1">
-                        <span className="font-mono text-xs text-plex-orange">
+                        <span className="font-mono text-xs text-plex-orange" dir="ltr">
                           {msToTimecode(seg.start_ms)} → {msToTimecode(seg.end_ms)}
                         </span>
                         <span className="text-xs text-muted">
-                          ({Math.round((seg.end_ms - seg.start_ms) / 1000)}s)
+                          ({t('common_seconds_short', { count: Math.round((seg.end_ms - seg.start_ms) / 1000) })})
                         </span>
                         {seg.false_positive && <FalsePositiveTag autoRejected={seg.auto_rejected} />}
                         {seg.content_rating && (
@@ -528,25 +529,25 @@ export default function Analytics() {
                         )}
                         <SegmentOriginBadge seg={seg} />
                         {seg.marked_at && (
-                          <span className="text-xs text-amber-300/80">Marked {formatMarkedAt(seg.marked_at)}</span>
+                          <span className="text-xs text-amber-300/80">{t('analytics_marked_at', { date: formatMarkedAt(seg.marked_at, formatDate) })}</span>
                         )}
                       </div>
                       {/* Label chips */}
                       {seg.labels && (
                         <div className="flex flex-wrap gap-1 mt-1.5">
                           {seg.labels.split(',').filter(l => l.trim()).map(l => {
-                            const t = l.trim()
-                            const isActive = selectedLabels.includes(t)
+                            const label = l.trim()
+                            const isActive = selectedLabels.includes(label)
                             return (
                               <span
-                                key={t}
+                                key={label}
                                 className={`text-[10px] px-1.5 py-0.5 rounded border ${
                                   isActive
                                     ? 'bg-plex-orange/20 border-plex-orange/40 text-plex-orange'
                                     : 'bg-red-500/10 border-red-500/20 text-red-300'
                                 }`}
                               >
-                                {shortLabel(t)}
+                                {shortLabel(label, t)}
                               </span>
                             )
                           })}
@@ -556,7 +557,7 @@ export default function Analytics() {
                     <div className="flex items-center gap-1 mt-2">
                       <button
                         onClick={() => setPreviewSeg(seg)}
-                        title="Preview segment"
+                        title={t('analytics_preview_seg')}
                         className="p-1.5 text-gray-400 hover:text-green-400 hover:bg-green-400/10 rounded transition-colors"
                       >
                         <Play size={14} />
@@ -564,7 +565,7 @@ export default function Analytics() {
                       <button
                         onClick={() => jumpSeg(seg)}
                         disabled={jumpingSegs[seg.id]}
-                        title="Jump active Plex playback to this segment"
+                        title={t('analytics_jump_seg')}
                         className="p-1.5 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors disabled:opacity-40"
                       >
                         <SkipForward size={14} />
@@ -577,7 +578,7 @@ export default function Analytics() {
                       <button
                         onClick={() => deleteSeg(seg)}
                         disabled={deletingSegs[seg.id]}
-                        title="Delete this segment"
+                        title={t('analytics_delete_seg')}
                         className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors disabled:opacity-40"
                       >
                         <Trash2 size={14} />
@@ -593,32 +594,32 @@ export default function Analytics() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-gray-100">Analytics</h1>
+      <h1 className="text-2xl font-bold text-gray-100">{t('analytics_title')}</h1>
 
       {/* Tabs (#117) */}
-      <div role="tablist" aria-label="Analytics sections" className="flex gap-1 border-b border-plex-border overflow-x-auto">
-        {TABS.map(t => (
+      <div role="tablist" aria-label={t('analytics_tabs_aria')} className="flex gap-1 border-b border-plex-border overflow-x-auto">
+        {TABS.map(tabItem => (
           <button
-            key={t.id}
+            key={tabItem.id}
             role="tab"
-            aria-selected={tab === t.id}
-            onClick={() => selectTab(t.id)}
+            aria-selected={tab === tabItem.id}
+            onClick={() => selectTab(tabItem.id)}
             className={`px-4 py-2 text-sm whitespace-nowrap border-b-2 -mb-px transition-colors ${
-              tab === t.id
+              tab === tabItem.id
                 ? 'border-plex-orange text-plex-orange font-medium'
                 : 'border-transparent text-gray-400 hover:text-gray-200'
             }`}
           >
-            {t.label}
+            {t(tabItem.labelKey)}
           </button>
         ))}
       </div>
 
       {tab === 'detections' && (
         <>
-          <CollapsibleSection id="analytics.labels" title="Segments by label" hint="click a bar to drill down or add to filter">
+          <CollapsibleSection id="analytics.labels" title={t('analytics_sec_labels')} hint={t('analytics_sec_labels_hint')}>
             {loadingLabels ? (
-              <p className="text-muted text-sm">Loading…</p>
+              <p className="text-muted text-sm">{t('common_loading')}</p>
             ) : (
               <BarChart
                 data={labelCounts.map(lc => ({ key: lc.label, count: lc.count }))}
@@ -634,21 +635,22 @@ export default function Analytics() {
             <section className="bg-plex-card border border-plex-orange/30 rounded-xl p-4">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-sm font-semibold text-gray-300">
-                  <span className="text-plex-orange">{shortLabel(drillLabel)}</span>
-                  <span className="text-muted font-normal ml-2">— by content rating</span>
+                  <span className="text-plex-orange">{shortLabel(drillLabel, t)}</span>
+                  <span className="text-muted font-normal ms-2">{t('analytics_by_rating')}</span>
                 </h2>
                 <button
                   onClick={() => setDrillLabel(null)}
+                  aria-label={t('common_close')}
                   className="p-1 text-gray-400 hover:text-gray-300 rounded transition-colors"
                 >
                   <X size={14} />
                 </button>
               </div>
               {loadingRatings ? (
-                <p className="text-muted text-sm">Loading…</p>
+                <p className="text-muted text-sm">{t('common_loading')}</p>
               ) : (
                 <BarChart
-                  data={ratingCounts.map(rc => ({ key: rc.content_rating, count: rc.count, label: rc.content_rating || 'Unrated' }))}
+                  data={ratingCounts.map(rc => ({ key: rc.content_rating, count: rc.count, label: rc.content_rating || t('analytics_unrated') }))}
                   maxVal={maxRatingCount}
                   colorClass="bg-blue-500"
                 />
@@ -657,7 +659,7 @@ export default function Analytics() {
           )}
 
 
-          <CollapsibleSection id="analytics.filter" title="Filter by label">
+          <CollapsibleSection id="analytics.filter" title={t('analytics_sec_filter')}>
             <div className="flex flex-wrap gap-2">
               {labelCounts.map(lc => {
                 const active = selectedLabels.includes(lc.label)
@@ -671,7 +673,7 @@ export default function Analytics() {
                         : 'bg-plex-darker border-plex-border text-gray-400 hover:text-gray-200 hover:border-gray-500'
                     }`}
                   >
-                    {shortLabel(lc.label)}
+                    {shortLabel(lc.label, t)}
                     <span className={`tabular-nums ${active ? 'text-plex-orange/70' : 'text-muted'}`}>
                       {lc.count}
                     </span>
@@ -685,7 +687,7 @@ export default function Analytics() {
                 onClick={() => setSelectedLabels([])}
                 className="mt-2 text-xs text-gray-400 hover:text-gray-300 transition-colors"
               >
-                Clear all
+                {t('common_clear_all')}
               </button>
             )}
           </CollapsibleSection>
@@ -695,10 +697,10 @@ export default function Analytics() {
             <section>
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
-                  Segments
+                  {t('analytics_segments_heading')}
                   {!loadingSegments && (
-                    <span className="ml-2 text-muted normal-case font-normal">
-                      {totalSegments} total
+                    <span className="ms-2 text-muted normal-case font-normal">
+                      {t('analytics_total_count', { count: totalSegments })}
                     </span>
                   )}
                 </h2>
@@ -710,9 +712,9 @@ export default function Analytics() {
               </div>
 
               {loadingSegments ? (
-                <p className="text-muted text-sm">Loading…</p>
+                <p className="text-muted text-sm">{t('common_loading')}</p>
               ) : segments.length === 0 ? (
-                <p className="text-muted text-sm">No segments found for the selected labels.</p>
+                <p className="text-muted text-sm">{t('analytics_no_segs_for_labels')}</p>
               ) : (
                 layout === 'gallery' ? renderGallery(segments) : (
                   <div className="space-y-2">
@@ -731,7 +733,7 @@ export default function Analytics() {
       {tab === 'skips' && <SkipAnalytics />}
 
       {tab === 'accuracy' && (
-        <CollapsibleSection id="analytics.accuracy" title="Detection accuracy" hint="false-positive rate per detector and label">
+        <CollapsibleSection id="analytics.accuracy" title={t('analytics_sec_accuracy')} hint={t('analytics_sec_accuracy_hint')}>
           <DetectionAccuracy />
         </CollapsibleSection>
       )}
@@ -740,21 +742,19 @@ export default function Analytics() {
           <section>
             <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
               <p className="text-xs text-muted min-w-0 flex-1 basis-64">
-                Segments marked as not containing what they claim, by you or by the verifier. They no longer skip or
-                mute and are left out of counts and sync; undo a mark, or restore a verifier rejection that was wrong,
-                to make the segment act again.
-                {!loadingFp && <span className="ml-2 text-muted">{fpTotal} total</span>}
+                {t('analytics_fp_desc')}
+                {!loadingFp && <span className="ms-2 text-muted">{t('analytics_total_count', { count: fpTotal })}</span>}
               </p>
               <div className="flex items-center gap-3 shrink-0">
                 <select
                   value={fpKind}
                   onChange={e => { setFpKind(e.target.value as typeof fpKind); setFpPage(0) }}
-                  aria-label="Show"
+                  aria-label={t('analytics_fp_show_aria')}
                   className="bg-plex-card border border-plex-border rounded-lg px-2 py-1.5 text-xs text-gray-300"
                 >
-                  <option value="all">All ({fpCounts.marked + fpCounts.verifier})</option>
-                  <option value="marked">Flagged by you ({fpCounts.marked})</option>
-                  <option value="verifier">Rejected by the verifier ({fpCounts.verifier})</option>
+                  <option value="all">{t('analytics_fp_all', { count: fpCounts.marked + fpCounts.verifier })}</option>
+                  <option value="marked">{t('analytics_fp_marked', { count: fpCounts.marked })}</option>
+                  <option value="verifier">{t('analytics_fp_verifier', { count: fpCounts.verifier })}</option>
                 </select>
                 <LayoutToggle value={layout} onChange={setLayout} />
                 <SortControl value={fpSort} options={['marked', 'score', 'added']} onChange={next => { setFpSort(next); setFpPage(0) }} />
@@ -762,9 +762,9 @@ export default function Analytics() {
               </div>
             </div>
             {loadingFp ? (
-              <p className="text-muted text-sm">Loading…</p>
+              <p className="text-muted text-sm">{t('common_loading')}</p>
             ) : fpSegments.length === 0 ? (
-              <p className="text-muted text-sm">No false positives marked yet.</p>
+              <p className="text-muted text-sm">{t('analytics_fp_empty')}</p>
             ) : (
               layout === 'gallery' ? renderGallery(fpSegments) : (
                 <div className="space-y-2">
@@ -780,7 +780,7 @@ export default function Analytics() {
       {previewSeg && (
         <Modal
           title={previewSeg.title}
-          subtitle={<>{msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)}</>}
+          subtitle={<span dir="ltr">{msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)}</span>}
           size="xl"
           onClose={() => setPreviewSeg(null)}
         >

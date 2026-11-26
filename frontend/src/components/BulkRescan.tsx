@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
+import { useT } from '../i18n'
 
 type Scope = 'outdated' | 'with_segments' | 'all_scanned' | 'scanned_before' | 'failed'
 
@@ -16,12 +17,12 @@ interface Counts {
   ignored_cleared?: number
 }
 
-const SCOPES: { id: Scope; label: string; hint: string }[] = [
-  { id: 'outdated', label: 'Scanned by an older scanner', hint: 'Best after an update: only titles whose scan predates the current detector.' },
-  { id: 'with_segments', label: 'Titles that have segments', hint: 'Re-checks what was found; titles with nothing found are left alone.' },
-  { id: 'all_scanned', label: 'Every scanned title', hint: 'The whole library again.' },
-  { id: 'scanned_before', label: 'Scanned before a date', hint: 'Titles whose last scan finished before this day (UTC).' },
-  { id: 'failed', label: 'Titles whose scan failed', hint: 'Retries them, and takes ignored titles off the Failed list.' },
+const SCOPES: { id: Scope; labelKey: 'rescan_scope_outdated' | 'rescan_scope_with_segments' | 'rescan_scope_all_scanned' | 'rescan_scope_scanned_before' | 'rescan_scope_failed'; hintKey: 'rescan_scope_outdated_hint' | 'rescan_scope_with_segments_hint' | 'rescan_scope_all_scanned_hint' | 'rescan_scope_scanned_before_hint' | 'rescan_scope_failed_hint' }[] = [
+  { id: 'outdated', labelKey: 'rescan_scope_outdated', hintKey: 'rescan_scope_outdated_hint' },
+  { id: 'with_segments', labelKey: 'rescan_scope_with_segments', hintKey: 'rescan_scope_with_segments_hint' },
+  { id: 'all_scanned', labelKey: 'rescan_scope_all_scanned', hintKey: 'rescan_scope_all_scanned_hint' },
+  { id: 'scanned_before', labelKey: 'rescan_scope_scanned_before', hintKey: 'rescan_scope_scanned_before_hint' },
+  { id: 'failed', labelKey: 'rescan_scope_failed', hintKey: 'rescan_scope_failed_hint' },
 ]
 
 /**
@@ -30,6 +31,7 @@ const SCOPES: { id: Scope; label: string; hint: string }[] = [
  * asked to scan now. A live count shows exactly what will be queued before anything is.
  */
 export default function BulkRescan({ libraries }: { libraries: Library[] }) {
+  const { t } = useT()
   const [scope, setScope] = useState<Scope>('outdated')
   const [libraryId, setLibraryId] = useState('')
   const [before, setBefore] = useState('')
@@ -56,7 +58,7 @@ export default function BulkRescan({ libraries }: { libraries: Library[] }) {
     const mine = ++seq.current
     api.post<Counts>('/api/scan/rescan', body(true))
       .then(c => { if (mine === seq.current) setCounts(c) })
-      .catch(() => { if (mine === seq.current) setMessage('Could not count the titles.') })
+      .catch(() => { if (mine === seq.current) setMessage(t('rescan_count_error')) })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, libraryId, before])
 
@@ -65,10 +67,10 @@ export default function BulkRescan({ libraries }: { libraries: Library[] }) {
     setMessage('')
     try {
       const r = await api.post<Counts>('/api/scan/rescan', body(false))
-      setMessage(`${r.queued} title${r.queued === 1 ? '' : 's'} queued for the scan window.`)
+      setMessage(t('rescan_queued_done', { titles: t('unit_title', { count: r.queued }) }))
       setCounts({ matched: 0, queued: 0, skipped_ineligible: 0 })
     } catch (err: any) {
-      setMessage(`Could not queue the rescan: ${err.message || 'unknown error'}`)
+      setMessage(t('rescan_queue_error', { error: err.message || t('common_unknown_error_lower') }))
     } finally {
       setBusy(false)
       setConfirming(false)
@@ -78,14 +80,14 @@ export default function BulkRescan({ libraries }: { libraries: Library[] }) {
   return (
     <div>
       <fieldset className="space-y-2 mb-4">
-        <legend className="sr-only">Which titles</legend>
+        <legend className="sr-only">{t('rescan_legend')}</legend>
         {SCOPES.map(s => (
           <label key={s.id} className="flex items-start gap-3 cursor-pointer">
             <input type="radio" name="rescan-scope" checked={scope === s.id} onChange={() => setScope(s.id)}
               className="mt-1 accent-plex-orange" />
             <span>
-              <span className="text-sm text-gray-300">{s.label}</span>
-              <span className="block text-xs text-muted">{s.hint}</span>
+              <span className="text-sm text-gray-300">{t(s.labelKey)}</span>
+              <span className="block text-xs text-muted">{t(s.hintKey)}</span>
             </span>
           </label>
         ))}
@@ -93,41 +95,41 @@ export default function BulkRescan({ libraries }: { libraries: Library[] }) {
       <div className="flex flex-wrap items-end gap-4 mb-4">
         {scope === 'scanned_before' && (
           <label className="text-xs text-gray-400">
-            Before
+            {t('rescan_before')}
             <input type="date" value={before} onChange={e => setBefore(e.target.value)}
               className="block mt-1 bg-plex-card border border-plex-border rounded px-2 py-1 text-sm text-gray-100" />
           </label>
         )}
         <label className="text-xs text-gray-400">
-          Library
-          <select value={libraryId} onChange={e => setLibraryId(e.target.value)} aria-label="Library"
+          {t('rescan_library')}
+          <select value={libraryId} onChange={e => setLibraryId(e.target.value)} aria-label={t('rescan_library')}
             className="block mt-1 bg-plex-card border border-plex-border rounded px-2 py-1 text-sm text-gray-100">
-            <option value="">All libraries</option>
+            <option value="">{t('rescan_all_libraries')}</option>
             {libraries.map(l => <option key={l.id} value={l.id}>{l.title}</option>)}
           </select>
         </label>
       </div>
       <p className="text-sm text-gray-300 mb-3" aria-live="polite">
-        {!ready ? 'Pick a date.' : counts === null ? 'Counting…' : (
+        {!ready ? t('rescan_pick_date') : counts === null ? t('rescan_counting') : (
           <>
-            {counts.queued} title{counts.queued === 1 ? '' : 's'} will be queued
+            {t('rescan_will_queue', { titles: t('unit_title', { count: counts.queued }) })}
             {counts.skipped_ineligible > 0 && (
-              <span className="text-muted"> · {counts.skipped_ineligible} skipped by your rating filters or excluded libraries</span>
+              <span className="text-muted"> {t('rescan_skipped_ineligible', { count: counts.skipped_ineligible })}</span>
             )}
             {!!counts.skipped_missing_file && (
-              <span className="text-muted"> · {counts.skipped_missing_file} left failed because the media file is still missing</span>
+              <span className="text-muted"> {t('rescan_skipped_missing', { count: counts.skipped_missing_file })}</span>
             )}
             {!!counts.ignored_cleared && (
-              <span className="text-muted"> · {counts.ignored_cleared} ignored title{counts.ignored_cleared === 1 ? '' : 's'} cleared from the Failed list</span>
+              <span className="text-muted"> {t('rescan_ignored_cleared', { titles: t('unit_ignored_title', { count: counts.ignored_cleared }) })}</span>
             )}
           </>
         )}
       </p>
       {confirming ? (
         <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-400">Reset and queue {counts?.queued} title{counts?.queued === 1 ? '' : 's'}?</span>
-          <button onClick={queue} disabled={busy} className="px-3 py-1.5 text-sm rounded bg-plex-orange text-black font-medium disabled:opacity-40">Confirm</button>
-          <button onClick={() => setConfirming(false)} disabled={busy} className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200">Cancel</button>
+          <span className="text-xs text-gray-400">{t('rescan_confirm_prompt', { titles: t('unit_title', { count: counts?.queued ?? 0 }) })}</span>
+          <button onClick={queue} disabled={busy} className="px-3 py-1.5 text-sm rounded bg-plex-orange text-black font-medium disabled:opacity-40">{t('common_confirm')}</button>
+          <button onClick={() => setConfirming(false)} disabled={busy} className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200">{t('common_cancel')}</button>
         </div>
       ) : (
         <button
@@ -135,7 +137,7 @@ export default function BulkRescan({ libraries }: { libraries: Library[] }) {
           disabled={!ready || !counts || counts.queued === 0}
           className="px-3 py-1.5 text-sm rounded bg-plex-orange text-black font-medium disabled:opacity-40"
         >
-          Queue rescan
+          {t('rescan_queue_btn')}
         </button>
       )}
       {message && <p className="text-xs text-gray-400 mt-3">{message}</p>}

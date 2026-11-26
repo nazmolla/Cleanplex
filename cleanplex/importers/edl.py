@@ -73,17 +73,3 @@ def parse(text: str) -> list[dict]:
 
     segments.sort(key=lambda s: s["start_ms"])
     return segments
-
-
-def export(segments: list[dict]) -> str:
-    """Render segments as an EDL body for Kodi, Jellyfin or mpv."""
-    lines = []
-    for seg in sorted(segments, key=lambda s: s["start_ms"]):
-        if seg.get("category") == "commercial":
-            code = 3
-        elif seg.get("action") == "mute":
-            code = 1
-        else:
-            code = 0
-        lines.append(f"{seg['start_ms'] / 1000:.3f}\t{seg['end_ms'] / 1000:.3f}\t{code}")
-    return "\n".join(lines) + ("\n" if lines else "")

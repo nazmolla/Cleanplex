@@ -6,6 +6,7 @@ import {
   Film, Tv, ChevronRight, ChevronDown, RefreshCw, Play, Save,
   AlertCircle, CheckCircle, Loader2, Trash2, Plus, Tv2,
 } from 'lucide-react'
+import { translate, useT, type TranslateFn } from '../../i18n'
 
 interface Library {
   id: string
@@ -67,11 +68,13 @@ function msToTimecode(ms: number): string {
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${frac}`
 }
 
-function parseEpisodeTitle(title: string) {
+const defaultT: TranslateFn = (key, vars) => translate('en', key, vars)
+
+function parseEpisodeTitle(title: string, t: TranslateFn = defaultT) {
   const parts = title.split(' – ')
   return parts.length >= 3
     ? { show: parts[0].trim(), season: parts[1].trim(), episode: parts.slice(2).join(' – ').trim() }
-    : { show: 'Unknown Show', season: 'Unknown Season', episode: title }
+    : { show: t('unknown_show'), season: t('unknown_season'), episode: title }
 }
 
 // Extract leading number from season label for numeric ordering ("Series 10" → 10, "None" → 0).
@@ -124,10 +127,11 @@ function groupByShow(titles: TitleRow[]): ShowGroup[] {
 // ── Marker count badge ────────────────────────────────────────────────────────
 
 function MarkerCountBadge({ count }: { count: number }) {
+  const { t } = useT()
   if (count === 0) return null
   return (
     <span className="text-xs px-1.5 py-0.5 rounded bg-plex-orange/15 text-plex-orange border border-plex-orange/25 font-medium">
-      {count} marker{count !== 1 ? 's' : ''}
+      {t('unit_marker', { count })}
     </span>
   )
 }
@@ -135,6 +139,7 @@ function MarkerCountBadge({ count }: { count: number }) {
 // ── Marker type badge ─────────────────────────────────────────────────────────
 
 function MarkerTypeBadge({ type }: { type: string }) {
+  const { t } = useT()
   const isCredits = type === 'credits'
   return (
     <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
@@ -142,7 +147,7 @@ function MarkerTypeBadge({ type }: { type: string }) {
         ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40'
         : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
     }`}>
-      {isCredits ? 'CREDITS' : 'INTRO'}
+      {isCredits ? t('markers_type_credits') : t('markers_type_intro')}
     </span>
   )
 }
@@ -187,6 +192,7 @@ function MarkerEditor({
   onUpdate: (m: PlexMarker) => void
   onDelete: (id: number) => void
 }) {
+  const { t } = useT()
   const videoRef = useRef<HTMLVideoElement>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
   const previewCleanup = useRef<(() => void) | null>(null)
@@ -313,12 +319,12 @@ function MarkerEditor({
       <div className="flex items-center gap-2 flex-wrap">
         <MarkerTypeBadge type={marker.marker_type} />
         {marker.final === 1 && (
-          <span className="text-xs bg-green-500/15 text-green-400 border border-green-500/25 px-1.5 py-0.5 rounded-full">Final</span>
+          <span className="text-xs bg-green-500/15 text-green-400 border border-green-500/25 px-1.5 py-0.5 rounded-full">{t('markers_final')}</span>
         )}
-        <span className="text-sm font-mono text-gray-300">
+        <span className="text-sm font-mono text-gray-300" dir="ltr">
           {msToTimecode(startMs)} <span className="text-muted">→</span> {msToTimecode(endMs)}
         </span>
-        <span className="text-xs text-muted ml-auto">{msToTimecode(endMs - startMs)}</span>
+        <span className="text-xs text-muted ms-auto" dir="ltr">{msToTimecode(endMs - startMs)}</span>
       </div>
 
       {/* Video */}
@@ -333,6 +339,7 @@ function MarkerEditor({
       {/* Zoomed timeline — spans winStart → winEnd, not 0 → duration */}
       <div
         ref={timelineRef}
+        dir="ltr"
         className="relative h-7 bg-gray-800/80 rounded-lg select-none cursor-col-resize"
       >
         {/* Active region */}
@@ -342,29 +349,29 @@ function MarkerEditor({
         />
         {/* Start handle */}
         <div
-          className="absolute top-0 h-full w-2 bg-plex-orange rounded-l cursor-ew-resize hover:brightness-125 transition-all"
+          className="absolute top-0 h-full w-2 bg-plex-orange rounded-s cursor-ew-resize hover:brightness-125 transition-all"
           style={{ left: `${startPct}%`, transform: 'translateX(-50%)' }}
           onMouseDown={e => { e.preventDefault(); dragging.current = 'start' }}
-          title="Drag to adjust start"
+          title={t('markers_drag_start')}
         />
         {/* End handle */}
         <div
-          className="absolute top-0 h-full w-2 bg-plex-orange rounded-r cursor-ew-resize hover:brightness-125 transition-all"
+          className="absolute top-0 h-full w-2 bg-plex-orange rounded-e cursor-ew-resize hover:brightness-125 transition-all"
           style={{ left: `${endPct}%`, transform: 'translateX(-50%)' }}
           onMouseDown={e => { e.preventDefault(); dragging.current = 'end' }}
-          title="Drag to adjust end"
+          title={t('markers_drag_end')}
         />
         {/* Window labels */}
         {duration > 0 && (
           <>
-            <span className="absolute left-1 top-1/2 -translate-y-1/2 text-[10px] text-muted pointer-events-none select-none">{msToTimecode(winStart)}</span>
-            <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[10px] text-muted pointer-events-none select-none">{msToTimecode(winEnd)}</span>
+            <span className="absolute start-1 top-1/2 -translate-y-1/2 text-[10px] text-muted pointer-events-none select-none">{msToTimecode(winStart)}</span>
+            <span className="absolute end-1 top-1/2 -translate-y-1/2 text-[10px] text-muted pointer-events-none select-none">{msToTimecode(winEnd)}</span>
           </>
         )}
       </div>
       {duration > 0 && (
         <p className="text-[10px] text-muted -mt-1">
-          Showing {msToTimecode(winStart)} – {msToTimecode(winEnd)} (±60 s window)
+          {t('markers_window_hint', { start: msToTimecode(winStart), end: msToTimecode(winEnd) })}
         </p>
       )}
 
@@ -374,14 +381,14 @@ function MarkerEditor({
           onClick={handlePlay}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-700/80 hover:bg-gray-600 text-sm text-gray-200 transition-colors border border-plex-border"
         >
-          {previewing ? <><span className="w-3 h-3 border-2 border-gray-300 rounded-sm inline-block" /> Stop</> : <><Play size={13} /> Preview</>}
+          {previewing ? <><span className="w-3 h-3 border-2 border-gray-300 rounded-sm inline-block" /> {t('markers_stop')}</> : <><Play size={13} /> {t('markers_preview')}</>}
         </button>
         <a
           href={`/api/markers/${marker.id}/vlc`}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-700/80 hover:bg-gray-600 text-sm text-gray-200 transition-colors border border-plex-border"
-          title="Open full file in VLC (requires VLC installed)"
+          title={t('markers_vlc_title')}
         >
-          <Tv2 size={13} /> VLC
+          <Tv2 size={13} /> {t('markers_vlc')}
         </a>
         <button
           onClick={handleSave}
@@ -389,35 +396,35 @@ function MarkerEditor({
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-white transition-colors disabled:opacity-40 border border-plex-orange/40 bg-plex-orange/20 hover:bg-plex-orange/30"
         >
           {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
-          {saving ? 'Saving…' : dirty ? 'Save to Plex' : 'Saved'}
+          {saving ? t('common_saving') : dirty ? t('markers_save_plex') : t('common_saved')}
         </button>
         <button
           onClick={() => setConfirmingDelete(true)}
           disabled={deleting}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm text-red-400 border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 transition-colors disabled:opacity-40 ml-auto"
-          title="Remove from Cleanplex (Plex keeps its marker)"
-          aria-label="Delete marker"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm text-red-400 border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 transition-colors disabled:opacity-40 ms-auto"
+          title={t('markers_delete_title')}
+          aria-label={t('markers_delete_aria')}
         >
           {deleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
         </button>
         {confirmingDelete && (
           <Modal
-            title={`Delete this ${marker.marker_type} marker?`}
+            title={t('markers_delete_modal_title', { type: marker.marker_type === 'credits' ? t('markers_credits') : t('markers_intro') })}
             size="sm"
             onClose={() => setConfirmingDelete(false)}
             footer={
               <>
-                <button data-autofocus onClick={() => setConfirmingDelete(false)} className="btn-outline">Cancel</button>
-                <button onClick={handleDelete} className="btn-danger">Delete</button>
+                <button data-autofocus onClick={() => setConfirmingDelete(false)} className="btn-outline">{t('common_cancel')}</button>
+                <button onClick={handleDelete} className="btn-danger">{t('common_delete')}</button>
               </>
             }
           >
-            <p className="text-sm text-gray-300">It is removed from Cleanplex only. Plex keeps its own copy.</p>
+            <p className="text-sm text-gray-300">{t('markers_delete_modal_body')}</p>
           </Modal>
         )}
         {saveStatus === 'ok' && (
           <span className="flex items-center gap-1 text-green-400 text-xs">
-            <CheckCircle size={12} /> Saved to Plex
+            <CheckCircle size={12} /> {t('markers_saved_plex')}
           </span>
         )}
         {saveStatus === 'error' && (
@@ -445,6 +452,7 @@ function AddMarkerForm({
   title: TitleRow
   onCreated: (m: PlexMarker) => void
 }) {
+  const { t } = useT()
   const [open, setOpen] = useState(false)
   const [markerType, setMarkerType] = useState<'intro' | 'credits'>('intro')
   const [startVal, setStartVal] = useState('00:00:00.00')
@@ -455,8 +463,8 @@ function AddMarkerForm({
   const handleCreate = async () => {
     const start_ms = parseTimecode(startVal)
     const end_ms = parseTimecode(endVal)
-    if (start_ms === null || end_ms === null) { setErr('Invalid timecode format — use HH:MM:SS.ff'); return }
-    if (start_ms >= end_ms) { setErr('Start must be before end'); return }
+    if (start_ms === null || end_ms === null) { setErr(t('markers_err_invalid_timecode')); return }
+    if (start_ms >= end_ms) { setErr(t('markers_err_order')); return }
     setSaving(true); setErr('')
     try {
       const res = await api.post<{ ok: boolean; marker: PlexMarker; plex_error: string | null }>(
@@ -465,7 +473,7 @@ function AddMarkerForm({
       )
       onCreated(res.marker)
       setOpen(false)
-      if (res.plex_error) setErr(`Saved locally. Plex write failed: ${res.plex_error}`)
+      if (res.plex_error) setErr(t('markers_err_plex_write', { error: res.plex_error }))
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -479,37 +487,39 @@ function AddMarkerForm({
         onClick={() => setOpen(true)}
         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-400 border border-dashed border-plex-border hover:border-plex-orange/40 hover:text-plex-orange transition-colors"
       >
-        <Plus size={12} /> Add Marker
+        <Plus size={12} /> {t('markers_add')}
       </button>
     )
   }
 
   return (
     <div className="bg-black/20 border border-plex-border rounded-xl p-4 space-y-3">
-      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">New Marker</p>
+      <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">{t('markers_new')}</p>
       <div className="flex flex-wrap gap-2 items-end">
         <div className="space-y-1">
-          <label className="text-xs text-muted">Type</label>
+          <label className="text-xs text-muted">{t('markers_type')}</label>
           <select
             value={markerType}
             onChange={e => setMarkerType(e.target.value as 'intro' | 'credits')}
             className="bg-plex-dark border border-plex-border rounded px-2 py-1 text-sm text-gray-200 focus:border-plex-orange"
           >
-            <option value="intro">Intro</option>
-            <option value="credits">Credits</option>
+            <option value="intro">{t('markers_intro')}</option>
+            <option value="credits">{t('markers_credits')}</option>
           </select>
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-muted">Start (HH:MM:SS.ff)</label>
+          <label className="text-xs text-muted">{t('markers_start_label')}</label>
           <input
+            dir="ltr"
             value={startVal}
             onChange={e => setStartVal(e.target.value)}
             className="bg-plex-dark border border-plex-border rounded px-2 py-1 text-sm font-mono text-gray-200 w-36 focus:border-plex-orange"
           />
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-muted">End (HH:MM:SS.ff)</label>
+          <label className="text-xs text-muted">{t('markers_end_label')}</label>
           <input
+            dir="ltr"
             value={endVal}
             onChange={e => setEndVal(e.target.value)}
             className="bg-plex-dark border border-plex-border rounded px-2 py-1 text-sm font-mono text-gray-200 w-36 focus:border-plex-orange"
@@ -521,9 +531,9 @@ function AddMarkerForm({
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-white border border-plex-orange/40 bg-plex-orange/20 hover:bg-plex-orange/30 transition-colors disabled:opacity-50"
         >
           {saving ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
-          Create
+          {t('common_create')}
         </button>
-        <button onClick={() => { setOpen(false); setErr('') }} className="text-xs text-gray-400 hover:text-gray-300 px-2">Cancel</button>
+        <button onClick={() => { setOpen(false); setErr('') }} className="text-xs text-gray-400 hover:text-gray-300 px-2">{t('common_cancel')}</button>
       </div>
       {err && <p className="text-xs text-amber-400 flex items-center gap-1"><AlertCircle size={11} />{err}</p>}
     </div>
@@ -547,6 +557,7 @@ export function TitleMarkerPanel({
   defaultOpen?: boolean
   onMarkerCountChange: (guid: string, count: number) => void
 }) {
+  const { t } = useT()
   const [open, setOpen] = useState(false)
   const [markers, setMarkers] = useState<PlexMarker[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -619,7 +630,7 @@ export function TitleMarkerPanel({
     <div className={`border rounded-xl overflow-hidden transition-colors ${open ? 'border-plex-orange/30' : 'border-plex-border'}`}>
       <button
         onClick={handleToggle}
-        className="w-full flex items-center gap-3 px-3 py-2.5 bg-plex-dark hover:bg-white/5 transition-colors text-left"
+        className="w-full flex items-center gap-3 px-3 py-2.5 bg-plex-dark hover:bg-white/5 transition-colors text-start"
       >
         {thumbSrc !== undefined && (
           <Poster src={thumbSrc} alt="" className="w-16 h-9 flex-shrink-0" />
@@ -631,14 +642,14 @@ export function TitleMarkerPanel({
           onClick={handleSync}
           disabled={syncing}
           className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 border border-plex-border transition-colors disabled:opacity-50 flex-shrink-0"
-          title="Pull markers from Plex"
+          title={t('markers_sync_title')}
         >
           <RefreshCw size={11} className={syncing ? 'animate-spin' : ''} />
-          Sync
+          {t('markers_sync')}
         </button>
         {open
           ? <ChevronDown size={15} className="text-muted flex-shrink-0" />
-          : <ChevronRight size={15} className="text-muted flex-shrink-0" />
+          : <ChevronRight size={15} className="text-muted flex-shrink-0 rtl:-scale-x-100" />
         }
       </button>
 
@@ -652,8 +663,8 @@ export function TitleMarkerPanel({
         <div className="border-t border-plex-border p-4 space-y-4 bg-plex-darker">
           {markers.length === 0 ? (
             <p className="text-sm text-muted text-center py-6">
-              No markers stored.{' '}
-              <button onClick={e => handleSync(e as unknown as React.MouseEvent)} className="text-plex-orange hover:underline">Sync from Plex</button>
+              {t('markers_none_stored')}{' '}
+              <button onClick={e => handleSync(e as unknown as React.MouseEvent)} className="text-plex-orange hover:underline">{t('markers_sync_from_plex')}</button>
             </p>
           ) : (
             markers.map(m => <MarkerEditor key={m.id} marker={m} onUpdate={updateMarker} onDelete={deleteMarker} />)
@@ -682,6 +693,7 @@ export interface SyncProgress {
 }
 
 export function SyncAllBanner({ progress, onDismiss }: { progress: SyncProgress; onDismiss: () => void }) {
+  const { t } = useT()
   const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0
   return (
     <div className="bg-plex-card border border-plex-border rounded-xl p-4 space-y-2">
@@ -691,17 +703,17 @@ export function SyncAllBanner({ progress, onDismiss }: { progress: SyncProgress;
           : <Loader2 size={15} className="animate-spin text-plex-orange flex-shrink-0" />
         }
         <span className="text-sm text-gray-200 font-medium">
-          {progress.finished ? 'Sync complete — ' : 'Syncing… '}
-          {progress.done}/{progress.total} titles
-          {progress.totalMarkers > 0 && ` — ${progress.totalMarkers} markers found`}
+          {progress.finished ? t('markers_sync_complete') : t('markers_syncing')}
+          {t('markers_sync_progress_titles', { done: progress.done, total: progress.total })}
+          {progress.totalMarkers > 0 && t('markers_sync_found', { count: progress.totalMarkers })}
         </span>
         {progress.failed > 0 && (
           <span className="text-xs text-red-400 flex items-center gap-1">
-            <AlertCircle size={11} /> {progress.failed} failed
+            <AlertCircle size={11} /> {t('markers_sync_failed', { count: progress.failed })}
           </span>
         )}
         {progress.finished && (
-          <button onClick={onDismiss} className="ml-auto text-xs text-gray-400 hover:text-gray-300">Dismiss</button>
+          <button onClick={onDismiss} className="ms-auto text-xs text-gray-400 hover:text-gray-300">{t('common_dismiss')}</button>
         )}
       </div>
       {/* Progress bar */}

@@ -15,6 +15,7 @@ from .logger import setup_logging, get_logger
 from . import database as db
 from .config import Config
 import cleanplex.plex_client as plex_mod
+from cleanplex import hayaa
 from .watcher import session_watcher_loop, library_watcher_loop
 from .scanner import scanner_loop
 from .hover_previews import hover_preview_loop
@@ -24,6 +25,8 @@ from .thumbnail_backfill import thumbnail_backfill_loop
 from .cast_sync import cast_sync_loop
 from .keyframe_index import keyframe_index_loop
 from .frontdoor import frontdoor_cert_loop
+from .hayaa_sync import hayaa_sync_loop
+from .hayaa_verify import hayaa_verify_loop
 from .web.app import create_app
 from . import stream_proxy
 from .bg_jobs import recover_stale_jobs
@@ -174,6 +177,8 @@ async def _amain() -> None:
             ("cast-sync", cast_sync_loop(get_config, get_client)),
             ("keyframe-index", keyframe_index_loop()),
             ("frontdoor-cert", frontdoor_cert_loop(DATA_DIR)),
+            ("hayaa-sync", hayaa_sync_loop()),
+            ("hayaa-verify", hayaa_verify_loop(get_config)),
         )
     ]
     # Stop when the server stops, or when any loop dies (which used to leave a half-working app).
@@ -193,6 +198,7 @@ async def _amain() -> None:
     for task in [server_task, *loop_tasks]:
         if task.done() and not task.cancelled() and task.exception():
             logger.error("Task %s failed: %r", task.get_name(), task.exception())
+    await hayaa.close()
 
 
 def main() -> None:

@@ -1,3 +1,4 @@
+import { I18nProvider } from '../../i18n'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
@@ -160,7 +161,7 @@ describe('Settings sections', () => {
     await waitFor(() => screen.getByDisplayValue('http://plex:32400'))
 
     fireEvent.click(screen.getByRole('button', { name: 'NudeNet Detection' }))
-    fireEvent.change(screen.getByLabelText('FEMALE_BREAST_EXPOSED threshold'), { target: { value: '0.8' } })
+    fireEvent.change(screen.getByLabelText('Female breast exposed threshold'), { target: { value: '0.8' } })
     fireEvent.click(screen.getByRole('button', { name: /Save Settings/ }))
 
     await waitFor(() => expect(mockApi.put).toHaveBeenCalled())
@@ -174,7 +175,7 @@ describe('Settings sections', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'SigLIP Fallback' }))
     fireEvent.click(screen.getByLabelText('Enable SigLIP fallback'))
-    const box = screen.getByLabelText('FEMALE_BREAST_EXPOSED threshold')
+    const box = screen.getByLabelText('Female breast exposed threshold')
     fireEvent.change(box, { target: { value: '0.9' } })
     fireEvent.change(box, { target: { value: '' } })
     fireEvent.click(screen.getByRole('button', { name: /Save Settings/ }))
@@ -282,5 +283,24 @@ describe('Scan ratings checklist (#219)', () => {
     expect(screen.queryByRole('checkbox', { name: /^NC-17/ })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('checkbox', { name: /^G · 327/ }))
     expect(screen.getByRole('checkbox', { name: /^G · 327/ })).toBeChecked()
+  })
+})
+
+describe('Language section (#232)', () => {
+  afterEach(() => { document.documentElement.lang = 'en'; document.documentElement.dir = 'ltr' })
+
+  it('switches the UI to Arabic and right-to-left from Settings', async () => {
+    render(
+      <MemoryRouter>
+        <I18nProvider>
+          <Settings />
+        </I18nProvider>
+      </MemoryRouter>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Language' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'العربية' }))
+    expect(document.documentElement.dir).toBe('rtl')
+    expect(document.documentElement.lang).toBe('ar')
+    expect(screen.getByRole('button', { name: 'English' })).toHaveAttribute('aria-pressed', 'false')
   })
 })

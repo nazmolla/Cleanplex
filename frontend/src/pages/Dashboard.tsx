@@ -4,6 +4,7 @@ import { toast } from '../components/Toast'
 import { useLiveEvent, useLiveRefresh, withScanProgress } from '../api/events'
 import RecentSkips from '../components/RecentSkips'
 import { WifiOff, ChevronRight, Film, Tv, Zap } from 'lucide-react'
+import { useT, type TranslationKey } from '../i18n'
 
 interface Session {
   session_key: string
@@ -45,19 +46,20 @@ interface ScannerStatus {
 }
 
 const NOT_CUT = 'text-gray-400 bg-white/5'
-const FILTERING_BADGES: Record<Session['filtering_state'], { text: string; cls: string; title: string }> = {
-  active: { text: 'Being cut', cls: 'text-plex-orange bg-plex-orange/10', title: 'This title has segments that are skipped for this viewer.' },
-  clear: { text: 'Not cut: nothing to cut', cls: 'text-green-400 bg-green-400/10', title: 'Scanned: nothing in this title needs cutting at this viewer\'s levels.' },
-  ignored: { text: 'Not cut: title ignored', cls: NOT_CUT, title: 'This title is marked ignored, so it has no segments.' },
-  library_excluded: { text: 'Not cut: library excluded', cls: NOT_CUT, title: 'This title\'s library is excluded from scanning.' },
-  rating_skipped: { text: 'Not cut: rating not scanned', cls: NOT_CUT, title: 'This title\'s content rating is not in the scanned ratings.' },
-  not_scanned: { text: 'Not cut: not scanned yet', cls: 'text-yellow-400 bg-yellow-400/10', title: 'This title is waiting to be scanned, so nothing is being cut yet.' },
-  off: { text: 'Not cut: filtering off', cls: NOT_CUT, title: 'Filtering is switched off for this viewer.' },
+const FILTERING_BADGES: Record<Session['filtering_state'], { textKey: TranslationKey; cls: string; titleKey: TranslationKey }> = {
+  active: { textKey: 'filter_state_active', cls: 'text-plex-orange bg-plex-orange/10', titleKey: 'filter_state_active_title' },
+  clear: { textKey: 'filter_state_clear', cls: 'text-green-400 bg-green-400/10', titleKey: 'filter_state_clear_title' },
+  ignored: { textKey: 'filter_state_ignored', cls: NOT_CUT, titleKey: 'filter_state_ignored_title' },
+  library_excluded: { textKey: 'filter_state_library_excluded', cls: NOT_CUT, titleKey: 'filter_state_library_excluded_title' },
+  rating_skipped: { textKey: 'filter_state_rating_skipped', cls: NOT_CUT, titleKey: 'filter_state_rating_skipped_title' },
+  not_scanned: { textKey: 'filter_state_not_scanned', cls: 'text-yellow-400 bg-yellow-400/10', titleKey: 'filter_state_not_scanned_title' },
+  off: { textKey: 'filter_state_off', cls: NOT_CUT, titleKey: 'filter_state_off_title' },
 }
 
 function FilteringBadge({ state }: { state: Session['filtering_state'] }) {
+  const { t } = useT()
   const b = FILTERING_BADGES[state] ?? FILTERING_BADGES.not_scanned
-  return <span title={b.title} className={`text-xs px-2 py-0.5 rounded-full ${b.cls}`}>{b.text}</span>
+  return <span title={t(b.titleKey)} className={`text-xs px-2 py-0.5 rounded-full ${b.cls}`}>{t(b.textKey)}</span>
 }
 
 function msToTime(ms: number): string {
@@ -73,6 +75,7 @@ function msToTime(ms: number): string {
 const SECTION_HEADING = 'text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3'
 
 export default function Dashboard() {
+  const { t } = useT()
   const [sessions, setSessions] = useState<Session[]>([])
   const [scanner, setScanner] = useState<ScannerStatus | null>(null)
   const [loading, setLoading] = useState(true)
@@ -133,7 +136,7 @@ export default function Dashboard() {
       await api.post(`/api/sessions/${sessionKey}/skip`)
       await refresh()
     } catch (err: any) {
-      toast.error(`Could not skip: ${err.message || 'Unknown error'}`)
+      toast.error(t('dash_skip_error', { error: err.message || t('common_unknown_error') }))
     } finally {
       setSkipLoadingKey(null)
     }
@@ -147,7 +150,7 @@ export default function Dashboard() {
       await api.post('/api/scan/skip-current', { plex_guid: target })
       await refresh()
     } catch (err: any) {
-      toast.error(`Could not skip this scan: ${err.message || 'Unknown error'}`)
+      toast.error(t('dash_skip_scan_error', { error: err.message || t('common_unknown_error') }))
     } finally {
       setSkipScanLoadingGuid(null)
     }
@@ -158,19 +161,19 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-8 max-w-6xl">
-      <h1 className="text-2xl font-bold text-gray-100">Dashboard</h1>
+      <h1 className="text-2xl font-bold text-gray-100">{t('dash_title')}</h1>
 
       {/* Now playing comes first (#206): during playback it is the reason to open this page. */}
       <section aria-labelledby="dash-playing">
         <h2 id="dash-playing" className={SECTION_HEADING}>
-          Now playing
-          {sessions.length > 0 && <span className="ml-2 text-muted font-normal normal-case tabular-nums">{sessions.length}</span>}
+          {t('dash_now_playing')}
+          {sessions.length > 0 && <span className="ms-2 text-muted font-normal normal-case tabular-nums">{sessions.length}</span>}
         </h2>
         {loading ? (
-          <div className="text-muted text-sm">Loading…</div>
+          <div className="text-muted text-sm">{t('common_loading')}</div>
         ) : sessions.length === 0 ? (
           <div className="bg-plex-card border border-plex-border rounded-xl px-4 py-5 text-sm text-muted">
-            No active streams
+            {t('dash_no_active_streams')}
           </div>
         ) : (
           <div className="grid gap-3 lg:grid-cols-2">
@@ -191,29 +194,29 @@ export default function Dashboard() {
                     <FilteringBadge state={s.filtering_state} />
                     {!s.is_controllable && (
                       <span
-                        title="Cleanplex cannot seek or mute this client, so it cannot skip here"
+                        title={t('dash_not_controllable_title')}
                         className="flex items-center gap-1 text-xs text-gray-400 bg-white/5 px-2 py-0.5 rounded-full"
                       >
-                        <WifiOff size={11} />Not controllable
+                        <WifiOff size={11} />{t('dash_not_controllable')}
                       </span>
                     )}
                   </div>
                   <div className="mt-auto pt-3 flex items-center gap-3">
-                    <span className="text-xs text-muted tabular-nums">{msToTime(s.position_ms)}</span>
+                    <span className="text-xs text-muted tabular-nums" dir="ltr">{msToTime(s.position_ms)}</span>
                     <div className="flex-1 h-1.5 bg-plex-border rounded-full overflow-hidden">
                       <div
                         className="h-full bg-plex-orange rounded-full transition-all"
                         style={{ width: `${s.duration_ms ? (s.position_ms / s.duration_ms) * 100 : 0}%` }}
                       />
                     </div>
-                    <span className="text-xs text-muted tabular-nums">{msToTime(s.duration_ms)}</span>
+                    <span className="text-xs text-muted tabular-nums" dir="ltr">{msToTime(s.duration_ms)}</span>
                     <button
                       className="btn-outline text-xs px-3 py-1"
                       disabled={!s.is_controllable || skipLoadingKey === s.session_key}
                       onClick={() => skipNow(s.session_key)}
-                      title={s.is_controllable ? 'Skip the segment playing now' : 'This client cannot be controlled'}
+                      title={s.is_controllable ? t('dash_skip_title') : t('dash_skip_disabled_title')}
                     >
-                      {skipLoadingKey === s.session_key ? 'Skipping…' : 'Skip'}
+                      {skipLoadingKey === s.session_key ? t('dash_skipping') : t('dash_skip')}
                     </button>
                   </div>
                 </div>
@@ -226,19 +229,19 @@ export default function Dashboard() {
       {/* Scanner: state, running scans and the queue are one thing, so they are one card (#206). */}
       {scanner && (
         <section aria-labelledby="dash-scanner">
-          <h2 id="dash-scanner" className={SECTION_HEADING}>Scanner</h2>
+          <h2 id="dash-scanner" className={SECTION_HEADING}>{t('dash_scanner')}</h2>
           <div className="bg-plex-card border border-plex-border rounded-xl">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-sm">
               <span className="flex items-center gap-2">
                 <span className={`w-2 h-2 rounded-full flex-shrink-0 ${scanner.paused ? 'bg-yellow-500' : scannerIdle ? 'bg-faint' : 'bg-green-500 animate-pulse'}`} />
                 <span className={`font-medium ${scanner.paused ? 'text-yellow-400' : scannerIdle ? 'text-gray-300' : 'text-green-400'}`}>
-                  {scanner.paused ? 'Paused' : scannerIdle ? 'Idle' : 'Active'}
+                  {scanner.paused ? t('dash_scanner_paused') : scannerIdle ? t('dash_scanner_idle') : t('dash_scanner_active')}
                 </span>
               </span>
-              <span className="text-muted sm:ml-auto">
-                <span className="text-gray-300 tabular-nums">{scanner.workers_active}/{scanner.workers_configured}</span> workers busy
+              <span className="text-muted sm:ms-auto">
+                <span className="text-gray-300 tabular-nums">{scanner.workers_active}/{scanner.workers_configured}</span> {t('dash_workers_busy')}
                 {scanner.workers_target && scanner.workers_target !== scanner.workers_configured && (
-                  <> (changing to <span className="text-gray-300 tabular-nums">{scanner.workers_target}</span>)</>
+                  <> ({t('dash_workers_changing')} <span className="text-gray-300 tabular-nums">{scanner.workers_target}</span>)</>
                 )}
               </span>
             </div>
@@ -254,14 +257,14 @@ export default function Dashboard() {
                         style={{ width: `${scan.progress * 100}%` }}
                       />
                     </div>
-                    <span className="text-xs text-gray-400 tabular-nums w-9 text-right">{Math.round(scan.progress * 100)}%</span>
+                    <span className="text-xs text-gray-400 tabular-nums w-9 text-end">{Math.round(scan.progress * 100)}%</span>
                     <button
                       className="btn-outline text-xs px-2 py-0.5"
                       onClick={() => skipCurrentScan(scan.guid)}
                       disabled={skipScanLoadingGuid === scan.guid}
-                      title="Stop scanning this title and move to the next"
+                      title={t('dash_skip_scan_title')}
                     >
-                      {skipScanLoadingGuid === scan.guid ? 'Skipping…' : 'Skip'}
+                      {skipScanLoadingGuid === scan.guid ? t('dash_skipping') : t('dash_skip')}
                     </button>
                   </div>
                 ))}
@@ -275,15 +278,15 @@ export default function Dashboard() {
                   onClick={() => setQueueExpanded(e => !e)}
                   aria-expanded={queueExpanded}
                 >
-                  <ChevronRight size={15} className={`text-faint transition-transform ${queueExpanded ? 'rotate-90' : ''}`} />
-                  <span><span className="tabular-nums">{scanner.queue_size}</span> queued</span>
-                  {forcedCount > 0 && <span className="text-plex-orange">· {forcedCount} forced</span>}
+                  <ChevronRight size={15} className={`text-faint transition-transform ${queueExpanded ? 'rotate-90' : 'rtl:-scale-x-100'}`} />
+                  <span className="tabular-nums">{t('dash_queued_count', { count: scanner.queue_size })}</span>
+                  {forcedCount > 0 && <span className="text-plex-orange">{t('dash_forced_count', { count: forcedCount })}</span>}
                 </button>
                 {queueExpanded && (
                   <div className="divide-y divide-plex-border border-t border-plex-border max-h-96 overflow-y-auto">
                     {scanner.queue_items.map(item => (
                       <div key={item.guid} className="flex items-center gap-3 px-4 py-2 text-sm">
-                        <span className="text-muted w-8 text-right flex-shrink-0 tabular-nums">{item.position}</span>
+                        <span className="text-muted w-8 text-end flex-shrink-0 tabular-nums">{item.position}</span>
                         {item.force
                           ? <Zap size={13} className="text-plex-orange flex-shrink-0" />
                           : item.media_type === 'episode'

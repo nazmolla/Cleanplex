@@ -129,3 +129,18 @@ async def test_training_rows_group_by_label_so_one_labels_rejections_stay_with_i
 def test_group_key_uses_the_peak_label_and_falls_back_to_the_family():
     assert verifier.group_key("siglip", ["ANUS_EXPOSED", "BUTTOCKS_EXPOSED"]) == "siglip:ANUS_EXPOSED"
     assert verifier.group_key("nudenet", []) == "nudenet"
+
+
+def test_embedding_for_training_releases_the_threads_siglip_sessions(tmp_path, monkeypatch):
+    """#220: training runs on a default-pool thread that must not keep the vision model."""
+    f = tmp_path / "a.jpg"
+    f.write_bytes(np.ones(DIM, dtype=np.float32).tobytes())
+
+    def embed(b):
+        siglip_detector._thread_local.sessions = {"vision_model.onnx": object()}
+        return np.frombuffer(b, dtype=np.float32)
+
+    monkeypatch.setattr(siglip_detector, "embed_frame", embed)
+    rows, vectors = verifier._embed_all([{"path": str(f)}])
+    assert len(rows) == 1 and vectors.shape == (1, DIM)
+    assert siglip_detector._thread_local.sessions == {}

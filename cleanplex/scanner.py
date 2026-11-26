@@ -53,19 +53,49 @@ SCAN_VERSION = 4
 # sized to scan_workers keeps that at one copy per worker (#103); the default
 # asyncio pool has min(32, cpus + 4) threads and ended up loading 16 copies.
 _inference_pool: ThreadPoolExecutor | None = None
+_inference_pool_size: int | None = None
+
+# Models live as long as the pool's threads, so an idle pool is swapped for a fresh one
+# and its threads exit, freeing ~1.5 GB of ONNX sessions (#220). 5 min outlasts the gaps
+# between frames, scans and backfill steps, so a busy scanner never reloads.
+MODEL_IDLE_RELEASE_S = 300.0
+# Event-loop-only state (no lock needed): calls in flight, last finish time, and whether
+# the current pool has loaded anything since it was created.
+_infer_active = 0
+_infer_last_used = 0.0
+_pool_used = False
 
 
 async def _infer(fn, *args):
     """Run a blocking detection call on the inference pool (default pool if none yet)."""
+    global _infer_active, _infer_last_used, _pool_used
     pool = _inference_pool
     if pool is None:
         return await asyncio.to_thread(fn, *args)
-    return await asyncio.get_running_loop().run_in_executor(pool, fn, *args)
+    _infer_active += 1
+    _pool_used = True
+    try:
+        return await asyncio.get_running_loop().run_in_executor(pool, fn, *args)
+    finally:
+        _infer_active -= 1
+        _infer_last_used = time.monotonic()
+
+
+def release_idle_models(now: float | None = None) -> bool:
+    """Replace the inference pool if it holds models and has been idle MODEL_IDLE_RELEASE_S; True if it did."""
+    if _inference_pool is None or not _pool_used or _infer_active:
+        return False
+    if (now if now is not None else time.monotonic()) - _infer_last_used < MODEL_IDLE_RELEASE_S:
+        return False
+    _replace_inference_pool(_inference_pool_size)
+    logger.info("Inference idle for %ds; released detection models", int(MODEL_IDLE_RELEASE_S))
+    return True
 
 
 def _replace_inference_pool(size: int | None) -> None:
     """Swap in a pool of *size* threads (None: none), letting the old one wind down."""
-    global _inference_pool
+    global _inference_pool, _inference_pool_size, _pool_used
+    _inference_pool_size, _pool_used = size, False
     old, _inference_pool = _inference_pool, (
         ThreadPoolExecutor(max_workers=size, thread_name_prefix="cleanplex-infer") if size else None
     )
@@ -1070,6 +1100,21 @@ async def scan_video(plex_guid: str, config) -> None:
             part_time_offset_ms += part_duration_ms
 
         await db.update_scan_job_status(plex_guid, "done", progress=1.0, scan_version=SCAN_VERSION)
+        if len(all_parts) == 1:
+            # Hayaa names a file by its content key, which only the file can produce: compute it
+            # now so the scan can still be shared if the file is deleted before a sync (#228).
+            try:
+                from . import hayaa
+                await hayaa.content_key_for(all_parts[0])
+            except Exception as exc:
+                logger.debug("No Hayaa content key for %s: %s", title, exc)
+        # A rescan rewrote the title's segments: put pulled Hayaa segments back and match the new
+        # local ones to their claims (#222). Best effort; the next sync does the same.
+        try:
+            from . import hayaa_sync
+            await hayaa_sync.apply_titles([plex_guid], config)
+        except Exception as exc:
+            logger.warning("Hayaa apply after scan failed for %s: %s", title, exc)
 
         if rating_key:
             await plex_summary.refresh_now(plex_guid)
@@ -1173,6 +1218,7 @@ async def scanner_loop(get_config_fn) -> None:
                     return_when=asyncio.FIRST_COMPLETED,
                     timeout=5.0,
                 )
+                release_idle_models()
                 if done:
                     # A worker unexpectedly completed; restart the pool
                     logger.warning("Worker task completed unexpectedly, restarting pool")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -128,3 +129,24 @@ async def test_a_normal_scan_stops_and_requeues_while_the_scanner_is_paused(tmp_
         await scanner.scan_video("g", Config(scan_step_ms=2000, siglip_enabled=False))
 
     assert (await db.get_scan_job_by_guid("g"))["status"] == "pending"
+
+
+# ── a finished scan caches the Hayaa content key while the file is still there (#228) ──
+
+async def test_a_finished_scan_caches_the_hayaa_content_key(tmp_path):
+    from cleanplex import hayaa
+    await _job(tmp_path)
+    path = (await db.get_scan_job_by_guid("g"))["file_path"]
+
+    async def batch(path, step_ms, duration_ms, size, hardware=False):
+        yield 0, b"frame"
+
+    with patch.object(scanner, "extract_frames_batch", batch), \
+         patch.object(scanner, "get_duration_ms", AsyncMock(return_value=60_000)), \
+         patch.object(scanner, "_classify_frame", lambda *a, **k: (False, 0.0, [])):
+        await scanner.scan_video("g", Config(scan_step_ms=2000, siglip_enabled=False))
+
+    assert (await db.get_scan_job_by_guid("g"))["status"] == "done"
+    async with db.get_connection() as conn:
+        rows = await conn.execute_fetchall("SELECT content_key FROM hayaa_content_keys WHERE file_path=?", (path,))
+    assert [r["content_key"] for r in rows] == [hayaa.content_key_for_file(Path(path))]

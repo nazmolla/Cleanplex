@@ -6,6 +6,7 @@ import time
 
 from .logger import get_logger
 from . import database as db
+from .importers._common import MAX_LEVEL, SEVERITY_RANK
 from . import events
 from .plex_client import ActiveSession, PlexClient
 
@@ -26,11 +27,10 @@ _pending_verification: dict[str, dict] = {}
 # verification allows this much shortfall before calling the seek a failure.
 _VERIFY_TOLERANCE_MS = 2000
 
-# Severity ranks follow the MovieContentFilter vocabulary. A segment is filtered
-# when the viewer's level for its category plus this rank exceeds 3 — the same
-# threshold model VideoSkip uses, so imported severities behave as their authors
-# intended.
-_SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3}
+# A segment is filtered when the viewer's level for its category plus its severity rank
+# exceeds MAX_LEVEL — VideoSkip's threshold model, widened by one step for the "minimal"
+# detector tier (#230), so imported MovieContentFilter severities keep their order.
+_SEVERITY_RANK = SEVERITY_RANK
 DEFAULT_CATEGORY_LEVEL = db.DEFAULT_CATEGORY_LEVEL
 
 # Actions we can carry out through the Plex playback API. blank/blur appear in
@@ -90,8 +90,8 @@ def _is_filtered(segment: dict, prefs: dict[str, dict]) -> bool:
     # A category the viewer never set filters at full strictness: enabling the
     # filter means everything is on, and loosening a category is an explicit act.
     level = pref["level"] if pref else DEFAULT_CATEGORY_LEVEL
-    rank = _SEVERITY_RANK.get(segment.get("severity") or "high", 3)
-    return (level + rank) > 3
+    rank = _SEVERITY_RANK.get(segment.get("severity") or "high", _SEVERITY_RANK["high"])
+    return (level + rank) > MAX_LEVEL
 
 
 def _resolve_action(segment: dict, prefs: dict[str, dict]) -> str:

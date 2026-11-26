@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { api } from '../api/client'
-import { Upload, ClipboardPaste, Download, AlertTriangle, Check } from 'lucide-react'
+import { Upload, ClipboardPaste, AlertTriangle, Check } from 'lucide-react'
+import { useT } from '../i18n'
 
 interface ImportResult {
   imported: number
@@ -17,6 +18,7 @@ interface Props {
 type Mode = 'file' | 'paste'
 
 export default function SkipFileImport({ plexGuid, onImported }: Props) {
+  const { t } = useT()
   const [mode, setMode] = useState<Mode>('file')
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<ImportResult | null>(null)
@@ -41,7 +43,7 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
       form.append('replace', String(replace))
       finish(await api.upload<ImportResult>('/api/segments/import', form))
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Import failed.')
+      setError(e instanceof Error ? e.message : t('import_failed'))
     } finally {
       setBusy(false)
       if (fileInput.current) fileInput.current.value = ''
@@ -62,20 +64,10 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
       )
       setPasted('')
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Import failed.')
+      setError(e instanceof Error ? e.message : t('import_failed'))
     } finally {
       setBusy(false)
     }
-  }
-
-  const exportAs = async (fmt: 'edl' | 'mcf') => {
-    const res = await api.get<{ body: string }>(
-      `/api/segments/export/${encodeURIComponent(plexGuid)}?fmt=${fmt}`,
-    )
-    // Shown rather than downloaded: the viewer sandbox blocks page-initiated
-    // downloads, so copying from a textarea is the reliable path.
-    setPasted(res.body)
-    setMode('paste')
   }
 
   return (
@@ -89,7 +81,7 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
               : 'border-plex-border text-gray-400'
           }`}
         >
-          <Upload size={12} /> Skip file
+          <Upload size={12} /> {t('import_tab_file')}
         </button>
         <button
           onClick={() => setMode('paste')}
@@ -99,17 +91,17 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
               : 'border-plex-border text-gray-400'
           }`}
         >
-          <ClipboardPaste size={12} /> Paste list
+          <ClipboardPaste size={12} /> {t('import_tab_paste')}
         </button>
 
-        <label className="ml-auto flex items-center gap-1.5 text-xs text-muted">
+        <label className="ms-auto flex items-center gap-1.5 text-xs text-muted">
           <input
             type="checkbox"
             checked={replace}
             onChange={e => setReplace(e.target.checked)}
             className="accent-plex-orange"
           />
-          Replace existing
+          {t('import_replace')}
         </label>
       </div>
 
@@ -124,11 +116,11 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
               const file = e.target.files?.[0]
               if (file) importFile(file)
             }}
-            className="block w-full text-xs text-gray-400 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:bg-plex-border file:text-gray-200 hover:file:bg-plex-border/70"
+            className="block w-full text-xs text-gray-400 file:me-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:bg-plex-border file:text-gray-200 hover:file:bg-plex-border/70"
           />
           <p className="text-[11px] text-muted mt-2">
-            VideoSkip <code>.skp</code>, Kodi <code>.edl</code>, MovieContentFilter{' '}
-            <code>.mcf</code>, or a plain <code>.txt</code> list. Importing skips the scan entirely.
+            {t('import_formats_before')} <code>.skp</code>{t('import_formats_kodi')} <code>.edl</code>{t('import_formats_mcf')}{' '}
+            <code>.mcf</code>{t('import_formats_after')} <code>.txt</code> {t('import_formats_end')}
           </p>
         </div>
       ) : (
@@ -137,6 +129,7 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
             value={pasted}
             onChange={e => setPasted(e.target.value)}
             rows={5}
+            dir="ltr"
             placeholder={'00:12:30 - 00:13:05 nudity\n1:02:11 to 1:02:20 violence'}
             className="w-full bg-plex-bg border border-plex-border rounded p-2 text-xs text-gray-200 font-mono"
           />
@@ -145,20 +138,10 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
             disabled={busy || !pasted.trim()}
             className="mt-2 px-3 py-1.5 rounded text-xs bg-plex-orange text-black font-medium disabled:opacity-40"
           >
-            {busy ? 'Importing...' : 'Import list'}
+            {busy ? t('import_importing') : t('import_btn')}
           </button>
         </div>
       )}
-
-      <div className="flex items-center gap-2 pt-1 border-t border-plex-border">
-        <span className="text-[11px] text-muted">Export:</span>
-        <button onClick={() => exportAs('edl')} className="text-[11px] text-gray-400 hover:text-gray-200 flex items-center gap-1">
-          <Download size={11} /> EDL
-        </button>
-        <button onClick={() => exportAs('mcf')} className="text-[11px] text-gray-400 hover:text-gray-200 flex items-center gap-1">
-          <Download size={11} /> MCF
-        </button>
-      </div>
 
       {error && (
         <p className="text-xs text-red-400 flex items-start gap-1.5">
@@ -169,8 +152,7 @@ export default function SkipFileImport({ plexGuid, onImported }: Props) {
       {result && (
         <div className="text-xs space-y-1">
           <p className="text-green-400 flex items-center gap-1.5">
-            <Check size={12} /> Imported {result.imported} segment
-            {result.imported === 1 ? '' : 's'} from {result.source}.
+            <Check size={12} /> {t('import_success', { segments: t('unit_segment', { count: result.imported }), source: result.source })}
           </p>
           {result.warning && (
             <p className="text-amber-400 flex items-start gap-1.5">

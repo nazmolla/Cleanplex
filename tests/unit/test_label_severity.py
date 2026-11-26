@@ -12,14 +12,17 @@ from cleanplex.importers._common import DETECTOR_LABELS, LABEL_SEVERITY, severit
 @pytest.mark.parametrize("labels, expected", [
     ("MALE_GENITALIA_EXPOSED", "high"),
     ("FEMALE_GENITALIA_EXPOSED", "high"),
-    ("ANUS_EXPOSED", "high"),
-    ("FEMALE_BREAST_EXPOSED", "medium"),
+    ("FEMALE_BREAST_EXPOSED", "high"),
+    ("ANUS_EXPOSED", "medium"),
     ("BUTTOCKS_EXPOSED", "medium"),
+    ("BELLY_EXPOSED", "medium"),
     ("FEMALE_BREAST_COVERED", "low"),
     ("BUTTOCKS_COVERED,FEMALE_GENITALIA_COVERED", "low"),
-    ("FACE_FEMALE", "low"),
+    ("FACE_FEMALE", "minimal"),
+    ("MALE_BREAST_EXPOSED", "minimal"),
+    ("FEET_EXPOSED,ARMPITS_COVERED", "minimal"),
     ("FEMALE_BREAST_COVERED,BUTTOCKS_EXPOSED", "medium"),
-    ("FEMALE_BREAST_EXPOSED,MALE_GENITALIA_EXPOSED", "high"),
+    ("BELLY_EXPOSED,MALE_GENITALIA_EXPOSED", "high"),
 ])
 def test_severity_is_the_highest_among_the_labels(labels, expected):
     assert severity_for_labels(labels) == expected
@@ -40,14 +43,25 @@ def _fires(labels: str, level: int) -> bool:
 
 
 @pytest.mark.parametrize("labels, skipped_at", [
-    ("FEMALE_BREAST_COVERED", {3}),
-    ("BUTTOCKS_EXPOSED", {2, 3}),
-    ("FEMALE_BREAST_EXPOSED", {2, 3}),
-    ("MALE_GENITALIA_EXPOSED", {1, 2, 3}),
-    ("ANUS_EXPOSED", {1, 2, 3}),
+    ("MALE_BREAST_EXPOSED", {4}),
+    ("FEET_EXPOSED", {4}),
+    ("FEMALE_BREAST_COVERED", {3, 4}),
+    ("BUTTOCKS_EXPOSED", {2, 3, 4}),
+    ("ANUS_EXPOSED", {2, 3, 4}),
+    ("FEMALE_BREAST_EXPOSED", {1, 2, 3, 4}),
+    ("MALE_GENITALIA_EXPOSED", {1, 2, 3, 4}),
 ])
 def test_each_level_skips_exactly_the_labels_it_promises(labels, skipped_at):
-    assert {lvl for lvl in range(4) if _fires(labels, lvl)} == skipped_at
+    assert {lvl for lvl in range(5) if _fires(labels, lvl)} == skipped_at
+
+
+@pytest.mark.parametrize("severity, skipped_at", [
+    ("low", {3, 4}), ("medium", {2, 3, 4}), ("high", {1, 2, 3, 4}),
+])
+def test_imported_severities_keep_their_order(severity, skipped_at):
+    seg = {"category": "profanity", "severity": severity}
+    assert {lvl for lvl in range(5)
+            if filter_engine._is_filtered(seg, {"profanity": {"level": lvl, "action": ""}})} == skipped_at
 
 
 # ── migration ──────────────────────────────────────────────────────────────────
@@ -79,3 +93,29 @@ async def test_init_db_rederives_detector_severity_once_and_spares_imports():
         await conn.commit()
     await db.init_db()
     assert (await db.get_segment_by_id(scanner_seg))["severity"] == "medium"
+
+
+@pytest.mark.usefixtures("setup_db")
+async def test_four_tier_migration_rederives_severity_and_keeps_everything_viewers_strict():
+    await db.upsert_scan_job(plex_guid="g", title="T", file_path="/m.mkv", rating_key="1",
+                             library_id="l", library_title="L")
+    breast = await db.insert_segment("g", "T", 0, 1000, labels="FEMALE_BREAST_EXPOSED", severity="medium")
+    feet = await db.insert_segment("g", "T", 2000, 3000, labels="FEET_EXPOSED", severity="low")
+    imported = await db.insert_segment("g", "T", 4000, 5000, labels="", severity="low", source="skp")
+    await db.upsert_user_category_pref("ann", "nudity", 3)
+    await db.upsert_user_category_pref("ann", "violence", 2)
+    async with db.get_connection() as conn:
+        await conn.execute("DELETE FROM settings WHERE key='severity_tiers_v2'")
+        await conn.commit()
+
+    await db.init_db()
+
+    assert (await db.get_segment_by_id(breast))["severity"] == "high"
+    assert (await db.get_segment_by_id(feet))["severity"] == "minimal"
+    assert (await db.get_segment_by_id(imported))["severity"] == "low"
+    prefs = await db.get_user_category_prefs("ann")
+    assert prefs["nudity"]["level"] == 4 and prefs["violence"]["level"] == 2
+
+    await db.upsert_user_category_pref("ann", "nudity", 3)  # runs once: a later choice of 3 stays
+    await db.init_db()
+    assert (await db.get_user_category_prefs("ann"))["nudity"]["level"] == 3
