@@ -236,7 +236,7 @@ async def _dispatch(method: str, params: dict, request_id) -> dict | None:
         return _ok(request_id, {
             "protocolVersion": MCP_PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "cleanplex", "version": "0.1.0"},
+            "serverInfo": {"name": "cleanplex", "version": "0.2.0"},
         })
 
     if method == "ping":
