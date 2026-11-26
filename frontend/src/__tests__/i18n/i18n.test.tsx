@@ -131,7 +131,7 @@ describe('useT and I18nProvider', () => {
     expect(translate('ar', 'nav_settings')).toBe(ar.nav_settings)
   })
 
-  it('renders a working language toggle in Layout', () => {
+  it('keeps the language choice out of the main navigation', () => {
     render(
       <MemoryRouter>
         <I18nProvider>
@@ -140,10 +140,6 @@ describe('useT and I18nProvider', () => {
       </MemoryRouter>,
     )
     expect(screen.getAllByText('Dashboard').length).toBeGreaterThan(0)
-    const arButtons = screen.getAllByRole('button', { name: /العربية|Language/i })
-    fireEvent.click(arButtons[0])
-    expect(document.documentElement.lang).toBe('ar')
-    expect(document.documentElement.dir).toBe('rtl')
-    expect(screen.getAllByText(ar.nav_dashboard).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: /العربية/ })).toBeNull()
   })
 })

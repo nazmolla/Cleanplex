@@ -1,10 +1,10 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Film, BarChart2, Settings, Languages } from 'lucide-react'
+import { LayoutDashboard, Film, BarChart2, Settings } from 'lucide-react'
 import { Toaster } from './Toast'
 import { useT } from '../i18n'
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  const { t, lang, setLang, toggleLang } = useT()
+  const { t } = useT()
 
   const nav = [
     { to: '/', icon: LayoutDashboard, label: t('nav_dashboard') },
@@ -39,33 +39,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </NavLink>
           ))}
         </nav>
-        <div className="p-3 border-t border-plex-border space-y-2">
-          <div
-            role="group"
-            aria-label={t('lang_toggle_label')}
-            className="flex p-0.5 gap-0.5 rounded-lg bg-black/25 border border-plex-border"
-          >
-            <button
-              type="button"
-              onClick={() => setLang('en')}
-              aria-pressed={lang === 'en'}
-              className={`flex-1 py-1 px-2 rounded-md text-xs font-medium transition-colors ${
-                lang === 'en' ? 'bg-plex-orange text-black' : 'text-gray-400 hover:text-gray-100'
-              }`}
-            >
-              {t('lang_english')}
-            </button>
-            <button
-              type="button"
-              onClick={() => setLang('ar')}
-              aria-pressed={lang === 'ar'}
-              className={`flex-1 py-1 px-2 rounded-md text-xs font-medium transition-colors ${
-                lang === 'ar' ? 'bg-plex-orange text-black' : 'text-gray-400 hover:text-gray-100'
-              }`}
-            >
-              {t('lang_arabic')}
-            </button>
-          </div>
+        <div className="p-3 border-t border-plex-border">
           <div className="px-1 text-xs text-muted">v0.1.0</div>
         </div>
       </aside>
@@ -92,15 +66,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <span className="max-w-full truncate">{label}</span>
           </NavLink>
         ))}
-        <button
-          type="button"
-          onClick={toggleLang}
-          aria-label={t('lang_toggle_label')}
-          className="flex-1 flex flex-col items-center justify-center gap-1 py-2 text-xs font-medium text-muted hover:text-gray-100 transition-colors"
-        >
-          <Languages size={20} />
-          <span className="max-w-full truncate">{lang === 'ar' ? t('lang_english') : t('lang_arabic')}</span>
-        </button>
       </nav>
       <Toaster />
     </div>

@@ -18,6 +18,8 @@ export const en = {
   nav_browse: 'Browse',
   nav_analytics: 'Analytics',
   nav_settings: 'Settings',
+  settings_sec_language: 'Language',
+  settings_language_hint: 'Applies right away to this browser; each device keeps its own choice.',
   lang_toggle_label: 'Language',
   lang_english: 'English',
   lang_arabic: 'العربية',

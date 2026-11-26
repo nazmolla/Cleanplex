@@ -49,8 +49,8 @@ interface Settings {
   hover_window_end: string
 }
 
-type SectionId = 'connection' | 'playback' | 'filtering' | 'schedule' | 'nudenet' | 'siglip' | 'segments' | 'hayaa' | 'users'
-const SECTION_IDS: SectionId[] = ['connection', 'users', 'playback', 'filtering', 'schedule', 'nudenet', 'siglip', 'segments', 'hayaa']
+type SectionId = 'connection' | 'playback' | 'filtering' | 'schedule' | 'nudenet' | 'siglip' | 'segments' | 'hayaa' | 'users' | 'language'
+const SECTION_IDS: SectionId[] = ['connection', 'users', 'playback', 'filtering', 'schedule', 'nudenet', 'siglip', 'segments', 'hayaa', 'language']
 
 interface Library {
   id: string
@@ -139,7 +139,7 @@ function LabelThresholds({ labels, value, globalValue, disabled, onChange }: {
 }
 
 export default function SettingsPage() {
-  const { t, formatNumber } = useT()
+  const { t, formatNumber, lang, setLang } = useT()
   const [form, setForm] = useState<Settings>(DEFAULT)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -265,6 +265,7 @@ export default function SettingsPage() {
     { id: 'siglip', label: t('settings_sec_siglip') },
     { id: 'segments', label: t('settings_sec_segments') },
     { id: 'hayaa', label: t('settings_sec_hayaa') },
+    { id: 'language', label: t('settings_sec_language') },
   ]
 
   return (
@@ -290,6 +291,26 @@ export default function SettingsPage() {
         {/* Each section's blocks are cards on a two-column grid on wide screens (#118);
             a section with a single block spans both columns. */}
         <div className="flex-1 min-w-0 grid gap-6 xl:grid-cols-2 items-start content-start pb-6 [&>section]:bg-plex-card [&>section]:border [&>section]:border-plex-border [&>section]:rounded-xl [&>section]:p-5 xl:[&>section:only-child]:col-span-2">
+          {section === 'language' && (
+            <section>
+              <h2 className={h2Cls}>{t('settings_sec_language')}</h2>
+              <p className="text-xs text-muted mb-3">{t('settings_language_hint')}</p>
+              <div role="group" aria-label={t('lang_toggle_label')} className="inline-flex p-0.5 gap-0.5 rounded-lg bg-black/25 border border-plex-border">
+                {(['en', 'ar'] as const).map(code => (
+                  <button
+                    key={code}
+                    type="button"
+                    onClick={() => setLang(code)}
+                    aria-pressed={lang === code}
+                    className={`py-1.5 px-4 rounded-md text-sm font-medium transition-colors ${lang === code ? 'bg-plex-orange text-black' : 'text-gray-400 hover:text-gray-100'}`}
+                  >
+                    {code === 'en' ? t('lang_english') : t('lang_arabic')}
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
           {section === 'users' && (
             <section>
               <UsersPanel />

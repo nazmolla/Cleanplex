@@ -7,6 +7,8 @@ export const ar: DictionarySchema<typeof en> = {
   nav_browse: 'تصفح',
   nav_analytics: 'التحليلات',
   nav_settings: 'الإعدادات',
+  settings_sec_language: 'اللغة',
+  settings_language_hint: 'تُطبَّق فورًا على هذا المتصفح؛ ويحتفظ كل جهاز باختياره.',
   lang_toggle_label: 'اللغة',
   lang_english: 'English',
   lang_arabic: 'العربية',

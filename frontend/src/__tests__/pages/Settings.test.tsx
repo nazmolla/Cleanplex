@@ -1,3 +1,4 @@
+import { I18nProvider } from '../../i18n'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
@@ -282,5 +283,24 @@ describe('Scan ratings checklist (#219)', () => {
     expect(screen.queryByRole('checkbox', { name: /^NC-17/ })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('checkbox', { name: /^G · 327/ }))
     expect(screen.getByRole('checkbox', { name: /^G · 327/ })).toBeChecked()
+  })
+})
+
+describe('Language section (#232)', () => {
+  afterEach(() => { document.documentElement.lang = 'en'; document.documentElement.dir = 'ltr' })
+
+  it('switches the UI to Arabic and right-to-left from Settings', async () => {
+    render(
+      <MemoryRouter>
+        <I18nProvider>
+          <Settings />
+        </I18nProvider>
+      </MemoryRouter>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Language' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'العربية' }))
+    expect(document.documentElement.dir).toBe('rtl')
+    expect(document.documentElement.lang).toBe('ar')
+    expect(screen.getByRole('button', { name: 'English' })).toHaveAttribute('aria-pressed', 'false')
   })
 })
