@@ -67,10 +67,14 @@ export default function EnforcementPanel() {
             ? t('enf_frontdoor_active')
             : t('enf_frontdoor_inactive')}
         </p>
-        <p className="text-xs text-muted mt-1">
-          {t('enf_install_hint_1')} <code dir="ltr">sudo bash scripts/frontdoor/install.sh</code>
-          {' '}(<code dir="ltr">--uninstall</code> {t('enf_install_hint_2', { count: data.proxied_last_day })}
-        </p>
+        <p className="text-xs text-muted mt-1">{t('enf_proxied_last_day', { count: data.proxied_last_day })}</p>
+        <details className="mt-2 text-xs text-muted">
+          <summary className="cursor-pointer hover:text-gray-300">{t('enf_install_summary')}</summary>
+          <p className="mt-1">
+            {t('enf_install_hint_1')} <code dir="ltr">sudo bash scripts/frontdoor/install.sh</code>
+            {' '}(<code dir="ltr">--uninstall</code> {t('enf_install_hint_2')}
+          </p>
+        </details>
       </div>
 
       <label className="block">
@@ -79,7 +83,7 @@ export default function EnforcementPanel() {
           value={data.mute_mode}
           disabled={busy}
           onChange={e => post('/api/enforcement', { mute_mode: e.target.value })}
-          className="mt-1 block w-full px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200"
+          className="mt-1 block w-full max-w-xs px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200"
         >
           <option value="leave">{t('enf_mute_leave')}</option>
           <option value="cut">{t('enf_mute_cut')}</option>
@@ -109,7 +113,7 @@ export default function EnforcementPanel() {
               <span className="block text-xs text-muted">{t('enf_relay_hint')}</span>
             </span>
             <button disabled={busy} onClick={() => post('/api/enforcement/plex-settings', { relay: !isOn(data.plex.relay) })}
-              className="px-3 py-1.5 text-xs rounded-lg border border-plex-border text-gray-200 hover:bg-white/5 disabled:opacity-40">
+              className="btn-outline text-xs flex-shrink-0">
               {isOn(data.plex.relay) ? t('enf_turn_off') : t('enf_turn_on')}
             </button>
           </div>
@@ -119,7 +123,7 @@ export default function EnforcementPanel() {
               <span className="block text-xs text-muted">{t('enf_dlna_hint')}</span>
             </span>
             <button disabled={busy} onClick={() => post('/api/enforcement/plex-settings', { dlna: !isOn(data.plex.dlna) })}
-              className="px-3 py-1.5 text-xs rounded-lg border border-plex-border text-gray-200 hover:bg-white/5 disabled:opacity-40">
+              className="btn-outline text-xs flex-shrink-0">
               {isOn(data.plex.dlna) ? t('enf_turn_off') : t('enf_turn_on')}
             </button>
           </div>
@@ -132,7 +136,7 @@ export default function EnforcementPanel() {
               <input type="number" min="0" max="50" value={limit} onChange={e => setLimit(e.target.value)}
                 className="w-16 px-2 py-1 bg-plex-card border border-plex-border rounded text-sm text-gray-200" aria-label={t('enf_transcodes')} />
               <button disabled={busy || limit === ''} onClick={() => post('/api/enforcement/plex-settings', { transcode_limit: Number(limit) })}
-                className="px-3 py-1.5 text-xs rounded-lg border border-plex-border text-gray-200 hover:bg-white/5 disabled:opacity-40">
+                className="btn-outline text-xs flex-shrink-0">
                 {t('common_apply')}
               </button>
             </span>

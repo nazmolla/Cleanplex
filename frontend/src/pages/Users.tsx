@@ -44,8 +44,8 @@ export function UsersPanel() {
 
   return (
     <div>
-      <h2 className="text-base font-semibold text-gray-200 mb-4 pb-2 border-b border-plex-border">{t('users_title')}</h2>
-      <p className="text-sm text-muted mb-6">
+      <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-4">{t('users_title')}</h2>
+      <p className="text-xs text-muted mb-4">
         {t('users_subtitle')}
       </p>
 
@@ -59,7 +59,11 @@ export function UsersPanel() {
         <div className="bg-plex-darker border border-plex-border rounded-xl divide-y divide-plex-border">
           {users.map(user => (
             <div key={user.username}>
-            <div className="flex items-center gap-4 px-5 py-4">
+            {/* The whole row opens the category levels; the switch and chevron stop the click themselves. */}
+            <div
+              className="flex items-center gap-4 px-5 py-4 cursor-pointer hover:bg-white/[0.03]"
+              onClick={() => setExpanded(e => (e === user.username ? null : user.username))}
+            >
               {user.thumb ? (
                 <img
                   src={user.thumb}
@@ -74,7 +78,8 @@ export function UsersPanel() {
               )}
 
               <button
-                onClick={() => setExpanded(e => (e === user.username ? null : user.username))}
+                onClick={e => { e.stopPropagation(); setExpanded(x => (x === user.username ? null : user.username)) }}
+                aria-expanded={expanded === user.username}
                 className="text-gray-400 hover:text-gray-300"
                 aria-label={expanded === user.username ? t('users_hide_categories') : t('users_show_categories')}
               >
@@ -93,7 +98,10 @@ export function UsersPanel() {
 
               {/* Toggle */}
               <button
-                onClick={() => toggle(user.username, !user.enabled)}
+                role="switch"
+                aria-checked={user.enabled}
+                aria-label={t('users_toggle_aria', { name: user.username })}
+                onClick={e => { e.stopPropagation(); toggle(user.username, !user.enabled) }}
                 disabled={saving[user.username]}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50 ${
                   user.enabled ? 'bg-plex-orange' : 'bg-plex-border'

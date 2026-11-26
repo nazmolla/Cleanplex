@@ -26,15 +26,9 @@ const LEVELS = [
 const POLL_MS = 3000
 const MAX_POLLS = 600 // 30 minutes; training a few thousand frames takes minutes
 
-/**
- * Feedback-trained false-positive filter (#165). Learns from the segments marked as false
- * positives and, when switched on, drops new detections whose frame looks like them.
- */
-export default function VerifierPanel({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const { t, formatDateTime } = useT()
+/** Status of the false-positive filter, polled while it trains (stops when done or after MAX_POLLS). */
+function useVerifierStatus() {
   const [status, setStatus] = useState<Status | null>(null)
-  const [error, setError] = useState('')
-
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
       setStatus(await api.get<Status>('/api/scan/verifier', { signal }))
@@ -64,6 +58,42 @@ export default function VerifierPanel({ value, onChange }: { value: string; onCh
     }
   }, [status?.running, load])
 
+  return { status, setStatus }
+}
+
+/**
+ * Feedback-trained false-positive filter (#165): how strictly it drops new detections. A
+ * setting, so it lives with detection; training it is an action, in VerifierTraining (#236).
+ */
+export default function VerifierPanel({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const { t } = useT()
+  const { status } = useVerifierStatus()
+  const trained = !!status?.trained_at
+  return (
+    <div>
+      <label htmlFor="verifier-level" className="block text-sm font-medium text-gray-300 mb-1">{t('ver_title')}</label>
+      <select
+        id="verifier-level"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        disabled={!trained}
+        className="w-full max-w-xs px-3 py-2 bg-plex-darker border border-plex-border rounded-lg text-sm text-gray-100 disabled:opacity-40"
+      >
+        {LEVELS.map(l => (
+          <option key={l.value} value={l.value}>{t(l.labelKey)}</option>
+        ))}
+      </select>
+      <p className="text-xs text-muted mt-1">{trained ? t('ver_desc') : t('ver_untrained_hint')}</p>
+    </div>
+  )
+}
+
+/** Train or retrain the false-positive filter and show how well each label's model separates. */
+export function VerifierTraining() {
+  const { t, formatDateTime } = useT()
+  const { status, setStatus } = useVerifierStatus()
+  const [error, setError] = useState('')
+
   const train = async () => {
     setError('')
     try {
@@ -77,41 +107,41 @@ export default function VerifierPanel({ value, onChange }: { value: string; onCh
   const trained = !!status?.trained_at
   const groups = Object.entries(status?.groups ?? {})
   return (
-    <div className="lg:col-span-2 border border-gray-800 rounded-lg p-4">
-      <p className="text-sm font-medium text-gray-300 mb-1">{t('ver_title')}</p>
-      <p className="text-xs text-muted mb-3">
-        {t('ver_desc')}
-      </p>
+    <div>
       <div className="flex flex-wrap items-center gap-3">
-        <select
-          value={value}
-          onChange={e => onChange(e.target.value)}
-          disabled={!trained}
-          className="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 disabled:opacity-40"
-        >
-          {LEVELS.map(l => (
-            <option key={l.value} value={l.value}>{t(l.labelKey)}</option>
-          ))}
-        </select>
-        <button
-          type="button"
-          onClick={train}
-          disabled={status?.running}
-          className="px-3 py-2 text-sm rounded bg-gray-800 hover:bg-gray-700 text-gray-200 disabled:opacity-40"
-        >
+        <button type="button" onClick={train} disabled={status?.running} className="btn-outline text-sm">
           {status?.running
             ? t('ver_training_pct', { pct: Math.round((status.progress || 0) * 100) })
             : trained
               ? t('ver_retrain')
               : t('ver_train')}
         </button>
+        {trained && (
+          <span className="text-xs text-muted">{t('ver_trained_at', { time: formatDateTime((status!.trained_at as number) * 1000) })}</span>
+        )}
       </div>
       {(error || status?.error) && <p className="text-xs text-red-400 mt-2">{error || status?.error}</p>}
-      {trained && (
-        <p className="text-xs text-muted mt-2">
-          {t('ver_trained_at', { time: formatDateTime((status!.trained_at as number) * 1000) })}{' '}
-          {groups.map(([g, s]) => t('ver_group_stat', { group: g, fp: s.false_positives, n: s.n, auc: s.auc.toFixed(2) })).join(' · ')}
-        </p>
+      {groups.length > 0 && (
+        <table className="mt-3 w-full max-w-xl text-sm">
+          <thead>
+            <tr className="text-xs text-muted border-b border-plex-border">
+              <th className="text-start font-medium py-1.5 pe-3">{t('ver_col_label')}</th>
+              <th className="text-end font-medium py-1.5 pe-3">{t('ver_col_false')}</th>
+              <th className="text-end font-medium py-1.5 pe-3">{t('ver_col_total')}</th>
+              <th className="text-end font-medium py-1.5">{t('ver_col_auc')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map(([g, s]) => (
+              <tr key={g} className="border-b border-plex-border/50 text-gray-300">
+                <td className="py-1.5 pe-3" dir="ltr">{g}</td>
+                <td className="py-1.5 pe-3 text-end tabular-nums">{s.false_positives}</td>
+                <td className="py-1.5 pe-3 text-end tabular-nums">{s.n}</td>
+                <td className="py-1.5 text-end tabular-nums">{s.auc.toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </div>
   )

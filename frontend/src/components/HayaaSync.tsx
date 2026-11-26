@@ -226,7 +226,7 @@ export default function HayaaSync() {
         </label>
         <div className="text-sm space-y-2">
           <label className="flex items-center gap-2 text-gray-300">
-            <input type="checkbox" checked={st.auto_sync} onChange={e => save({ auto_sync: e.target.checked })} />
+            <input type="checkbox" checked={st.auto_sync} onChange={e => save({ auto_sync: e.target.checked })} className="w-4 h-4 accent-plex-orange" />
             {t('hayaa_auto_sync')}
           </label>
           <label className="flex items-center gap-2 text-gray-300">

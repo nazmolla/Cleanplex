@@ -134,7 +134,7 @@ describe('Settings sections', () => {
     await waitFor(() => screen.getByDisplayValue('http://plex:32400'))
     expect(screen.queryByText('Enable SigLIP fallback')).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'SigLIP Fallback' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Detection & Performance' }))
 
     expect(screen.getByText('Enable SigLIP fallback')).toBeInTheDocument()
     expect(screen.queryByDisplayValue('http://plex:32400')).not.toBeInTheDocument()
@@ -145,7 +145,7 @@ describe('Settings sections', () => {
     renderSettings()
     await waitFor(() => screen.getByDisplayValue('http://plex:32400'))
 
-    fireEvent.click(screen.getByRole('button', { name: 'SigLIP Fallback' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Detection & Performance' }))
     fireEvent.click(screen.getByLabelText('Enable SigLIP fallback'))
     fireEvent.click(screen.getByRole('button', { name: /Save Settings/ }))
 
@@ -160,8 +160,8 @@ describe('Settings sections', () => {
     renderSettings()
     await waitFor(() => screen.getByDisplayValue('http://plex:32400'))
 
-    fireEvent.click(screen.getByRole('button', { name: 'NudeNet Detection' }))
-    fireEvent.change(screen.getByLabelText('Female breast exposed threshold'), { target: { value: '0.8' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Detection & Performance' }))
+    fireEvent.change(screen.getByLabelText('NudeNet Female breast exposed threshold'), { target: { value: '0.8' } })
     fireEvent.click(screen.getByRole('button', { name: /Save Settings/ }))
 
     await waitFor(() => expect(mockApi.put).toHaveBeenCalled())
@@ -173,9 +173,9 @@ describe('Settings sections', () => {
     renderSettings()
     await waitFor(() => screen.getByDisplayValue('http://plex:32400'))
 
-    fireEvent.click(screen.getByRole('button', { name: 'SigLIP Fallback' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Detection & Performance' }))
     fireEvent.click(screen.getByLabelText('Enable SigLIP fallback'))
-    const box = screen.getByLabelText('Female breast exposed threshold')
+    const box = screen.getByLabelText('SigLIP Female breast exposed threshold')
     fireEvent.change(box, { target: { value: '0.9' } })
     fireEvent.change(box, { target: { value: '' } })
     fireEvent.click(screen.getByRole('button', { name: /Save Settings/ }))
@@ -189,7 +189,7 @@ describe('Settings sections', () => {
     renderSettings()
     await waitFor(() => screen.getByDisplayValue('http://plex:32400'))
 
-    fireEvent.click(screen.getByRole('button', { name: 'SigLIP Fallback' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Detection & Performance' }))
     fireEvent.click(screen.getByLabelText('Enable SigLIP fallback'))
     fireEvent.click(screen.getByLabelText(/Ignore end credits/))
     fireEvent.click(screen.getByRole('button', { name: /Save Settings/ }))
@@ -203,7 +203,7 @@ describe('Settings sections', () => {
     renderSettings()
     await waitFor(() => screen.getByDisplayValue('http://plex:32400'))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Segments' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Detection & Performance' }))
     fireEvent.change(screen.getByDisplayValue('500'), { target: { value: '250' } })
     fireEvent.click(screen.getByRole('button', { name: /Save Settings/ }))
 
@@ -223,7 +223,7 @@ describe('Settings sections', () => {
     renderSettings()
     await waitFor(() => screen.getByDisplayValue('http://plex:32400'))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Segments' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Detection & Performance' }))
 
     expect(screen.getByRole('status')).toHaveTextContent('3,358 existing segments are still waiting to be refined')
   })
@@ -233,7 +233,7 @@ describe('Settings sections', () => {
     renderSettings()
     await waitFor(() => screen.getByDisplayValue('http://plex:32400'))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Scan Scope & Schedule' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Library & Schedule' }))
     fireEvent.click(screen.getByLabelText(/Also render as soon as the scan queue is empty/))
     fireEvent.click(screen.getByRole('button', { name: /Save Settings/ }))
 
@@ -276,13 +276,13 @@ describe('Scan ratings checklist (#219)', () => {
       return Promise.resolve({})
     })
     render(<MemoryRouter initialEntries={['/settings?section=schedule']}><Settings /></MemoryRouter>)
-    const r = await screen.findByRole('checkbox', { name: /^R · 671/ })
-    expect(r).toBeChecked()
-    expect(screen.getByText(/includes eg\/16, eg\/18/)).toBeInTheDocument()
-    expect(screen.getByRole('checkbox', { name: /^G · 327/ })).not.toBeChecked()
-    expect(screen.queryByRole('checkbox', { name: /^NC-17/ })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('checkbox', { name: /^G · 327/ }))
-    expect(screen.getByRole('checkbox', { name: /^G · 327/ })).toBeChecked()
+    const r = await screen.findByRole('button', { name: /^R\s*671/ })
+    expect(r).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('eg/16, eg/18')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^G\s*327/ })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByRole('button', { name: /^NC-17/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^G\s*327/ }))
+    expect(screen.getByRole('button', { name: /^G\s*327/ })).toHaveAttribute('aria-pressed', 'true')
   })
 })
 
@@ -297,10 +297,66 @@ describe('Language section (#232)', () => {
         </I18nProvider>
       </MemoryRouter>,
     )
-    fireEvent.click(await screen.findByRole('button', { name: 'Language' }))
     fireEvent.click(await screen.findByRole('button', { name: 'العربية' }))
     expect(document.documentElement.dir).toBe('rtl')
     expect(document.documentElement.lang).toBe('ar')
     expect(screen.getByRole('button', { name: 'English' })).toHaveAttribute('aria-pressed', 'false')
+  })
+})
+
+describe('Settings redesign (#236)', () => {
+  it('opens the section that now holds an old section id', async () => {
+    render(<MemoryRouter initialEntries={['/settings?section=siglip']}><Settings /></MemoryRouter>)
+    expect(await screen.findByText('Enable SigLIP fallback')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Detection & Performance' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('maps every old section id to a new one', async () => {
+    const { resolveSection } = await import('../../pages/Settings')
+    expect(resolveSection('connection')).toBe('general')
+    expect(resolveSection('language')).toBe('general')
+    expect(resolveSection('filtering')).toBe('playback')
+    expect(resolveSection('nudenet')).toBe('detection')
+    expect(resolveSection('segments')).toBe('detection')
+    expect(resolveSection('schedule')).toBe('schedule')
+    expect(resolveSection('hayaa')).toBe('hayaa')
+    expect(resolveSection('users')).toBe('users')
+    expect(resolveSection('nonsense')).toBe('general')
+    expect(resolveSection(null)).toBe('general')
+  })
+
+  it('shows the Save bar only after a change, and Discard puts the saved value back', async () => {
+    renderSettings()
+    const url = await screen.findByDisplayValue('http://plex:32400')
+    expect(screen.queryByRole('button', { name: /Save Settings/ })).not.toBeInTheDocument()
+
+    fireEvent.change(url, { target: { value: 'http://other:32400' } })
+    expect(screen.getByRole('button', { name: /Save Settings/ })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+    expect(screen.getByDisplayValue('http://plex:32400')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Save Settings/ })).not.toBeInTheDocument()
+    expect(mockApi.put).not.toHaveBeenCalled()
+  })
+
+  it('tests the typed connection values without saving them', async () => {
+    mockApi.post.mockResolvedValue({ ok: false, message: 'unreachable' })
+    renderSettings()
+    const url = await screen.findByDisplayValue('http://plex:32400')
+    fireEvent.change(url, { target: { value: 'http://typo:32400' } })
+    fireEvent.click(screen.getByRole('button', { name: /Test Connection/i }))
+
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith(
+      '/api/settings/test-connection',
+      expect.objectContaining({ plex_url: 'http://typo:32400' }),
+    ))
+    expect(mockApi.put).not.toHaveBeenCalled()
+    expect(await screen.findByText('unreachable')).toBeInTheDocument()
+  })
+
+  it('keeps one-off actions in Maintenance, not among settings', async () => {
+    render(<MemoryRouter initialEntries={['/settings?section=maintenance']}><Settings /></MemoryRouter>)
+    expect(await screen.findByRole('button', { name: /Restart Scanner/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Save Settings/ })).not.toBeInTheDocument()
   })
 })

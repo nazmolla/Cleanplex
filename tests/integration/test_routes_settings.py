@@ -84,9 +84,42 @@ async def test_test_connection_returns_ok_true(http_client):
     with patch("cleanplex.web.routes.settings.plex_mod.PlexClient") as MockClient:
         instance = MockClient.return_value
         instance.test_connection = AsyncMock(return_value=(True, "My Plex"))
+        instance.close = AsyncMock()
         resp = await http_client.post("/api/settings/test-connection")
     assert resp.json()["ok"] is True
     assert resp.json()["message"] == "My Plex"
+
+
+async def test_test_connection_uses_typed_values_without_saving_them(http_client):
+    await db.set_setting("plex_url", "http://saved:32400")
+    await db.set_setting("plex_token", "saved-tok")
+    with patch("cleanplex.web.routes.settings.plex_mod.PlexClient") as MockClient:
+        instance = MockClient.return_value
+        instance.test_connection = AsyncMock(return_value=(False, "unreachable"))
+        instance.close = AsyncMock()
+        resp = await http_client.post(
+            "/api/settings/test-connection",
+            json={"plex_url": "http://typo:32400", "plex_token": "typed-tok"},
+        )
+    MockClient.assert_called_once_with("http://typo:32400", "typed-tok")
+    instance.close.assert_awaited_once()
+    assert resp.json() == {"ok": False, "message": "unreachable"}
+    assert await db.get_setting("plex_url") == "http://saved:32400"
+    assert await db.get_setting("plex_token") == "saved-tok"
+
+
+async def test_test_connection_blank_token_falls_back_to_stored(http_client):
+    await db.set_setting("plex_url", "http://saved:32400")
+    await db.set_setting("plex_token", "saved-tok")
+    with patch("cleanplex.web.routes.settings.plex_mod.PlexClient") as MockClient:
+        instance = MockClient.return_value
+        instance.test_connection = AsyncMock(return_value=(True, "My Plex"))
+        instance.close = AsyncMock()
+        resp = await http_client.post(
+            "/api/settings/test-connection", json={"plex_url": "http://new:32400", "plex_token": ""},
+        )
+    MockClient.assert_called_once_with("http://new:32400", "saved-tok")
+    assert "saved-tok" not in resp.text
 
 
 # ── GET /api/settings/detector-labels ─────────────────────────────────────────

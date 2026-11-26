@@ -166,15 +166,28 @@ async def update_settings(payload: SettingsPayload):
     return {"ok": True}
 
 
+class TestConnectionPayload(BaseModel):
+    plex_url: str | None = None
+    plex_token: str | None = None
+
+
 @router.post("/test-connection")
-async def test_connection():
+async def test_connection(payload: TestConnectionPayload | None = None):
+    """Test a Plex URL and token without saving them (#236).
+
+    Values in the body are what the user typed; a missing or blank value falls back to
+    the stored one, so a masked token still tests. Nothing is persisted.
+    """
     settings = await db.get_all_settings()
-    url = settings.get("plex_url", "")
-    token = settings.get("plex_token", "")
+    url = ((payload.plex_url if payload else None) or "").strip() or settings.get("plex_url", "")
+    token = ((payload.plex_token if payload else None) or "").strip() or settings.get("plex_token", "")
     if not url or not token:
         return {"ok": False, "message": "Plex URL and token are required"}
     client = plex_mod.PlexClient(url, token)
-    ok, message = await client.test_connection()
+    try:
+        ok, message = await client.test_connection()
+    finally:
+        await client.close()
     return {"ok": ok, "message": message}
 
 

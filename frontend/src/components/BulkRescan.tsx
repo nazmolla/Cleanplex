@@ -128,14 +128,14 @@ export default function BulkRescan({ libraries }: { libraries: Library[] }) {
       {confirming ? (
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-400">{t('rescan_confirm_prompt', { titles: t('unit_title', { count: counts?.queued ?? 0 }) })}</span>
-          <button onClick={queue} disabled={busy} className="px-3 py-1.5 text-sm rounded bg-plex-orange text-black font-medium disabled:opacity-40">{t('common_confirm')}</button>
-          <button onClick={() => setConfirming(false)} disabled={busy} className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200">{t('common_cancel')}</button>
+          <button onClick={queue} disabled={busy} className="btn-primary text-sm">{t('common_confirm')}</button>
+          <button onClick={() => setConfirming(false)} disabled={busy} className="btn-outline text-sm">{t('common_cancel')}</button>
         </div>
       ) : (
         <button
           onClick={() => setConfirming(true)}
           disabled={!ready || !counts || counts.queued === 0}
-          className="px-3 py-1.5 text-sm rounded bg-plex-orange text-black font-medium disabled:opacity-40"
+          className="btn-primary text-sm"
         >
           {t('rescan_queue_btn')}
         </button>
