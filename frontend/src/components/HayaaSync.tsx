@@ -47,6 +47,7 @@ interface SyncStatus {
   last_result: SyncResult | null
   paused_until: number | null
   quota: { pushes: number; pulls: number; pushes_limit: number; pulls_limit: number }
+  pending_titles?: number
   held: number
   verify_pending: number
 }
@@ -141,9 +142,9 @@ export default function HayaaSync() {
     }
   }
 
-  const syncNow = async () => {
+  const syncNow = async (force = false) => {
     try {
-      setSt(await api.post<SyncStatus>('/api/hayaa/sync'))
+      setSt(await api.post<SyncStatus>(`/api/hayaa/sync${force ? '?force=true' : ''}`))
     } catch (e) {
       toast.error(`Could not start a sync: ${e instanceof Error ? e.message : e}`)
     }
@@ -176,13 +177,17 @@ export default function HayaaSync() {
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-3">
-        <button className="btn-primary inline-flex items-center gap-2" onClick={syncNow} disabled={st.running || !!paused}>
+        <button className="btn-primary inline-flex items-center gap-2" onClick={() => syncNow()} disabled={st.running || !!paused}>
           {st.running ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
           {st.running ? `Syncing: ${st.phase || 'starting'}` : 'Sync with Hayaa'}
         </button>
+        <button className="btn-outline" onClick={() => syncNow(true)} disabled={st.running || !!paused}
+                title="Send and fetch every title again, not only what changed">
+          Force sync
+        </button>
         <span className="text-xs text-muted">
           {st.last_sync ? `Last sync ${new Date(st.last_sync * 1000).toLocaleString()}` : 'Never synced'}
-          {' · '}today {st.quota.pushes}/{st.quota.pushes_limit} pushes, {st.quota.pulls}/{st.quota.pulls_limit} pulls
+          {st.pending_titles ? ` · ${st.pending_titles} title(s) with changes to send` : ' · everything sent'}
         </span>
       </div>
       {paused && (
@@ -193,7 +198,7 @@ export default function HayaaSync() {
       {r && !st.running && (
         <p className="text-sm text-gray-300">
           {r.error ? <span className="text-red-400">{r.error}. </span> : null}
-          Sent {r.pushed} observation(s){r.retracted ? `, withdrew ${r.retracted}` : ''}; checked {r.pulled} title(s), {r.changed} updated
+          Uploaded {r.pushed} observation(s){r.retracted ? `, withdrew ${r.retracted}` : ''} (Hayaa adds them in the background); checked {r.pulled} title(s), {r.changed} updated
           {r.applied ? `; applied ${r.applied} segment(s)` : ''}{r.hidden ? `, hid ${r.hidden}` : ''}
           {r.skipped_quota ? '; stopped at today\'s quota, the rest goes next time' : ''}
           {deferredText(r.deferred)}.

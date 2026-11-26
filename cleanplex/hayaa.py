@@ -444,29 +444,59 @@ async def unlink() -> None:
     _access = None
 
 
-async def signed_post(path: str, body: dict[str, Any]) -> dict[str, Any]:
-    """POST a JSON body to the sync API signed with the instance key; returns the JSON reply.
+# Network errors and 5xx (other than 503, a pause) are retried with these waits, re-signed
+# each time: Hayaa refuses a repeated nonce, and every sync request is safe to repeat.
+RETRY_WAITS_S = (1.0, 3.0, 9.0)
 
-    Raises HayaaBusy on 429/503, NotLinked when the key is unknown or revoked, HayaaError otherwise.
-    """
+
+async def _signed(method: str, path: str, raw: bytes, params: dict[str, str] | None = None
+                  ) -> tuple[int, Any]:
     api, _ = await get_urls()
     if not is_linked():
         raise NotLinked("Not signed in to Hayaa")
     key = await asyncio.to_thread(load_or_create_key)
-    raw = json.dumps(body, separators=(",", ":")).encode()
-    headers = sign_headers(key, "POST", path, raw)
-    headers["Content-Type"] = "application/json"
-    try:
-        resp = await _client().post(api + path, content=raw, headers=headers)
-    except httpx.HTTPError as exc:
-        raise HayaaError(f"Could not reach Hayaa: {type(exc).__name__}") from exc
-    data = _json(resp)
+    for attempt in range(len(RETRY_WAITS_S) + 1):
+        headers = sign_headers(key, method, path, raw)
+        if raw:
+            headers["Content-Type"] = "application/json"
+        try:
+            resp = await _client().request(method, api + path, content=raw or None,
+                                           headers=headers, params=params)
+        except httpx.HTTPError as exc:
+            if attempt == len(RETRY_WAITS_S):
+                raise HayaaError(f"Could not reach Hayaa: {type(exc).__name__}") from exc
+            await asyncio.sleep(RETRY_WAITS_S[attempt])
+            continue
+        if resp.status_code >= 500 and resp.status_code != 503 and attempt < len(RETRY_WAITS_S):
+            await asyncio.sleep(RETRY_WAITS_S[attempt])
+            continue
+        return resp.status_code, _json(resp)
+    raise HayaaError("Could not reach Hayaa")  # not reached
+
+
+def _checked(status: int, data: Any) -> dict[str, Any]:
     err = data.get("error") if isinstance(data, dict) else None
-    if resp.status_code in (401, 403):
-        raise NotLinked(f"Hayaa does not accept this instance ({err or resp.status_code}); sign in again")
-    if resp.status_code >= 400 or not isinstance(data, dict):
-        raise HayaaError(f"Hayaa refused the request: {err or resp.status_code}")
+    if status in (401, 403):
+        raise NotLinked(f"Hayaa does not accept this instance ({err or status}); sign in again")
+    if status >= 400 or not isinstance(data, dict):
+        raise HayaaError(f"Hayaa refused the request: {err or status}")
     return data
+
+
+async def signed_get(path: str, params: dict[str, str]) -> tuple[int, dict[str, Any]]:
+    """Signed GET (pull results, the change feed); returns (status, JSON)."""
+    status, data = await _signed("GET", path, b"", params)
+    return status, _checked(status, data)
+
+
+async def signed_post(path: str, body: dict[str, Any]) -> dict[str, Any]:
+    """POST a JSON body to the sync API signed with the instance key; returns the JSON reply.
+
+    Uploads answer 202 (queued on Hayaa). Raises HayaaBusy on 429/503, NotLinked when the key
+    is unknown or revoked, HayaaError otherwise.
+    """
+    status, data = await _signed("POST", path, json.dumps(body, separators=(",", ":")).encode())
+    return _checked(status, data)
 
 
 async def status() -> dict[str, Any]:

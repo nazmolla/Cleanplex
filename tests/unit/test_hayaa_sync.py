@@ -317,28 +317,34 @@ class FakeApi:
         self.pushed, self.media, self.pulls, self.proofs = [], [], [], []
         self.views, self.busy = views or {}, busy
         self.challenge, self.deferred = challenge or {}, deferred or {}
+        self.feed: list[str] = []  # titles the change feed lists after cursor "c0"
+        self.cursors: list[str] = []
 
     def handler(self, req: httpx.Request) -> httpx.Response:
         if self.busy:
             return httpx.Response(429, headers={"Retry-After": "600"})
         assert req.headers["x-hy-key"] and req.headers["x-hy-signature"]
+        if req.method == "GET" and req.url.path == "/api/v1/changes":
+            since = req.url.params.get("since", "")
+            self.cursors.append(since)
+            return httpx.Response(200, json={"titles": self.feed if since else [], "cursor": "c1",
+                                             "more": False})
         body = json.loads(req.content)
         if req.url.path == "/api/v1/push":
-            self.pushed += body["observations"]
             if body.get("proofs"):
                 self.proofs.append(body["proofs"])
                 return httpx.Response(200, json={"accepted": 0, "challenges": {}})
-            asked = {k: v for k, v in self.challenge.items()
-                     if any(o["title"] == k for o in body["observations"])}
-            return httpx.Response(200, json={"accepted": len(body["observations"]), "challenges": asked})
+            self.pushed += body["observations"]
+            return httpx.Response(202, json={"batch": "b1", "queued": len(body["observations"])})
         if req.url.path == "/api/v1/media":
             self.media += body["media"]
-            return httpx.Response(200, json={"stored": len(body["media"])})
+            return httpx.Response(202, json={"batch": "b2", "queued": len(body["media"])})
         if req.url.path == "/api/v1/pull":
             self.pulls.append(body["have"])
             return httpx.Response(200, json={
                 "views": {k: v for k, v in self.views.items() if k in body["have"]},
                 "deferred": {k: v for k, v in self.deferred.items() if k in body["have"]},
+                "challenges": {k: v for k, v in self.challenge.items() if k in body["have"]},
                 "pad": "   "})
         return httpx.Response(404, json={"error": "nope"})
 
@@ -367,10 +373,15 @@ async def test_sync_describes_pushes_pulls_and_applies(tmp_path):
     assert result["changed"] == 1 and result["applied"] == 1
     assert {s["source"] for s in await db.get_segments_for_guid("g1")} == {"scanner", "hayaa"}
 
-    # Nothing changed: the second sync sends nothing and asks with the version it holds.
+    # Nothing changed: the second sync sends nothing and pulls nothing (the feed is empty)...
     fake.pushed.clear()
+    pulls = len(fake.pulls)
     await hs.run_sync(manual=True)
-    assert fake.pushed == [] and fake.pulls[-1] == {key: "v1"}
+    assert fake.pushed == [] and len(fake.pulls) == pulls and fake.cursors[-1] == "c1"
+    # ...and when Hayaa's feed lists the title, it asks with the version it holds.
+    fake.feed = [key]
+    await hs.run_sync(manual=True)
+    assert fake.pulls[-1] == {key: "v1"}
 
 
 async def test_sync_answers_possession_challenges_from_the_file(tmp_path):
@@ -545,3 +556,87 @@ def test_batches_stay_under_hayaas_body_limit():
     parts = hs._by_size(items)
     assert sum(len(p) for p in parts) == 3000 and len(parts) > 1
     assert all(len(json.dumps({"media": p})) < 256 * 1024 for p in parts)
+
+
+# ── Per-title sync state and content key (#231) ───────────────────────────────
+
+async def _state(guid="g1"):
+    async with db.get_connection() as conn:
+        rows = await conn.execute_fetchall("SELECT hayaa_sync_state, content_key FROM scan_jobs WHERE plex_guid=?", (guid,))
+    return dict(rows[0])
+
+
+async def test_sync_sends_pending_titles_only_and_changes_make_them_pending(tmp_path):
+    fake = FakeApi()
+    key = await _linked_title(tmp_path, fake)
+    sid = await db.insert_segment("g1", "Film", 100_000, 110_000, labels="BUTTOCKS_EXPOSED", severity="medium")
+    await hs.run_sync(manual=True)
+    assert (await _state())["hayaa_sync_state"] == "synced" and len(fake.pushed) == 1
+
+    fake.pushed.clear()
+    await hs.run_sync(manual=True)
+    assert fake.pushed == []  # synced: not even planned
+
+    async with db.get_connection() as conn:  # the user marks the detection a false positive
+        await conn.execute("UPDATE segments SET false_positive=1 WHERE id=?", (sid,))
+        await conn.commit()
+    assert (await _state())["hayaa_sync_state"] == "pending"
+    await hs.run_sync(manual=True)
+    assert fake.pushed and (await _state())["hayaa_sync_state"] == "synced"
+    assert key
+
+
+async def test_a_finished_scan_makes_the_title_pending(tmp_path):
+    fake = FakeApi()
+    await _linked_title(tmp_path, fake)
+    await hs.run_sync(manual=True)
+    assert (await _state())["hayaa_sync_state"] == "synced"
+    await db.update_scan_job_status("g1", "done", progress=1.0, scan_version=3)
+    assert (await _state())["hayaa_sync_state"] == "pending"
+
+
+async def test_sync_does_not_touch_the_file_once_the_key_is_stored(tmp_path):
+    fake = FakeApi()
+    key = await _linked_title(tmp_path, fake)
+    await hs.run_sync(manual=True)
+    assert (await _state())["content_key"] == key
+    (tmp_path / "film.mkv").unlink()  # the share is offline: sync still knows the title
+    await db.insert_segment("g1", "Film", 200_000, 210_000, labels="BUTTOCKS_EXPOSED", severity="medium")
+    fake.pushed.clear()
+    await hs.run_sync(manual=True)
+    assert [o["title"] for o in fake.pushed] == [key]
+
+
+async def test_force_sync_sends_and_pulls_everything(tmp_path):
+    fake = FakeApi()
+    key = await _linked_title(tmp_path, fake)
+    await db.insert_segment("g1", "Film", 100_000, 110_000, labels="BUTTOCKS_EXPOSED", severity="medium")
+    await hs.run_sync(manual=True)
+    fake.pushed.clear()
+    pulls = len(fake.pulls)
+    await db.set_setting("hayaa_feed_cursor", "c1")
+    await hs.run_sync(manual=True, force=True)
+    assert fake.cursors[-1] == "" and len(fake.pulls) == pulls + 1 and key in fake.pulls[-1]
+    assert fake.pushed == []  # already sent ids are not re-sent; the ledger knows them
+
+
+async def test_a_large_pull_is_collected_from_its_job(tmp_path, monkeypatch):
+    fake = FakeApi()
+    key = await _linked_title(tmp_path, fake)
+    fake.views = {key: _view()}
+    base = fake.handler
+    polls = []
+
+    def handler(req):
+        if req.url.path == "/api/v1/pull":
+            json.loads(req.content)
+            return httpx.Response(202, json={"job": "j1", "retry_after": 0})
+        if req.url.path == "/api/v1/pull/result":
+            polls.append(req.url.params["job"])
+            if len(polls) < 2:
+                return httpx.Response(202, json={"job": "j1", "retry_after": 0})
+            return httpx.Response(200, json={"views": {key: _view()}, "deferred": {}, "challenges": {}})
+        return base(req)
+    hayaa._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    result = await hs.run_sync(manual=True)
+    assert polls == ["j1", "j1"] and result["changed"] == 1

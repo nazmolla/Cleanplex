@@ -46,6 +46,7 @@ AUTO_BUDGET = 0.8
 OBS_PER_PUSH = 500
 MEDIA_PER_PUSH = 200
 PULL_BATCH = 500
+PULL_JOB_POLLS = 90  # about three minutes of retry_after waits for a large pull job
 # Hayaa refuses a body over 256 KB, whatever the item count; batches stay well under it.
 BODY_BUDGET = 192 * 1024
 
@@ -497,17 +498,23 @@ async def _nudenet_detector() -> str:
 
 
 async def _content_keys(titles: list[dict]) -> dict[str, dict]:
-    """Content key -> title, for titles whose file is reachable now (others wait for a later sync)."""
+    """Content key -> title. The key is kept on the title row (#231), so only titles that have
+    none yet touch their file (once); a title whose file is unreachable waits for a later sync."""
     out: dict[str, dict] = {}
     for t in titles:
-        path = t["file_path"]
-        try:
-            if not await asyncio.to_thread(os.path.isfile, path):
+        key = t.get("content_key") or ""
+        if not key:
+            path = t["file_path"]
+            try:
+                if not await asyncio.to_thread(os.path.isfile, path):
+                    continue
+                key = await hayaa.content_key_for(path)
+                size = (await asyncio.to_thread(os.stat, path)).st_size
+            except (OSError, ValueError) as exc:
+                logger.debug("No content key for %s: %s", path, exc)
                 continue
-            key = await hayaa.content_key_for(path)
-        except (OSError, ValueError) as exc:
-            logger.debug("No content key for %s: %s", path, exc)
-            continue
+            await db.set_title_content_key(t["plex_guid"], key, size)
+            t = {**t, "content_key": key, "content_size": size}
         out[key] = t
     return out
 
@@ -518,8 +525,9 @@ async def _removed_keys(live: set[str]) -> dict[str, dict]:
             for t in await db.get_hayaa_removed_titles() if t["content_key"] not in live}
 
 
-async def run_sync(manual: bool) -> dict[str, Any]:
-    """One sync: describe new files, push what changed, pull changed consensus, apply it.
+async def run_sync(manual: bool, force: bool = False) -> dict[str, Any]:
+    """One sync: describe new files, push titles whose shared data changed, pull titles whose
+    consensus changed (Hayaa's change feed), apply it. `force` sends and pulls everything.
 
     Raises HayaaBusy (after recording the pause) and NotLinked; other per-request failures end
     the run with what was done so far. Only one sync runs at a time.
@@ -536,6 +544,9 @@ async def run_sync(manual: bool) -> dict[str, Any]:
         challenges: dict[str, list[int]] = {}
         try:
             _state["phase"] = "identifying files"
+            if force:
+                await db.mark_all_hayaa_pending()
+                await db.set_setting("hayaa_feed_cursor", "")
             titles = await db.get_hayaa_sync_titles()
             by_key = await _content_keys(titles)
             # Removed titles whose key was kept are pushed but never pulled or proved: the file
@@ -548,11 +559,15 @@ async def run_sync(manual: bool) -> dict[str, Any]:
             result["described"] = await _describe({**gone, **by_key}, known, manual, result)
 
             _state["phase"] = "pushing"
-            await _push({**gone, **by_key}, manual, result, challenges)
-            await _prove(by_key, challenges, result)
+            pending = {k: t for k, t in by_key.items() if t.get("hayaa_sync_state") != "synced"}
+            await db.mark_hayaa_sending([t["plex_guid"] for t in pending.values()])
+            if await _push({**gone, **pending}, manual, result, challenges):
+                await db.mark_hayaa_synced([t["plex_guid"] for t in pending.values()])
 
             _state["phase"] = "pulling"
-            changed_guids = await _pull(by_key, known, manual, result, challenges)
+            to_pull = await _changed_keys(by_key)
+            changed_guids = await _pull({k: by_key[k] for k in to_pull}, known, manual, result,
+                                        challenges)
             await _prove(by_key, challenges, result)  # these unlock on the next sync
 
             _state["phase"] = "applying"
@@ -622,7 +637,8 @@ def _by_size(items: list[dict]) -> list[list[dict]]:
 
 
 async def _push(by_key: dict[str, dict], manual: bool, result: dict,
-                challenges: dict[str, list[int]]) -> None:
+                challenges: dict[str, list[int]]) -> bool:
+    """Send what changed for these titles; True when Hayaa accepted all of it (202 queued)."""
     guids = [t["plex_guid"] for t in by_key.values()]
     removed = [t["plex_guid"] for t in by_key.values() if t.get("removed")]
     segs: dict[str, list[dict]] = {}
@@ -650,9 +666,7 @@ async def _push(by_key: dict[str, dict], manual: bool, result: dict,
             result["skipped_quota"] = True
             return False
         await _spend("pushes")
-        reply = await hayaa.signed_post("/api/v1/push", {"observations": batch})
-        challenges.update({k: v for k, v in (reply.get("challenges") or {}).items()
-                           if not by_key.get(k, {}).get("removed")})
+        await hayaa.signed_post("/api/v1/push", {"observations": batch})  # 202: queued on Hayaa
         await db.record_hayaa_sent(rows, retracted)
         result["pushed"] += sum(1 for o in batch if o["kind"] != "retract")
         result["retracted"] += len(retracted)
@@ -667,11 +681,11 @@ async def _push(by_key: dict[str, dict], manual: bool, result: dict,
             continue
         if batch and (len(batch) + len(obs) > OBS_PER_PUSH or
                       sum(map(_size, batch)) + sum(map(_size, obs)) > BODY_BUDGET) and not await flush():
-            return
+            return False
         batch += obs
         rows += new_rows
         retracted += gone
-    await flush()
+    return await flush()
 
 
 async def _prove(by_key: dict[str, dict], challenges: dict[str, list[int]], result: dict) -> None:
@@ -696,6 +710,42 @@ async def _prove(by_key: dict[str, dict], challenges: dict[str, list[int]], resu
     challenges.clear()
 
 
+async def _changed_keys(by_key: dict[str, dict]) -> list[str]:
+    """Titles worth pulling: those Hayaa's change feed lists since the stored cursor, ones never
+    pulled, ones partly released or held back last time. No cursor (first sync, force) means all.
+    The new cursor is saved once the pull finished (see _pull)."""
+    cursor = await db.get_setting("hayaa_feed_cursor", "") or ""
+    changed: set[str] = set()
+    new_cursor = cursor
+    while True:
+        _, d = await hayaa.signed_get("/api/v1/changes", {"since": new_cursor})
+        changed.update(d.get("titles") or [])
+        new_cursor = str(d.get("cursor") or new_cursor)
+        if not d.get("more"):
+            break
+    _state["next_cursor"] = new_cursor
+    if not cursor:
+        return list(by_key)
+    known = await db.get_hayaa_titles()
+    retry = set(json.loads(await db.get_setting("hayaa_partial", "[]") or "[]")) | \
+        set(json.loads(await db.get_setting("hayaa_deferred", "[]") or "[]"))
+    return [k for k in by_key
+            if k in changed or k in retry or not known.get(k, {}).get("pulled_at")]
+
+
+async def _pull_batch(have: dict[str, str]) -> dict[str, Any]:
+    """One pull; a large one is a job on Hayaa, collected when ready (docs/ASYNC_SYNC.md)."""
+    reply = await hayaa.signed_post("/api/v1/pull", {"have": have})
+    for _ in range(PULL_JOB_POLLS):
+        if "job" not in reply or "views" in reply:
+            break
+        await asyncio.sleep(float(reply.get("retry_after", 2)))
+        _, reply = await hayaa.signed_get("/api/v1/pull/result", {"job": str(reply["job"])})
+    if "views" not in reply:
+        raise hayaa.HayaaError(str(reply.get("error") or "Hayaa did not finish the pull in time"))
+    return reply
+
+
 async def _pull(by_key: dict[str, dict], known: dict[str, dict], manual: bool, result: dict,
                 challenges: dict[str, list[int]]) -> list[str]:
     """Pull changed views, partly released and least recently pulled titles first; stage them.
@@ -708,6 +758,7 @@ async def _pull(by_key: dict[str, dict], known: dict[str, dict], manual: bool, r
     order = sorted(by_key, key=lambda k: (k not in partial, known.get(k, {}).get("pulled_at") or ""))
     changed: list[str] = []
     versions: dict[str, str] = {}
+    deferred_keys: set[str] = set()
     for i in range(0, len(order), PULL_BATCH):
         if _allowance(await _quota(), "pulls", manual) <= 0:
             result["skipped_quota"] = True
@@ -715,7 +766,7 @@ async def _pull(by_key: dict[str, dict], known: dict[str, dict], manual: bool, r
         chunk = order[i:i + PULL_BATCH]
         have = {k: (known.get(k, {}).get("version") or "")[:16] for k in chunk}
         await _spend("pulls")
-        reply = await hayaa.signed_post("/api/v1/pull", {"have": have})
+        reply = await _pull_batch(have)
         result["pulled"] += len(chunk)
         for key, view in (reply.get("views") or {}).items():
             if key not in by_key:
@@ -733,12 +784,16 @@ async def _pull(by_key: dict[str, dict], known: dict[str, dict], manual: bool, r
             else:
                 partial.discard(key)
         for key, why in (reply.get("deferred") or {}).items():
+            deferred_keys.add(key)
             reason = str((why or {}).get("reason") or "unknown")
             result["deferred"][reason] = result["deferred"].get(reason, 0) + 1
         challenges.update(reply.get("challenges") or {})
         # Unchanged titles are still marked as pulled, so the rotation moves on.
         await db.set_hayaa_title_versions({k: versions.get(k, have[k]) for k in chunk})
-    await db.set_setting("hayaa_partial", json.dumps(sorted(partial & set(by_key))))
+    await db.set_setting("hayaa_partial", json.dumps(sorted(partial)))
+    await db.set_setting("hayaa_deferred", json.dumps(sorted(deferred_keys)))
+    if "next_cursor" in _state:
+        await db.set_setting("hayaa_feed_cursor", _state.pop("next_cursor"))
     result["changed"] = len(changed)
     return changed
 
@@ -774,6 +829,7 @@ async def sync_status() -> dict[str, Any]:
         "quota": {"pushes": q.get("pushes", 0), "pulls": q.get("pulls", 0),
                   "pushes_limit": PUSHES_PER_DAY, "pulls_limit": PULLS_PER_DAY},
         "held": await db.count_hayaa_claims(decision="hold") + await db.count_hayaa_claims(decision="verify"),
+        "pending_titles": await db.count_hayaa_pending(),
         "verify_pending": await db.count_hayaa_claims(verify_state="pending"),
     }
 

@@ -526,6 +526,37 @@ async def init_db() -> None:
             # Scan queue position (#174): NULL = not queued; lower runs first. The queue lives
             # in the database so workers claim from it and every view reads the same order.
             "ALTER TABLE scan_jobs ADD COLUMN queue_pos INTEGER",
+            # Hayaa sync per title (#231): the file's content key, computed once (scan end or first
+            # sync) so sync never reads media files, and whether what it shares changed since the
+            # last accepted push. Triggers below set 'pending'; a sync sets 'synced'.
+            "ALTER TABLE scan_jobs ADD COLUMN content_key TEXT DEFAULT ''",
+            "ALTER TABLE scan_jobs ADD COLUMN content_size INTEGER DEFAULT 0",
+            "ALTER TABLE scan_jobs ADD COLUMN hayaa_sync_state TEXT DEFAULT 'pending'",
+            "UPDATE scan_jobs SET content_key = (SELECT k.content_key FROM hayaa_content_keys k WHERE k.file_path = scan_jobs.file_path), "
+            "content_size = (SELECT k.size FROM hayaa_content_keys k WHERE k.file_path = scan_jobs.file_path) "
+            "WHERE COALESCE(content_key, '') = '' AND file_path IN (SELECT file_path FROM hayaa_content_keys)",
+            "CREATE INDEX IF NOT EXISTS idx_scan_jobs_sync_state ON scan_jobs(hayaa_sync_state)",
+            "CREATE INDEX IF NOT EXISTS idx_scan_jobs_content_key ON scan_jobs(content_key)",
+            # A finished scan, an own segment added, edited or removed, a false positive or
+            # relabel, a kept claim or a local re-check: each is something to share again.
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_scan AFTER UPDATE OF status, finished_at, scan_version ON scan_jobs "
+            "WHEN NEW.status = 'done' BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = NEW.plex_guid; END",
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_seg_ins AFTER INSERT ON segments WHEN NEW.source != 'hayaa' "
+            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = NEW.plex_guid; END",
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_seg_upd AFTER UPDATE OF false_positive, labels, start_ms, end_ms ON segments "
+            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = NEW.plex_guid; END",
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_seg_del AFTER DELETE ON segments WHEN OLD.source != 'hayaa' "
+            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = OLD.plex_guid; END",
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_feedback AFTER INSERT ON segment_feedback "
+            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = NEW.plex_guid; END",
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_override_ins AFTER INSERT ON hayaa_overrides "
+            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE content_key = NEW.title_key; END",
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_override_upd AFTER UPDATE ON hayaa_overrides "
+            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE content_key = NEW.title_key; END",
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_override_del AFTER DELETE ON hayaa_overrides "
+            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE content_key = OLD.title_key; END",
+            "CREATE TRIGGER IF NOT EXISTS hayaa_pending_verify AFTER UPDATE OF verify_state ON hayaa_claims "
+            "BEGIN UPDATE scan_jobs SET hayaa_sync_state = 'pending' WHERE plex_guid = NEW.plex_guid; END",
             # What Hayaa sync needs to push the scan of a removed title (#228).
             "ALTER TABLE removed_titles ADD COLUMN duration_ms INTEGER DEFAULT 0",
             "ALTER TABLE removed_titles ADD COLUMN status TEXT DEFAULT ''",
@@ -2517,6 +2548,51 @@ async def get_hayaa_content_key(file_path: str, size: int, mtime: int) -> str | 
     return row[0] if row else None
 
 
+async def set_title_content_key(plex_guid: str, content_key: str, size: int) -> None:
+    """Keep a title's content key on its row (#231): computed once, never read from the file again."""
+    async with get_connection() as conn:
+        await conn.execute("UPDATE scan_jobs SET content_key=?, content_size=? WHERE plex_guid=?",
+                           (content_key, size, plex_guid))
+        await conn.commit()
+
+
+async def mark_hayaa_sending(guids: list[str]) -> None:
+    """Titles about to be pushed; a change while the push runs sets them back to pending."""
+    async with get_connection() as conn:
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            await conn.execute(f"UPDATE scan_jobs SET hayaa_sync_state='sending' WHERE plex_guid IN ({_in(chunk)})", chunk)
+        await conn.commit()
+
+
+async def mark_hayaa_synced(guids: list[str]) -> None:
+    """Hayaa accepted everything for these titles; only those not changed since are marked."""
+    async with get_connection() as conn:
+        for i in range(0, len(guids), 500):
+            chunk = guids[i:i + 500]
+            await conn.execute(
+                f"UPDATE scan_jobs SET hayaa_sync_state='synced' WHERE hayaa_sync_state='sending' AND plex_guid IN ({_in(chunk)})",
+                chunk)
+        await conn.commit()
+
+
+async def count_hayaa_pending() -> int:
+    """Titles with something not yet accepted by Hayaa (scanned, single file)."""
+    async with get_connection() as conn:
+        row = await (await conn.execute(
+            "SELECT COUNT(*) FROM scan_jobs WHERE COALESCE(hayaa_sync_state, 'pending') != 'synced' "
+            "AND status = 'done' AND COALESCE(file_path, '') != '' AND COALESCE(ignored, 0) = 0 "
+            "AND COALESCE(json_array_length(NULLIF(part_files, '')), 0) <= 1")).fetchone()
+    return int(row[0])
+
+
+async def mark_all_hayaa_pending() -> None:
+    """Force sync: everything is sent again (Hayaa ignores what it already has)."""
+    async with get_connection() as conn:
+        await conn.execute("UPDATE scan_jobs SET hayaa_sync_state='pending'")
+        await conn.commit()
+
+
 async def put_hayaa_content_key(file_path: str, size: int, mtime: int, content_key: str) -> None:
     """Store a file's Hayaa content key, replacing an older one for the same path."""
     async with get_connection() as conn:
@@ -2524,6 +2600,8 @@ async def put_hayaa_content_key(file_path: str, size: int, mtime: int, content_k
             "INSERT OR REPLACE INTO hayaa_content_keys(file_path, size, mtime, content_key) VALUES(?,?,?,?)",
             (file_path, size, mtime, content_key),
         )
+        await conn.execute("UPDATE scan_jobs SET content_key=?, content_size=? WHERE file_path=?",
+                           (content_key, size, file_path))
         await conn.commit()
 
 
@@ -3018,7 +3096,9 @@ async def get_hayaa_sync_titles() -> list[dict]:
     async with get_connection() as conn:
         rows = await conn.execute_fetchall(
             "SELECT plex_guid, title, file_path, COALESCE(duration_ms, 0) AS duration_ms, status, "
-            "COALESCE(scan_version, 0) AS scan_version, finished_at FROM scan_jobs "
+            "COALESCE(scan_version, 0) AS scan_version, finished_at, COALESCE(content_key, '') AS content_key, "
+            "COALESCE(content_size, 0) AS content_size, COALESCE(hayaa_sync_state, 'pending') AS hayaa_sync_state "
+            "FROM scan_jobs "
             "WHERE COALESCE(file_path, '') != '' AND COALESCE(ignored, 0) = 0 "
             "AND COALESCE(json_array_length(NULLIF(part_files, '')), 0) <= 1"
         )

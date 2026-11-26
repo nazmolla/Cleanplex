@@ -73,9 +73,9 @@ class ReviewVerdict(BaseModel):
 _sync_task: asyncio.Task | None = None
 
 
-async def _run_manual_sync() -> None:
+async def _run_manual_sync(force: bool = False) -> None:
     try:
-        await hayaa_sync.run_sync(manual=True)
+        await hayaa_sync.run_sync(manual=True, force=force)
     except hayaa.HayaaError:
         pass  # recorded in hayaa_last_result, which the status shows
 
@@ -87,14 +87,15 @@ async def get_sync():
 
 
 @router.post("/sync")
-async def post_sync():
-    """Start one manual sync in the background; poll GET /api/hayaa/sync for the outcome."""
+async def post_sync(force: bool = False):
+    """Start one manual sync in the background; poll GET /api/hayaa/sync for the outcome.
+    `?force=true` sends and pulls every title, not only what changed."""
     global _sync_task
     if not hayaa.is_linked():
         raise HTTPException(409, "Sign in to Hayaa first")
     if hayaa_sync.running():
         raise HTTPException(409, "A sync is already running")
-    _sync_task = asyncio.create_task(_run_manual_sync())
+    _sync_task = asyncio.create_task(_run_manual_sync(force))
     await asyncio.sleep(0)  # let it take the lock, so the status below says running
     return await hayaa_sync.sync_status()
 
