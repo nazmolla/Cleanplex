@@ -21,13 +21,14 @@ import {
   Library, Title, ScannerStatus, Scope, scopeLevel, inScope, parseEpisodeTitle, showKeyOf, showNameOf,
   seasonSortKey, failureText, SegmentFilters, NO_SEGMENT_FILTERS, titleNameParts, plexThumb,
 } from '../components/browse/model'
+import { useT } from '../i18n'
 
 type SortOption = 'date-added' | 'scanned' | 'title' | 'year' | 'segments'
 type View = 'titles' | 'segments' | 'markers'
-const VIEWS: { id: View; label: string }[] = [
-  { id: 'titles', label: 'Titles' },
-  { id: 'segments', label: 'Segments' },
-  { id: 'markers', label: 'Markers' },
+const VIEWS: { id: View; labelKey: 'browse_view_titles' | 'browse_view_segments' | 'browse_view_markers' }[] = [
+  { id: 'titles', labelKey: 'browse_view_titles' },
+  { id: 'segments', labelKey: 'browse_view_segments' },
+  { id: 'markers', labelKey: 'browse_view_markers' },
 ]
 
 // Rows rendered at first and added per "Show more": each row holds a picture.
@@ -89,10 +90,10 @@ function ActionIcon({ label, onClick, disabled, tone, children }: {
 }
 
 const sum = (titles: Title[], f: (t: Title) => number) => titles.reduce((n, t) => n + f(t), 0)
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 const fpOf = (t: Title) => t.false_positive_count ?? 0
 
 export default function Browse() {
+  const { t: tr, formatDate, formatDateTime } = useT()
   const [params, setParams] = useSearchParams()
   const [libraries, setLibraries] = useState<Library[]>([])
   const [titles, setTitles] = useState<Title[]>([])
@@ -187,7 +188,7 @@ export default function Browse() {
         const lists = await Promise.all(d.libraries.map(lib => fetchLibrary(lib.id).catch(() => [] as Title[])))
         if (!cancelled) setTitles(lists.flat())
       } catch (err: any) {
-        if (!cancelled) toast.error(`Could not load the libraries: ${err?.message || 'Unknown error'}`)
+        if (!cancelled) toast.error(tr('browse_err_load_libs', { error: err?.message || tr('common_unknown_error') }))
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -344,21 +345,21 @@ export default function Browse() {
     return vals.length ? Math.max(...vals) : (sortDesc ? -Infinity : Infinity)
   }
 
-  const sortDirLabel = sortBy === 'title' ? (sortDesc ? 'Z to A' : 'A to Z')
-    : sortBy === 'segments' ? (sortDesc ? 'Most first' : 'Fewest first')
-    : (sortDesc ? 'Newest first' : 'Oldest first')
+  const sortDirLabel = sortBy === 'title' ? (sortDesc ? tr('browse_sort_dir_z_a') : tr('browse_sort_dir_a_z'))
+    : sortBy === 'segments' ? (sortDesc ? tr('browse_sort_dir_most') : tr('browse_sort_dir_fewest'))
+    : (sortDesc ? tr('browse_sort_dir_newest') : tr('browse_sort_dir_oldest'))
 
   // ── Rows: the children of the current level ───────────────────────────────────
   const makeGroup = (kind: 'show' | 'season', eps: Title[]): Group => {
     const first = eps[0]
-    const parsed = parseEpisodeTitle(first.title)
-    const showName = showNameOf(first)
+    const parsed = parseEpisodeTitle(first.title, tr)
+    const showName = showNameOf(first, tr)
     const seasonKey = eps.find(e => e.season_rating_key)?.season_rating_key
     const showPoster = eps.find(e => !!e.poster_url)?.poster_url ?? ''
     return {
       kind,
       libId: first.library_id,
-      showKey: showKeyOf(first),
+      showKey: showKeyOf(first, tr),
       showName,
       showGuid: first.show_guid ?? '',
       showTitleInEpisodes: parsed.show,
@@ -372,7 +373,7 @@ export default function Browse() {
   const groupBy = (kind: 'show' | 'season', eps: Title[]): Group[] => {
     const m = new Map<string, Title[]>()
     for (const t of eps) {
-      const k = kind === 'show' ? `${t.library_id}:${showKeyOf(t)}` : parseEpisodeTitle(t.title).season
+      const k = kind === 'show' ? `${t.library_id}:${showKeyOf(t, tr)}` : parseEpisodeTitle(t.title, tr).season
       if (!m.has(k)) m.set(k, [])
       m.get(k)!.push(t)
     }
@@ -391,8 +392,8 @@ export default function Browse() {
       let groups: Group[] = []
       if (query && childKind) {
         const named = sorted.filter(t => t.media_type === 'episode' && (childKind === 'show'
-          ? showNameOf(t).toLowerCase().includes(query)
-          : parseEpisodeTitle(t.title).season.toLowerCase().includes(query)))
+          ? showNameOf(t, tr).toLowerCase().includes(query)
+          : parseEpisodeTitle(t.title, tr).season.toLowerCase().includes(query)))
         groups = groupBy(childKind, named)
       }
       const inGroup = new Set(groups.flatMap(g => g.titles.map(t => t.plex_guid)))
@@ -422,7 +423,7 @@ export default function Browse() {
 
   /** How a title is named in rows and segment headings at this level. */
   const nameOf = useCallback((t: Title) => {
-    const parts = titleNameParts(t, level, flat)
+    const parts = titleNameParts(t, level, flat, tr)
     // At the top level a match can come from any library; say which.
     if (level === 'all' && libraries.length > 1) {
       const lib = libById.get(t.library_id)?.title
@@ -430,7 +431,7 @@ export default function Browse() {
       if (lib) parts.context = [parts.context, lib].filter(Boolean).join(' · ')
     }
     return parts
-  }, [level, flat, libraries.length, libById])
+  }, [level, flat, libraries.length, libById, tr])
 
   // ── Markers: counts per title, loaded for the libraries in scope when the view opens ──
   const [markerCounts, setMarkerCounts] = useState<Map<string, number>>(new Map())
@@ -488,8 +489,8 @@ export default function Browse() {
   const scanTitles = (list: Title[], now: boolean) => withBusy(`scan:${list.map(t => t.plex_guid).join(',')}`, async () => {
     const errors = await pool(list, t => api.post('/api/scan/title', { plex_guid: t.plex_guid, now, library_id: t.library_id }))
     await reloadLibsOf(list)
-    if (errors.length > 0) toast.error(`${plural(errors.length, 'title')} could not be queued:\n${errors.slice(0, 5).join('\n')}`)
-    else if (list.length > 1) setNotice(`${plural(list.length, 'title')} queued ${now ? 'to scan now' : 'for tonight'}`)
+    if (errors.length > 0) toast.error(tr('browse_err_queue_titles', { titles: tr('unit_title', { count: errors.length }), errors: errors.slice(0, 5).join('\n') }))
+    else if (list.length > 1) setNotice(tr(now ? 'browse_notice_titles_queued_now' : 'browse_notice_titles_queued_tonight', { titles: tr('unit_title', { count: list.length }) }))
   })
 
   // Queues a whole show or one season through POST /api/scan/show (#187).
@@ -499,21 +500,25 @@ export default function Browse() {
       const r = await api.post<{ queued: number; already_scanning: number }>('/api/scan/show', {
         show_guid: g.showGuid, show_title: g.showTitleInEpisodes, season: g.season, library_id: g.libId, now,
       })
-      const scanning = r.already_scanning ? ` (${r.already_scanning} already scanning)` : ''
-      setNotice(`${label}: ${plural(r.queued, 'episode')} queued ${now ? 'to scan now' : 'for tonight'}${scanning}`)
+      const scanning = r.already_scanning ? tr('browse_notice_already_scanning', { count: r.already_scanning }) : ''
+      setNotice(tr(now ? 'browse_notice_group_queued_now' : 'browse_notice_group_queued_tonight', {
+        label,
+        episodes: tr('unit_episode', { count: r.queued }),
+        scanning,
+      }))
       await reloadLibrary(g.libId)
     } catch (err: any) {
-      setNotice(`Could not queue ${label}: ${err.message || 'unknown error'}`)
+      setNotice(tr('browse_err_queue_item', { label, error: err.message || tr('common_unknown_error_lower') }))
     }
   }
 
   const scanLibrary = async (lib: Library, now: boolean) => {
     try {
       await api.post(`/api/scan/library/${lib.id}`, { now })
-      setNotice(`${lib.title}: queued ${now ? 'to scan now' : 'for tonight'}`)
+      setNotice(tr(now ? 'browse_notice_lib_queued_now' : 'browse_notice_lib_queued_tonight', { label: lib.title }))
       await reloadLibrary(lib.id)
     } catch (err: any) {
-      toast.error(`Could not queue the library: ${err.message || 'Unknown error'}`)
+      toast.error(tr('browse_err_queue_lib', { error: err.message || tr('common_unknown_error') }))
     }
   }
 
@@ -522,7 +527,7 @@ export default function Browse() {
       await api.post(`/api/libraries/${lib.id}/sync`)
       await reloadLibrary(lib.id)
     } catch (err: any) {
-      toast.error(`Could not sync ${lib.title} from Plex: ${err.message || 'Unknown error'}`)
+      toast.error(tr('browse_err_sync_lib', { label: lib.title, error: err.message || tr('common_unknown_error') }))
     }
   })
 
@@ -531,13 +536,13 @@ export default function Browse() {
   const retryFailed = (lib: Library) => withBusy(`retry:${lib.id}`, async () => {
     try {
       const r = await api.post<{ queued: number; ignored_cleared: number; skipped_ineligible: number }>('/api/scan/rescan', { scope: 'failed', library_id: lib.id })
-      const parts = [`${plural(r.queued, 'failed title')} queued for another try`]
-      if (r.ignored_cleared) parts.push(`${r.ignored_cleared} ignored cleared from the list`)
-      if (r.skipped_ineligible) parts.push(`${r.skipped_ineligible} outside your rating filter`)
+      const parts = [tr('browse_notice_retry_queued', { titles: tr('unit_failed_title', { count: r.queued }) })]
+      if (r.ignored_cleared) parts.push(tr('browse_notice_retry_ignored_cleared', { count: r.ignored_cleared }))
+      if (r.skipped_ineligible) parts.push(tr('browse_notice_retry_ineligible', { count: r.skipped_ineligible }))
       setNotice(parts.join(' · '))
       await reloadLibrary(lib.id)
     } catch (err: any) {
-      setNotice(`Could not retry the failed titles: ${err.message || 'unknown error'}`)
+      setNotice(tr('browse_err_retry_failed', { error: err.message || tr('common_unknown_error_lower') }))
     }
   })
 
@@ -549,14 +554,16 @@ export default function Browse() {
     const errors = await pool(list, t => api.post(`/api/scan/title/${encodeURIComponent(t.plex_guid)}/ignore`, { ignored }))
     setSelected(prev => new Set(Array.from(prev).filter(g => !guids.has(g))))
     await reloadLibsOf(list)
-    if (errors.length > 0) toast.error(`Could not change ignore${label ? ` for ${label}` : ''}: ${errors[0]}`)
+    if (errors.length > 0) {
+      toast.error(label ? tr('browse_err_ignore_for', { label, error: errors[0] }) : tr('browse_err_ignore', { error: errors[0] }))
+    }
   }
 
   const runDelete = async (label: string, list: Title[]) => {
     const errors = await pool(list, t => api.delete(`/api/titles/${encodeURIComponent(t.plex_guid)}/segments`))
     await reloadLibsOf(list)
-    if (errors.length > 0) toast.error(`Could not delete every segment of ${label}: ${errors[0]}`)
-    else toast.success(`Deleted the segments of ${label}.`)
+    if (errors.length > 0) toast.error(tr('browse_err_delete_segs', { label, error: errors[0] }))
+    else toast.success(tr('browse_ok_delete_segs', { label }))
   }
   const deleteSegments = (label: string, list: Title[]) => {
     const withSegs = list.filter(t => t.segment_count > 0 || fpOf(t) > 0)
@@ -601,7 +608,7 @@ export default function Browse() {
       await api.post(`/api/markers/libraries/${libId}/refresh`)
       await loadMarkerCounts([libId])
     } catch (err: any) {
-      toast.error(`Could not reload the marker list from Plex: ${err.message || 'Unknown error'}`)
+      toast.error(tr('browse_err_reload_markers', { error: err.message || tr('common_unknown_error') }))
     }
   })
 
@@ -620,8 +627,8 @@ export default function Browse() {
     let label = lib?.title ?? ''
     let whole: ScanTarget['whole']
     if (s.show && first) {
-      const parsed = parseEpisodeTitle(first.title)
-      label = s.season ? `${showNameOf(first)} – ${s.season}` : showNameOf(first)
+      const parsed = parseEpisodeTitle(first.title, tr)
+      label = s.season ? `${showNameOf(first, tr)} – ${s.season}` : showNameOf(first, tr)
       whole = { kind: s.season ? 'season' : 'show', showGuid: first.show_guid ?? '', showTitle: parsed.show, season: s.season ?? '', libraryId: s.lib }
     } else if (s.lib) {
       whole = { kind: 'library', libraryId: s.lib }
@@ -643,9 +650,15 @@ export default function Browse() {
       } else {
         r = await api.post<{ queued: number }>('/api/scan/titles', { plex_guids: target.guids, now })
       }
-      setNotice(`${target.label}${w ? ` (whole ${w.kind})` : ''}: ${plural(r.queued, 'title')} queued ${now && w?.kind !== 'library' ? 'to scan now' : 'for tonight'}`)
+      const when = tr(now && w?.kind !== 'library' ? 'browse_when_now' : 'browse_when_tonight')
+      const queuedTitles = tr('unit_title', { count: r.queued })
+      const noticeKey = w?.kind === 'show' ? 'browse_notice_rescan_whole_show'
+        : w?.kind === 'season' ? 'browse_notice_rescan_whole_season'
+        : w?.kind === 'library' ? 'browse_notice_rescan_whole_library'
+        : 'browse_notice_rescan'
+      setNotice(tr(noticeKey, { label: target.label, titles: queuedTitles, when }))
     } catch (err: any) {
-      setNotice(`Could not queue ${target.label}: ${err.message || 'unknown error'}`)
+      setNotice(tr('browse_err_queue_item', { label: target.label, error: err.message || tr('common_unknown_error_lower') }))
     }
   }
 
@@ -662,14 +675,14 @@ export default function Browse() {
 
   // ── Breadcrumb ────────────────────────────────────────────────────────────────
   const pathOf = (t: Title): Scope => (t.media_type === 'episode'
-    ? { lib: t.library_id, show: showKeyOf(t), season: parseEpisodeTitle(t.title).season }
+    ? { lib: t.library_id, show: showKeyOf(t, tr), season: parseEpisodeTitle(t.title, tr).season }
     : { lib: t.library_id })
   const path: Scope = scopeTitle ? pathOf(scopeTitle) : scope
-  const crumbs: { label: string; scope: Scope }[] = [{ label: 'All libraries', scope: {} }]
+  const crumbs: { label: string; scope: Scope }[] = [{ label: tr('browse_all_libraries'), scope: {} }]
   {
     const anyInPath = scopeTitle ?? scopeTitles[0]
-    if (path.lib) crumbs.push({ label: libById.get(path.lib)?.title ?? 'Library', scope: { lib: path.lib } })
-    if (path.show) crumbs.push({ label: anyInPath ? showNameOf(anyInPath) : 'Show', scope: { lib: path.lib, show: path.show } })
+    if (path.lib) crumbs.push({ label: libById.get(path.lib)?.title ?? tr('browse_library_fallback'), scope: { lib: path.lib } })
+    if (path.show) crumbs.push({ label: anyInPath ? showNameOf(anyInPath, tr) : tr('browse_show_fallback'), scope: { lib: path.lib, show: path.show } })
     if (path.season) crumbs.push({ label: path.season, scope: { lib: path.lib, show: path.show, season: path.season } })
     if (scopeTitle) crumbs.push({ label: nameOf(scopeTitle).name, scope })
   }
@@ -688,30 +701,30 @@ export default function Browse() {
 
   const titleActions = (t: Title, name: string) => (
     <>
-      <ActionIcon label="Scan tonight" onClick={() => scanTitles([t], false)} disabled={busy[`scan:${t.plex_guid}`]}><Moon size={15} /></ActionIcon>
-      <ActionIcon label="Scan now" onClick={() => scanTitles([t], true)} disabled={busy[`scan:${t.plex_guid}`]} tone="orange"><Zap size={15} /></ActionIcon>
-      <ActionIcon label={t.ignored ? `Un-ignore ${name}` : `Ignore ${name}`} onClick={() => setIgnored([t], !t.ignored, name)} tone="yellow">
+      <ActionIcon label={tr('browse_act_scan_tonight')} onClick={() => scanTitles([t], false)} disabled={busy[`scan:${t.plex_guid}`]}><Moon size={15} /></ActionIcon>
+      <ActionIcon label={tr('browse_act_scan_now')} onClick={() => scanTitles([t], true)} disabled={busy[`scan:${t.plex_guid}`]} tone="orange"><Zap size={15} /></ActionIcon>
+      <ActionIcon label={t.ignored ? tr('browse_act_unignore', { name }) : tr('browse_act_ignore', { name })} onClick={() => setIgnored([t], !t.ignored, name)} tone="yellow">
         {t.ignored ? <Eye size={15} /> : <EyeOff size={15} />}
       </ActionIcon>
-      <PlexLink ratingKey={t.rating_key} label="Open in Plex" />
+      <PlexLink ratingKey={t.rating_key} label={tr('browse_act_open_plex')} />
       {(t.segment_count > 0 || fpOf(t) > 0) && (
-        <ActionIcon label={`Delete all segments for ${name}`} onClick={() => deleteSegments(name, [t])} tone="red"><Trash2 size={15} /></ActionIcon>
+        <ActionIcon label={tr('browse_act_delete_segs', { name })} onClick={() => deleteSegments(name, [t])} tone="red"><Trash2 size={15} /></ActionIcon>
       )}
     </>
   )
 
   const groupActions = (g: Group) => {
-    const what = g.kind === 'season' ? g.season : 'whole show'
+    const what = g.kind === 'season' ? g.season : tr('browse_act_whole_show')
     const all = titles.filter(t => inScope(t, { lib: g.libId, show: g.showKey, season: g.season || undefined }))
     return (
       <>
-        <ActionIcon label={`Scan ${what} tonight`} onClick={() => scanGroup(g, false)}><Moon size={15} /></ActionIcon>
-        <ActionIcon label={`Scan ${what} now`} onClick={() => scanGroup(g, true)} tone="orange"><Zap size={15} /></ActionIcon>
-        <ActionIcon label={`Ignore all episodes in this ${g.kind}`} onClick={() => setIgnored(all, true, g.label)} tone="yellow"><EyeOff size={15} /></ActionIcon>
-        <ActionIcon label={`Un-ignore all episodes in this ${g.kind}`} onClick={() => setIgnored(all, false, g.label)}><Eye size={15} /></ActionIcon>
-        <PlexLink ratingKey={g.plexKey} label={`Open ${g.kind} in Plex`} />
+        <ActionIcon label={tr('browse_act_scan_what_tonight', { what })} onClick={() => scanGroup(g, false)}><Moon size={15} /></ActionIcon>
+        <ActionIcon label={tr('browse_act_scan_what_now', { what })} onClick={() => scanGroup(g, true)} tone="orange"><Zap size={15} /></ActionIcon>
+        <ActionIcon label={g.kind === 'season' ? tr('browse_act_ignore_season') : tr('browse_act_ignore_show')} onClick={() => setIgnored(all, true, g.label)} tone="yellow"><EyeOff size={15} /></ActionIcon>
+        <ActionIcon label={g.kind === 'season' ? tr('browse_act_unignore_season') : tr('browse_act_unignore_show')} onClick={() => setIgnored(all, false, g.label)}><Eye size={15} /></ActionIcon>
+        <PlexLink ratingKey={g.plexKey} label={g.kind === 'season' ? tr('browse_act_open_season_plex') : tr('browse_act_open_show_plex')} />
         {sum(g.titles, t => t.segment_count + fpOf(t)) > 0 && (
-          <ActionIcon label={`Delete all segments for this ${g.kind}`} onClick={() => deleteSegments(g.kind === 'season' ? `${g.showName} – ${g.season}` : g.showName, g.titles)} tone="red"><Trash2 size={15} /></ActionIcon>
+          <ActionIcon label={g.kind === 'season' ? tr('browse_act_delete_season_segs') : tr('browse_act_delete_show_segs')} onClick={() => deleteSegments(g.kind === 'season' ? `${g.showName} – ${g.season}` : g.showName, g.titles)} tone="red"><Trash2 size={15} /></ActionIcon>
         )}
       </>
     )
@@ -719,12 +732,12 @@ export default function Browse() {
 
   const libraryActions = (lib: Library) => (
     <>
-      <ActionIcon label="Scan library tonight" onClick={() => scanLibrary(lib, false)}><Moon size={15} /></ActionIcon>
-      <ActionIcon label="Scan library now" onClick={() => scanLibrary(lib, true)} tone="orange"><Zap size={15} /></ActionIcon>
-      <ActionIcon label="Sync from Plex: pick up titles added, removed or changed in Plex" onClick={() => syncLibrary(lib)} disabled={busy[`sync:${lib.id}`]}>
+      <ActionIcon label={tr('browse_act_scan_lib_tonight')} onClick={() => scanLibrary(lib, false)}><Moon size={15} /></ActionIcon>
+      <ActionIcon label={tr('browse_act_scan_lib_now')} onClick={() => scanLibrary(lib, true)} tone="orange"><Zap size={15} /></ActionIcon>
+      <ActionIcon label={tr('browse_act_sync_plex')} onClick={() => syncLibrary(lib)} disabled={busy[`sync:${lib.id}`]}>
         <RefreshCw size={15} className={busy[`sync:${lib.id}`] ? 'animate-spin' : ''} />
       </ActionIcon>
-      <ActionIcon label="Retry failed: queue every failed title in this library again and clear ignored ones from the list" onClick={() => retryFailed(lib)} disabled={busy[`retry:${lib.id}`]}>
+      <ActionIcon label={tr('browse_act_retry_failed')} onClick={() => retryFailed(lib)} disabled={busy[`retry:${lib.id}`]}>
         <RotateCcw size={15} />
       </ActionIcon>
     </>
@@ -734,11 +747,11 @@ export default function Browse() {
   const markerActions = (list: Title[], libId?: string) => (
     <>
       {libId && (
-        <ActionIcon label="Reload the marker title list from Plex" onClick={() => refreshMarkerList(libId)} disabled={busy[`mrefresh:${libId}`]}>
+        <ActionIcon label={tr('browse_act_reload_markers')} onClick={() => refreshMarkerList(libId)} disabled={busy[`mrefresh:${libId}`]}>
           <RefreshCw size={15} className={busy[`mrefresh:${libId}`] ? 'animate-spin' : ''} />
         </ActionIcon>
       )}
-      <ActionIcon label={`Pull markers from Plex for ${plural(list.length, 'listed title')}`} onClick={() => syncMarkers(list)} disabled={!!markerSync && !markerSync.finished}>
+      <ActionIcon label={tr('browse_act_pull_markers', { titles: tr('unit_listed_title', { count: list.length }) })} onClick={() => syncMarkers(list)} disabled={!!markerSync && !markerSync.finished}>
         <DownloadCloud size={15} />
       </ActionIcon>
     </>
@@ -763,15 +776,15 @@ export default function Browse() {
   const renderRow = (row: Row) => {
     if (row.kind === 'library') {
       const { lib, titles: list } = row
-      const shows = new Set(list.filter(t => t.media_type === 'episode').map(showKeyOf)).size
+      const shows = new Set(list.filter(t => t.media_type === 'episode').map(t => showKeyOf(t, tr))).size
       return (
         <BrowseRow
           key={`l:${lib.id}`}
           image={{ kind: 'icon', icon: lib.type === 'movie' ? 'movie' : 'show' }}
           name={lib.title}
-          context={lib.type === 'show' ? `${plural(shows, 'show')} · ${plural(list.length, 'episode')}` : plural(list.length, 'title')}
+          context={lib.type === 'show' ? `${tr('unit_show', { count: shows })} · ${tr('unit_episode', { count: list.length })}` : tr('unit_title', { count: list.length })}
           status={<GroupStatus titles={list} />}
-          scanned={scannedCell(list)}
+          scanned={scannedCell(list, tr, formatDate, formatDateTime)}
           count={countFor(list)}
           actions={libraryActions(lib)}
           checked={list.length > 0 && list.every(t => selected.has(t.plex_guid))}
@@ -784,10 +797,10 @@ export default function Browse() {
     if (row.kind === 'group') {
       const g = row.group
       const s: Scope = { lib: g.libId, show: g.showKey, season: g.season || undefined }
-      const seasons = new Set(g.titles.map(t => parseEpisodeTitle(t.title).season)).size
+      const seasons = new Set(g.titles.map(t => parseEpisodeTitle(t.title, tr).season)).size
       const context = g.kind === 'show'
-        ? [level === 'all' && libraries.length > 1 ? libById.get(g.libId)?.title : '', plural(seasons, 'season'), plural(g.titles.length, 'episode')].filter(Boolean).join(' · ')
-        : [flat || level !== 'show' ? g.showName : '', plural(g.titles.length, 'episode')].filter(Boolean).join(' · ')
+        ? [level === 'all' && libraries.length > 1 ? libById.get(g.libId)?.title : '', tr('unit_season', { count: seasons }), tr('unit_episode', { count: g.titles.length })].filter(Boolean).join(' · ')
+        : [flat || level !== 'show' ? g.showName : '', tr('unit_episode', { count: g.titles.length })].filter(Boolean).join(' · ')
       return (
         <BrowseRow
           key={`g:${g.libId}:${g.showKey}:${g.season}`}
@@ -796,7 +809,7 @@ export default function Browse() {
           context={context}
           badges={<IgnoredBadge titles={g.titles} />}
           status={<GroupStatus titles={g.titles} />}
-          scanned={scannedCell(g.titles)}
+          scanned={scannedCell(g.titles, tr, formatDate, formatDateTime)}
           count={countFor(g.titles)}
           actions={groupActions(g)}
           checked={g.titles.length > 0 && g.titles.every(t => selected.has(t.plex_guid))}
@@ -818,9 +831,9 @@ export default function Browse() {
         context={context}
         // The reason a title failed, so a Failed title never stands unexplained (#190).
         note={t.status === 'failed' && t.error_msg ? <p className="text-xs text-red-400/80 truncate" title={t.error_msg}>{failureText(t.error_msg)}</p> : undefined}
-        badges={t.ignored ? <span className="text-xs bg-yellow-500/15 text-yellow-300 px-2 py-0.5 rounded-full flex-shrink-0">Ignored</span> : undefined}
+        badges={t.ignored ? <span className="text-xs bg-yellow-500/15 text-yellow-300 px-2 py-0.5 rounded-full flex-shrink-0">{tr('browse_ignored')}</span> : undefined}
         status={<StatusBadge status={t.status} progress={t.progress} />}
-        scanned={scannedCell([t])}
+        scanned={scannedCell([t], tr, formatDate, formatDateTime)}
         count={countFor([t])}
         actions={titleActions(t, name)}
         checked={selected.has(t.plex_guid)}
@@ -845,13 +858,13 @@ export default function Browse() {
       else n[r.title.media_type === 'episode' ? 'episode' : 'movie']++
     }
     const parts = [
-      n.library && `${n.library} ${n.library === 1 ? 'library' : 'libraries'}`,
-      n.show && plural(n.show, 'show'),
-      n.season && plural(n.season, 'season'),
-      n.movie && plural(n.movie, 'movie'),
-      n.episode && plural(n.episode, 'episode'),
+      n.library && tr('unit_library', { count: n.library }),
+      n.show && tr('unit_show', { count: n.show }),
+      n.season && tr('unit_season', { count: n.season }),
+      n.movie && tr('unit_movie', { count: n.movie }),
+      n.episode && tr('unit_episode', { count: n.episode }),
     ].filter(Boolean)
-    return (flat ? 'Matches: ' : '') + parts.join(' · ')
+    return (flat ? tr('browse_matches_prefix') : '') + parts.join(' · ')
   })()
 
   const headerImage: RowImage | null = scopeTitle ? titleImage(scopeTitle)
@@ -860,18 +873,18 @@ export default function Browse() {
 
   // What the level holds, counted like the list: hidden (ignored, unscannable) titles are not in it.
   const headerContext = (() => {
-    if (scopeTitle) return titleNameParts(scopeTitle, 'all', true).context
+    if (scopeTitle) return titleNameParts(scopeTitle, 'all', true, tr).context
     const shown = visible.filter(t => inScope(t, scope))
     const eps = shown.filter(t => t.media_type === 'episode')
-    const seasons = new Set(eps.map(t => `${showKeyOf(t)}:${parseEpisodeTitle(t.title).season}`)).size
-    const shows = new Set(eps.map(showKeyOf)).size
+    const seasons = new Set(eps.map(t => `${showKeyOf(t, tr)}:${parseEpisodeTitle(t.title, tr).season}`)).size
+    const shows = new Set(eps.map(t => showKeyOf(t, tr))).size
     const movies = shown.length - eps.length
     const parts: string[] = []
-    if (level !== 'show' && level !== 'season' && shows) parts.push(plural(shows, 'show'))
-    if (level === 'show') parts.push(plural(seasons, 'season'))
-    if (eps.length) parts.push(plural(eps.length, 'episode'))
-    if (movies) parts.push(plural(movies, eps.length ? 'movie' : 'title'))
-    return parts.join(' · ') || 'Nothing here'
+    if (level !== 'show' && level !== 'season' && shows) parts.push(tr('unit_show', { count: shows }))
+    if (level === 'show') parts.push(tr('unit_season', { count: seasons }))
+    if (eps.length) parts.push(tr('unit_episode', { count: eps.length }))
+    if (movies) parts.push(tr(eps.length ? 'unit_movie' : 'unit_title', { count: movies }))
+    return parts.join(' · ') || tr('browse_nothing_here')
   })()
 
   const inputCls = 'px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200 placeholder-muted focus:border-plex-orange/50'
@@ -885,9 +898,9 @@ export default function Browse() {
     <div className="flex gap-5 h-full">
       {/* Libraries: the only list beside the main one, so a show appears in one place (#208). */}
       <aside className="hidden md:flex flex-col w-52 flex-shrink-0 min-h-0">
-        <h1 className="text-2xl font-bold text-gray-100 mb-3">Browse</h1>
-        <nav aria-label="Libraries" className="space-y-0.5 overflow-y-auto">
-          {[{ id: '', title: 'All libraries', type: 'all' }, ...libraries].map(lib => {
+        <h1 className="text-2xl font-bold text-gray-100 mb-3">{tr('browse_title')}</h1>
+        <nav aria-label={tr('browse_libraries_aria')} className="space-y-0.5 overflow-y-auto">
+          {[{ id: '', title: tr('browse_all_libraries'), type: 'all' }, ...libraries].map(lib => {
             const active = lib.id ? activeLib === lib.id : !activeLib
             const Icon = lib.type === 'all' ? Layers : lib.type === 'movie' ? Film : Tv
             return (
@@ -896,11 +909,11 @@ export default function Browse() {
                 onClick={() => go(lib.id ? { lib: lib.id } : {})}
                 aria-current={active ? 'true' : undefined}
                 onContextMenu={lib.id ? e => openScanMenu(e, { lib: lib.id }) : undefined}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-left transition-colors ${active ? 'bg-plex-orange/20 text-plex-orange' : 'text-gray-300 hover:text-gray-100 hover:bg-white/5'}`}
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-start transition-colors ${active ? 'bg-plex-orange/20 text-plex-orange' : 'text-gray-300 hover:text-gray-100 hover:bg-white/5'}`}
               >
                 <Icon size={16} className="flex-shrink-0" />
                 <span className="truncate">{lib.title}</span>
-                <span className="ml-auto text-xs tabular-nums text-muted">{sidebarCount(lib.id || undefined)}</span>
+                <span className="ms-auto text-xs tabular-nums text-muted">{sidebarCount(lib.id || undefined)}</span>
               </button>
             )
           })}
@@ -908,14 +921,14 @@ export default function Browse() {
       </aside>
 
       <div className="flex-1 min-w-0 flex flex-col min-h-0">
-        <h1 className="md:hidden text-xl font-bold text-gray-100 mb-2">Browse</h1>
+        <h1 className="md:hidden text-xl font-bold text-gray-100 mb-2">{tr('browse_title')}</h1>
 
         {/* Header: where you are, what it holds, and what can be done to all of it */}
-        <nav aria-label="Breadcrumb" className="flex flex-wrap items-center gap-1 text-xs text-muted mb-1 min-h-[1rem]">
+        <nav aria-label={tr('browse_breadcrumb_aria')} className="flex flex-wrap items-center gap-1 text-xs text-muted mb-1 min-h-[1rem]">
           {crumbs.slice(0, -1).map((c, i) => (
             <span key={i} className="flex items-center gap-1">
               <button onClick={() => go(c.scope)} className="hover:text-gray-100">{c.label}</button>
-              <ChevronRight size={11} />
+              <ChevronRight size={11} className="rtl:-scale-x-100" />
             </span>
           ))}
         </nav>
@@ -923,16 +936,16 @@ export default function Browse() {
           {headerImage && headerImage.kind !== 'icon' && headerImage.src && (
             <SafeImg src={headerImage.src} className={`${headerImage.kind === 'still' ? 'w-28 h-16' : 'w-11 h-16'} rounded bg-plex-border flex-shrink-0`} />
           )}
-          <div className="min-w-0 mr-auto">
+          <div className="min-w-0 me-auto">
             <div className="flex items-center gap-2 min-w-0">
               <h2 className="text-xl font-semibold text-gray-100 truncate">{heading}</h2>
               {scopeTitle && <StatusBadge status={scopeTitle.status} progress={scopeTitle.progress} />}
-              {scopeTitle?.ignored && <span className="text-xs bg-yellow-500/15 text-yellow-300 px-2 py-0.5 rounded-full">Ignored</span>}
+              {scopeTitle?.ignored && <span className="text-xs bg-yellow-500/15 text-yellow-300 px-2 py-0.5 rounded-full">{tr('browse_ignored')}</span>}
               {scopeGroup && <IgnoredBadge titles={scopeTitles} />}
             </div>
             <p className="text-xs text-muted truncate">
               {headerContext}
-              {scopeTitle?.finished_at && ` · Scanned ${scannedCell([scopeTitle]).full}`}
+              {scopeTitle?.finished_at && ` · ${tr('browse_scanned_on', { date: scannedCell([scopeTitle], tr, formatDate, formatDateTime).full })}`}
             </p>
             {scopeTitle?.status === 'failed' && scopeTitle.error_msg && (
               <p className="text-xs text-red-400/80 break-words" title={scopeTitle.error_msg}>{failureText(scopeTitle.error_msg)}</p>
@@ -944,9 +957,9 @@ export default function Browse() {
                 library or show: they are the buttons people reach for first (#215). */}
             {selectedTitles.length > 0 && !scopeTitle ? (
               <>
-                <span className="text-xs text-plex-orange mr-1 whitespace-nowrap">{plural(selectedTitles.length, 'selected title')}</span>
-                <ActionIcon label={`Scan ${plural(selectedTitles.length, 'selected title')} tonight`} onClick={() => { scanTitles(selectedTitles, false); setSelected(new Set()) }}><Moon size={15} /></ActionIcon>
-                <ActionIcon label={`Scan ${plural(selectedTitles.length, 'selected title')} now`} onClick={() => { scanTitles(selectedTitles, true); setSelected(new Set()) }} tone="orange"><Zap size={15} /></ActionIcon>
+                <span className="text-xs text-plex-orange me-1 whitespace-nowrap">{tr('unit_selected_title', { count: selectedTitles.length })}</span>
+                <ActionIcon label={tr('browse_act_scan_sel_tonight_count', { titles: tr('unit_selected_title', { count: selectedTitles.length }) })} onClick={() => { scanTitles(selectedTitles, false); setSelected(new Set()) }}><Moon size={15} /></ActionIcon>
+                <ActionIcon label={tr('browse_act_scan_sel_now_count', { titles: tr('unit_selected_title', { count: selectedTitles.length }) })} onClick={() => { scanTitles(selectedTitles, true); setSelected(new Set()) }} tone="orange"><Zap size={15} /></ActionIcon>
               </>
             ) : (
               <>
@@ -960,7 +973,7 @@ export default function Browse() {
 
         {/* Toolbar: one row. The name search is always here; the other filters open below it. */}
         <div className="flex flex-wrap items-center gap-2 mb-2">
-          <div role="tablist" aria-label="Show" className="flex p-0.5 gap-0.5 rounded-lg bg-black/25 border border-plex-border">
+          <div role="tablist" aria-label={tr('browse_show_tablist_aria')} className="flex p-0.5 gap-0.5 rounded-lg bg-black/25 border border-plex-border">
             {views.map(v => (
               <button
                 key={v.id}
@@ -969,14 +982,14 @@ export default function Browse() {
                 onClick={() => go(scope, v.id)}
                 className={`px-3 py-1 text-sm rounded-md transition-colors ${view === v.id ? 'bg-plex-orange text-black font-semibold' : 'text-gray-400 hover:text-gray-100 hover:bg-white/5'}`}
               >
-                {v.label}
+                {tr(v.labelKey)}
               </button>
             ))}
           </div>
           {showTitleFilters && (
             <div className="relative flex-1 min-w-[12rem]">
-              <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
-              <input type="search" placeholder="Search movies, shows, seasons, episodes…" aria-label="Filter by name" value={tf.name} onChange={e => patchTf({ name: e.target.value })} className={`${inputCls} w-full pl-8`} />
+              <Search size={14} className="absolute start-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+              <input type="search" placeholder={tr('browse_search_placeholder')} aria-label={tr('browse_search_aria')} value={tf.name} onChange={e => patchTf({ name: e.target.value })} className={`${inputCls} w-full ps-8`} />
             </div>
           )}
           {filtersButton && (
@@ -987,20 +1000,20 @@ export default function Browse() {
               className={`flex items-center gap-1.5 ${inputCls} ${filtersOpen || panelFilterCount ? 'border-plex-orange/50 text-plex-orange' : 'hover:text-white'}`}
             >
               <SlidersHorizontal size={14} />
-              Filters
+              {tr('browse_filters_btn')}
               {panelFilterCount > 0 && <span className="text-xs tabular-nums bg-plex-orange text-black rounded-full px-1.5">{panelFilterCount}</span>}
             </button>
           )}
           {showTitleFilters && (
             <div className="flex items-stretch">
-              <select value={sortBy} aria-label="Sort by" onChange={e => setSortBy(e.target.value as SortOption)} className={`${inputCls} rounded-r-none`}>
-                <option value="date-added">Date added</option>
-                <option value="scanned">Scan date</option>
-                <option value="title">Name</option>
-                <option value="year">Release year</option>
-                <option value="segments">Segments</option>
+              <select value={sortBy} aria-label={tr('analytics_sort_by')} onChange={e => setSortBy(e.target.value as SortOption)} className={`${inputCls} rounded-e-none`}>
+                <option value="date-added">{tr('browse_sort_date_added')}</option>
+                <option value="scanned">{tr('browse_sort_scanned')}</option>
+                <option value="title">{tr('browse_sort_title')}</option>
+                <option value="year">{tr('browse_sort_year')}</option>
+                <option value="segments">{tr('browse_sort_segments')}</option>
               </select>
-              <button onClick={() => setSortDesc(!sortDesc)} aria-label={`Sort direction: ${sortDirLabel}`} title="Reverse the order" className={`${inputCls} -ml-px rounded-l-none flex items-center gap-1 whitespace-nowrap hover:text-white`}>
+              <button onClick={() => setSortDesc(!sortDesc)} aria-label={tr('browse_sort_dir_aria', { label: sortDirLabel })} title={tr('browse_sort_reverse_title')} className={`${inputCls} -ms-px rounded-s-none flex items-center gap-1 whitespace-nowrap hover:text-white`}>
                 {sortDesc ? <ArrowDown size={13} /> : <ArrowUp size={13} />}
                 {sortDirLabel}
               </button>
@@ -1044,23 +1057,23 @@ export default function Browse() {
               </span>
             )}
             {notice && (
-              <span className="flex items-center gap-1 ml-auto min-w-0" role="status">
+              <span className="flex items-center gap-1 ms-auto min-w-0" role="status">
                 <span className="truncate text-gray-300">{notice}</span>
-                <button onClick={() => setNotice('')} aria-label="Dismiss" className="text-gray-400 hover:text-white flex-shrink-0"><X size={12} /></button>
+                <button onClick={() => setNotice('')} aria-label={tr('common_dismiss')} className="text-gray-400 hover:text-white flex-shrink-0"><X size={12} /></button>
               </span>
             )}
           </div>
         )}
 
-        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pr-1 pb-6">
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden pe-1 pb-6">
           {loading ? (
-            <div className="text-muted text-sm">Loading…</div>
+            <div className="text-muted text-sm">{tr('common_loading')}</div>
           ) : level === 'title' && !scopeTitle ? (
-            <div className="text-muted text-sm">This title is no longer in the library. <button onClick={() => go({})} className="text-plex-orange hover:underline">Back to all libraries</button></div>
+            <div className="text-muted text-sm">{tr('browse_title_missing')} <button onClick={() => go({})} className="text-plex-orange hover:underline">{tr('browse_back_all')}</button></div>
           ) : level === 'title' && scopeTitle ? (
             view === 'markers' ? (
               <div className="space-y-3">
-                <p className="text-sm text-muted">Drag the handles to move an intro or credits marker, then save it to Plex.</p>
+                <p className="text-sm text-muted">{tr('browse_markers_drag_hint')}</p>
                 <TitleMarkerPanel
                   key={scopeTitle.plex_guid}
                   defaultOpen
@@ -1086,14 +1099,14 @@ export default function Browse() {
                   {markerSync && <SyncAllBanner progress={markerSync} onDismiss={() => setMarkerSync(null)} />}
                   {libsInScope.filter(id => markerNotCached.has(id)).map(id => (
                     <p key={id} className="mb-2 text-sm text-muted">
-                      The marker list of {libById.get(id)?.title ?? 'this library'} has not been loaded from Plex yet.{' '}
-                      <button onClick={() => refreshMarkerList(id)} className="text-plex-orange hover:underline">Load it now</button>
+                      {tr('browse_markers_not_cached', { library: libById.get(id)?.title ?? tr('browse_this_library') })}{' '}
+                      <button onClick={() => refreshMarkerList(id)} className="text-plex-orange hover:underline">{tr('browse_load_it_now')}</button>
                     </p>
                   ))}
                 </>
               )}
               {rows.length === 0 ? (
-                <div className="text-muted text-sm py-8 text-center">Nothing matches here. Go up a level or clear a filter.</div>
+                <div className="text-muted text-sm py-8 text-center">{tr('browse_empty_matches')}</div>
               ) : (
                 <div className="rounded-xl border border-plex-border bg-plex-card overflow-hidden">
                   {/* Column header; becomes the bulk-action bar while something is selected. */}
@@ -1102,32 +1115,32 @@ export default function Browse() {
                       type="checkbox"
                       checked={allSelected}
                       onChange={() => setSelected(allSelected ? new Set() : new Set(matchedGuids))}
-                      title="Select all filtered titles"
-                      aria-label="Select all filtered titles"
+                      title={tr('browse_select_all_aria')}
+                      aria-label={tr('browse_select_all_aria')}
                       className={`${COL.check} h-4 accent-plex-orange`}
                     />
                     {selectedTitles.length > 0 ? (
                       <div className="flex-1 flex flex-wrap items-center gap-1 normal-case tracking-normal">
-                        <span className="text-sm text-gray-200 mr-2">{plural(selectedTitles.length, 'title')} selected</span>
-                        <ActionIcon label="Scan selected tonight" onClick={() => { scanTitles(selectedTitles, false); setSelected(new Set()) }}><Moon size={15} /></ActionIcon>
-                        <ActionIcon label="Scan selected now" onClick={() => { scanTitles(selectedTitles, true); setSelected(new Set()) }} tone="orange"><Zap size={15} /></ActionIcon>
-                        <ActionIcon label="Ignore selected" onClick={() => setIgnored(selectedTitles, true)} tone="yellow"><EyeOff size={15} /></ActionIcon>
-                        <ActionIcon label="Un-ignore selected" onClick={() => setIgnored(selectedTitles, false)}><Eye size={15} /></ActionIcon>
+                        <span className="text-sm text-gray-200 me-2">{tr('browse_selected_count', { titles: tr('unit_title', { count: selectedTitles.length }) })}</span>
+                        <ActionIcon label={tr('browse_act_scan_sel_tonight')} onClick={() => { scanTitles(selectedTitles, false); setSelected(new Set()) }}><Moon size={15} /></ActionIcon>
+                        <ActionIcon label={tr('browse_act_scan_sel_now')} onClick={() => { scanTitles(selectedTitles, true); setSelected(new Set()) }} tone="orange"><Zap size={15} /></ActionIcon>
+                        <ActionIcon label={tr('browse_act_ignore_sel')} onClick={() => setIgnored(selectedTitles, true)} tone="yellow"><EyeOff size={15} /></ActionIcon>
+                        <ActionIcon label={tr('browse_act_unignore_sel')} onClick={() => setIgnored(selectedTitles, false)}><Eye size={15} /></ActionIcon>
                         {view === 'markers' && (
-                          <ActionIcon label="Pull markers from Plex for the selected titles" onClick={() => syncMarkers(selectedTitles)}><DownloadCloud size={15} /></ActionIcon>
+                          <ActionIcon label={tr('browse_act_pull_sel_markers')} onClick={() => syncMarkers(selectedTitles)}><DownloadCloud size={15} /></ActionIcon>
                         )}
-                        <ActionIcon label="Delete segments of selected" onClick={() => deleteSegments(plural(selectedTitles.length, 'selected title'), selectedTitles)} tone="red"><Trash2 size={15} /></ActionIcon>
-                        <button onClick={() => setSelected(new Set())} className="ml-auto text-xs text-gray-400 hover:text-white">Clear selection</button>
+                        <ActionIcon label={tr('browse_act_delete_sel_segs')} onClick={() => deleteSegments(tr('unit_selected_title', { count: selectedTitles.length }), selectedTitles)} tone="red"><Trash2 size={15} /></ActionIcon>
+                        <button onClick={() => setSelected(new Set())} className="ms-auto text-xs text-gray-400 hover:text-white">{tr('browse_clear_selection')}</button>
                       </div>
                     ) : (
                       <>
                         <span className={COL.image} />
                         <span className={COL.name}>{countText}</span>
-                        <span className={COL.status}>Status</span>
-                        <span className={COL.scanned}>Scanned</span>
-                        <span className={COL.count}>{view === 'markers' ? 'Markers' : 'Segments'}</span>
+                        <span className={COL.status}>{tr('browse_col_status')}</span>
+                        <span className={COL.scanned}>{tr('browse_col_scanned')}</span>
+                        <span className={COL.count}>{view === 'markers' ? tr('browse_col_markers') : tr('browse_col_segments')}</span>
                         {/* Room for the row actions and chevron, so the columns above line up. */}
-                        <span className={COL.actions} />
+                        <span className={`${COL.actions} max-md:hidden`} />
                         <span className="w-4 flex-shrink-0" />
                       </>
                     )}
@@ -1137,7 +1150,7 @@ export default function Browse() {
               )}
               {rows.length > limit && (
                 <div className="text-center pt-3">
-                  <button onClick={() => setLimit(l => l + PAGE)} className="btn-outline">Show more ({rows.length - limit} left)</button>
+                  <button onClick={() => setLimit(l => l + PAGE)} className="btn-outline">{tr('browse_show_more', { count: rows.length - limit })}</button>
                 </div>
               )}
             </>
@@ -1147,23 +1160,23 @@ export default function Browse() {
 
       {pendingDelete && (
         <Modal
-          title="Delete segments?"
+          title={tr('browse_delete_modal_title')}
           size="sm"
           onClose={() => setPendingDelete(null)}
           dismissible={!pendingDelete.busy}
           footer={
             <>
-              <button data-autofocus onClick={() => setPendingDelete(null)} disabled={pendingDelete.busy} className="btn-outline">Cancel</button>
-              <button onClick={confirmDelete} disabled={pendingDelete.busy} className="btn-danger">{pendingDelete.busy ? 'Deleting…' : 'Delete'}</button>
+              <button data-autofocus onClick={() => setPendingDelete(null)} disabled={pendingDelete.busy} className="btn-outline">{tr('common_cancel')}</button>
+              <button onClick={confirmDelete} disabled={pendingDelete.busy} className="btn-danger">{pendingDelete.busy ? tr('common_deleting') : tr('common_delete')}</button>
             </>
           }
         >
           <p className="text-sm text-gray-300 mb-4">
-            All {plural(pendingDelete.count, 'segment')} for <strong>{pendingDelete.label}</strong>, including the ones marked as false positives, will be deleted. This cannot be undone.
+            {tr('browse_delete_modal_body_before', { segments: tr('unit_segment', { count: pendingDelete.count }) })} <strong>{pendingDelete.label}</strong>{tr('browse_delete_modal_body_after')}
           </p>
           <label className="flex items-center gap-2 cursor-pointer select-none">
             <input type="checkbox" checked={skipDeleteConfirm} onChange={e => toggleSkipConfirm(e.target.checked)} className="w-4 h-4 accent-plex-orange" />
-            <span className="text-xs text-gray-400">Don't ask again</span>
+            <span className="text-xs text-gray-400">{tr('browse_dont_ask_again')}</span>
           </label>
         </Modal>
       )}

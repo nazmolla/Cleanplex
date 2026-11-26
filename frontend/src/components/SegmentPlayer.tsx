@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
+import { useT } from '../i18n'
 
 interface Props {
   segmentId: number
@@ -16,6 +17,7 @@ const GIVE_UP_S = 300
  * error message with a Retry button when it cannot (#189).
  */
 export default function SegmentPlayer({ segmentId, autoPlay = false, className = '' }: Props) {
+  const { t } = useT()
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [message, setMessage] = useState('')
   const [elapsed, setElapsed] = useState(0)
@@ -36,21 +38,21 @@ export default function SegmentPlayer({ segmentId, autoPlay = false, className =
 
   useEffect(() => {
     if (state === 'loading' && elapsed >= GIVE_UP_S) {
-      setMessage('The preview is taking too long to render. Try again, or open the title in Plex.')
+      setMessage(t('player_timeout'))
       setState('error')
     }
-  }, [state, elapsed])
+  }, [state, elapsed, t])
 
   const src = `/api/segments/${segmentId}/preview${attempt ? `?retry=${attempt}` : ''}`
 
   const onError = async () => {
     setState('error')
-    setMessage('Could not load the preview.')
+    setMessage(t('player_load_error'))
     try {
       const problem = await api.mediaProblem(src)
       if (!problem.ok) setMessage(problem.detail)
     } catch {
-      setMessage('Could not reach the server.')
+      setMessage(t('player_unreachable'))
     }
   }
 
@@ -63,14 +65,14 @@ export default function SegmentPlayer({ segmentId, autoPlay = false, className =
             onClick={() => setAttempt(a => a + 1)}
             className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 flex-shrink-0"
           >
-            Retry
+            {t('common_retry')}
           </button>
         </div>
       ) : (
         <>
           {state === 'loading' && (
             <p role="status" className="text-xs text-gray-400 mb-2">
-              Rendering the preview… {elapsed}s. Long segments can take a minute.
+              {t('player_rendering', { elapsed })}
             </p>
           )}
           <video

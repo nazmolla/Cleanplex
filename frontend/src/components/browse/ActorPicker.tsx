@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, ChevronDown, Search, X } from 'lucide-react'
 import type { CastSort, CastSuggestion } from './FilterPanel'
+import { useT } from '../../i18n'
 
 // Rows rendered at once: a large library has thousands of actors, and searching narrows them.
 const MAX_ROWS = 200
@@ -29,6 +30,7 @@ function Photo({ name, path }: { name: string; path?: string }) {
 
 /** The actor filter (#227): search, three orders, photos, and several actors at once. */
 export function ActorPicker(p: Props) {
+  const { t } = useT()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const root = useRef<HTMLDivElement>(null)
@@ -53,8 +55,8 @@ export function ActorPicker(p: Props) {
   }, [p.suggestions, query])
   const toggle = (name: string) => p.onChange(chosen.has(name) ? p.selected.filter(a => a !== name) : [...p.selected, name])
 
-  const summary = p.selected.length === 0 ? 'Any actor'
-    : p.selected.length === 1 ? p.selected[0] : `${p.selected[0]} +${p.selected.length - 1}`
+  const summary = p.selected.length === 0 ? t('actor_any')
+    : p.selected.length === 1 ? p.selected[0] : t('actor_more', { name: p.selected[0], count: p.selected.length - 1 })
 
   return (
     <div ref={root} className="relative">
@@ -63,8 +65,8 @@ export function ActorPicker(p: Props) {
         onClick={() => setOpen(o => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={`Filter by actor: ${summary}`}
-        className={`w-full min-w-0 px-2 py-1.5 bg-plex-dark border rounded-lg text-sm text-left flex items-center gap-2 ${p.selected.length ? 'border-plex-orange/50 text-gray-100' : 'border-plex-border text-muted'}`}
+        aria-label={t('actor_filter_aria', { summary })}
+        className={`w-full min-w-0 px-2 py-1.5 bg-plex-dark border rounded-lg text-sm text-start flex items-center gap-2 ${p.selected.length ? 'border-plex-orange/50 text-gray-100' : 'border-plex-border text-muted'}`}
       >
         <span className="flex-1 truncate">{summary}</span>
         <ChevronDown size={14} className="text-gray-400 flex-shrink-0" aria-hidden="true" />
@@ -74,43 +76,43 @@ export function ActorPicker(p: Props) {
           <div className="p-2 space-y-2 border-b border-plex-border">
             <div className="flex items-center gap-2 px-2 bg-plex-dark border border-plex-border rounded-lg">
               <Search size={13} className="text-gray-400" aria-hidden="true" />
-              <input ref={search} value={query} onChange={e => setQuery(e.target.value)} placeholder="Search actors" aria-label="Search actors"
+              <input ref={search} value={query} onChange={e => setQuery(e.target.value)} placeholder={t('actor_search_placeholder')} aria-label={t('actor_search_placeholder')}
                 className="flex-1 min-w-0 py-1.5 bg-transparent text-sm text-gray-200 placeholder-muted" />
             </div>
             <div className="flex items-center justify-between gap-2 text-xs">
               <label className="flex items-center gap-1 text-muted">
-                Sort
-                <select value={p.sort} onChange={e => p.onSort(e.target.value as CastSort)} aria-label="Sort actors"
+                {t('actor_sort')}
+                <select value={p.sort} onChange={e => p.onSort(e.target.value as CastSort)} aria-label={t('actor_sort_aria')}
                   className="bg-plex-dark border border-plex-border rounded px-1 py-0.5 text-gray-200">
-                  <option value="titles">Most titles</option>
-                  <option value="name">Name</option>
-                  <option value="segments">Most segments</option>
+                  <option value="titles">{t('actor_sort_titles')}</option>
+                  <option value="name">{t('actor_sort_name')}</option>
+                  <option value="segments">{t('actor_sort_segments')}</option>
                 </select>
               </label>
               {p.selected.length > 1 && (
-                <div role="group" aria-label="Match" className="flex rounded border border-plex-border overflow-hidden">
+                <div role="group" aria-label={t('actor_match_aria')} className="flex rounded border border-plex-border overflow-hidden">
                   {(['any', 'all'] as const).map(m => (
                     <button key={m} type="button" onClick={() => p.onMatch(m)} aria-pressed={p.match === m}
                       className={`px-2 py-0.5 ${p.match === m ? 'bg-plex-orange text-black font-semibold' : 'text-gray-400 hover:text-gray-100'}`}>
-                      {m === 'any' ? 'Any of them' : 'All of them'}
+                      {m === 'any' ? t('actor_match_any') : t('actor_match_all')}
                     </button>
                   ))}
                 </div>
               )}
             </div>
           </div>
-          <ul role="listbox" aria-multiselectable="true" aria-label="Actors" className="max-h-80 overflow-y-auto py-1">
-            {rows.length === 0 && <li className="px-3 py-2 text-sm text-muted">No actor matches</li>}
+          <ul role="listbox" aria-multiselectable="true" aria-label={t('actor_list_aria')} className="max-h-80 overflow-y-auto py-1">
+            {rows.length === 0 && <li className="px-3 py-2 text-sm text-muted">{t('actor_none')}</li>}
             {rows.map(c => {
               const on = chosen.has(c.name)
               return (
                 <li key={c.name} role="option" aria-selected={on}>
                   <button type="button" onClick={() => toggle(c.name)}
-                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-white/5 ${on ? 'text-gray-100' : 'text-gray-300'}`}>
+                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-start text-sm hover:bg-white/5 ${on ? 'text-gray-100' : 'text-gray-300'}`}>
                     <Photo name={c.name} path={p.photos[c.name]} />
                     <span className="flex-1 min-w-0 truncate">{c.name}</span>
                     <span className="text-[11px] text-muted tabular-nums flex-shrink-0">
-                      {p.sort === 'segments' ? `${c.segments} seg` : `${c.titles} title${c.titles === 1 ? '' : 's'}`}
+                      {p.sort === 'segments' ? t('unit_seg_short', { count: c.segments }) : t('unit_title', { count: c.titles })}
                     </span>
                     <span className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${on ? 'bg-plex-orange border-plex-orange text-black' : 'border-plex-border'}`}>
                       {on && <Check size={11} aria-hidden="true" />}
@@ -122,9 +124,9 @@ export function ActorPicker(p: Props) {
           </ul>
           {p.selected.length > 0 && (
             <div className="flex items-center justify-between px-3 py-2 border-t border-plex-border text-xs">
-              <span className="text-muted">{p.selected.length} selected</span>
+              <span className="text-muted">{t('actor_selected_count', { count: p.selected.length })}</span>
               <button type="button" onClick={() => p.onChange([])} className="flex items-center gap-1 text-gray-400 hover:text-gray-100">
-                <X size={11} aria-hidden="true" /> Clear
+                <X size={11} aria-hidden="true" /> {t('common_clear')}
               </button>
             </div>
           )}

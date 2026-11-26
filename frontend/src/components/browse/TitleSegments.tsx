@@ -4,6 +4,7 @@ import Modal from '../Modal'
 import SegmentPlayer from '../SegmentPlayer'
 import SegmentRow from './SegmentRow'
 import { Segment, Title, msToTimecode } from './model'
+import { useT } from '../../i18n'
 
 interface Props {
   title: Title
@@ -16,6 +17,7 @@ interface Props {
  * Refetched when the title's counts change, so a scan or delete elsewhere shows up here.
  */
 export default function TitleSegments({ title, onChanged }: Props) {
+  const { t } = useT()
   const [segs, setSegs] = useState<Segment[] | null>(null)
   const [failed, setFailed] = useState(false)
   const [previewSeg, setPreviewSeg] = useState<Segment | null>(null)
@@ -35,17 +37,17 @@ export default function TitleSegments({ title, onChanged }: Props) {
   const drop = (seg: Segment) => { setSegs(prev => prev?.filter(x => x.id !== seg.id) ?? null); onChanged(title) }
 
   return (
-    <div className="px-3 py-3 pl-10 border-b border-plex-border bg-black/20 space-y-2">
-      {failed && <p className="text-sm text-red-400">Could not load segments. Collapse and expand the row to retry.</p>}
-      {!failed && segs === null && <p className="text-xs text-muted" role="status">Loading segments…</p>}
-      {segs?.length === 0 && <p className="text-xs text-muted">No segments for this title.</p>}
+    <div className="px-3 py-3 ps-10 border-b border-plex-border bg-black/20 space-y-2">
+      {failed && <p className="text-sm text-red-400">{t('title_segs_load_error')}</p>}
+      {!failed && segs === null && <p className="text-xs text-muted" role="status">{t('segs_loading')}</p>}
+      {segs?.length === 0 && <p className="text-xs text-muted">{t('title_segs_empty')}</p>}
       {segs?.map(seg => (
         <SegmentRow key={seg.id} seg={seg} onPreview={setPreviewSeg} onChange={patch} onDeleted={drop} />
       ))}
       {previewSeg && (
         <Modal
-          title="Segment preview"
-          subtitle={<>{msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)} · clip includes 5s either side</>}
+          title={t('segs_preview_title')}
+          subtitle={<><span dir="ltr">{msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)}</span> · {t('segs_preview_subtitle')}</>}
           size="xl"
           onClose={() => setPreviewSeg(null)}
         >

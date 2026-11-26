@@ -3,6 +3,7 @@ import { parseDbTimestamp } from '../utils/dbTime'
 import { api } from '../api/client'
 import { useLiveRefresh } from '../api/events'
 import { ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react'
+import { useT, type TranslationKey } from '../i18n'
 
 interface SkipEvent {
   id: number
@@ -50,6 +51,7 @@ function localDay(offsetDays = 0): string {
 const DEFAULT_DAYS = 7
 
 export default function RecentSkips() {
+  const { t, lang, formatDateTime } = useT()
   const [data, setData] = useState<HistoryResponse>({ events: [], total: 0 })
   const [page, setPage] = useState(0)
   const [from, setFrom] = useState(() => localDay(-(DEFAULT_DAYS - 1)))
@@ -74,9 +76,9 @@ export default function RecentSkips() {
       setData(d)
       setError('')
     } catch (err: any) {
-      if (err.name !== 'AbortError') setError('Could not load skip history.')
+      if (err.name !== 'AbortError') setError(t('recent_skips_error'))
     }
-  }, [page, from, to])
+  }, [page, from, to, t])
 
   // Reload when the page or date window changes.
   useEffect(() => {
@@ -93,19 +95,32 @@ export default function RecentSkips() {
     setPage(0)
   }
 
+  const displayAction = (action: string) => {
+    if (action === 'skip') return t('action_skip')
+    if (action === 'mute') return t('action_mute')
+    return action
+  }
+
+  const displayCategory = (cat: string) => {
+    if (!cat || lang === 'en') return cat
+    const key = `cat_label_${cat}` as TranslationKey
+    const label = t(key)
+    return label === key ? cat : label
+  }
+
   return (
     <section>
       <div className="flex flex-wrap items-center gap-3 mb-3">
         <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
-          Recent skips
-          <span className="ml-2 text-muted font-normal normal-case tabular-nums">({data.total})</span>
+          {t('recent_skips_title')}
+          <span className="ms-2 text-muted font-normal normal-case tabular-nums">({data.total})</span>
         </h2>
-        <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400 sm:ml-auto">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400 sm:ms-auto">
           <label className="flex items-center gap-1">
-            From
+            {t('recent_skips_from')}
             <input
               type="date"
-              aria-label="From date"
+              aria-label={t('recent_skips_from_aria')}
               value={from}
               max={to || undefined}
               onChange={setRange(setFrom)}
@@ -113,10 +128,10 @@ export default function RecentSkips() {
             />
           </label>
           <label className="flex items-center gap-1">
-            To
+            {t('recent_skips_to')}
             <input
               type="date"
-              aria-label="To date"
+              aria-label={t('recent_skips_to_aria')}
               value={to}
               min={from || undefined}
               onChange={setRange(setTo)}
@@ -132,7 +147,7 @@ export default function RecentSkips() {
                 setPage(0)
               }}
             >
-              Clear
+              {t('common_clear')}
             </button>
           )}
         </div>
@@ -142,7 +157,7 @@ export default function RecentSkips() {
 
       {data.events.length === 0 ? (
         <div className="bg-plex-card border border-plex-border rounded-xl px-4 py-5 text-muted text-sm">
-          {from || to ? 'No skips in this date range' : 'No skips yet'}
+          {from || to ? t('recent_skips_empty_range') : t('recent_skips_empty')}
         </div>
       ) : (
         // One grid for every row, so time, title, action and viewer line up down the list (#206).
@@ -152,18 +167,18 @@ export default function RecentSkips() {
               key={ev.id}
               className="px-4 py-2.5 grid items-center gap-x-4 gap-y-0.5 text-sm grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[11rem_minmax(0,1fr)_9rem_minmax(0,14rem)]"
             >
-              <span className="text-muted tabular-nums order-3 md:order-none">{formatTime(ev.created_at)}</span>
+              <span className="text-muted tabular-nums order-3 md:order-none">{formatDateTime(parseDbTimestamp(ev.created_at))}</span>
               <span className="text-gray-200 truncate" title={ev.title}>{ev.title}</span>
               <span className="text-xs text-gray-400 flex items-center gap-1.5 justify-self-end md:justify-self-start">
-                {ev.action}
-                {ev.category ? ` · ${ev.category}` : ''}
+                {displayAction(ev.action)}
+                {ev.category ? ` · ${displayCategory(ev.category)}` : ''}
                 {!ev.success && (
-                  <span title="The client did not confirm this action" className="flex-shrink-0">
-                    <AlertTriangle size={14} className="text-yellow-500" aria-label="Not confirmed by the client" />
+                  <span title={t('recent_skips_unconfirmed_title')} className="flex-shrink-0">
+                    <AlertTriangle size={14} className="text-yellow-500" aria-label={t('recent_skips_unconfirmed_aria')} />
                   </span>
                 )}
               </span>
-              <span className="text-muted text-xs truncate order-4 md:order-none justify-self-end md:justify-self-auto md:text-right">
+              <span className="text-muted text-xs truncate order-4 md:order-none justify-self-end md:justify-self-auto md:text-end">
                 {ev.username} · {ev.client_title}
               </span>
             </div>
@@ -175,22 +190,22 @@ export default function RecentSkips() {
         <div className="flex items-center justify-end gap-2 mt-2 text-xs text-gray-400">
           <button
             className="btn-outline px-2 py-1 disabled:opacity-50"
-            aria-label="Previous page"
+            aria-label={t('recent_skips_prev_aria')}
             disabled={page === 0}
             onClick={() => setPage(p => p - 1)}
           >
-            <ChevronLeft size={14} />
+            <ChevronLeft size={14} className="rtl:-scale-x-100" />
           </button>
           <span>
-            Page {page + 1} of {pages}
+            {t('recent_skips_page_of', { page: page + 1, pages })}
           </span>
           <button
             className="btn-outline px-2 py-1 disabled:opacity-50"
-            aria-label="Next page"
+            aria-label={t('recent_skips_next_aria')}
             disabled={page >= pages - 1}
             onClick={() => setPage(p => p + 1)}
           >
-            <ChevronRight size={14} />
+            <ChevronRight size={14} className="rtl:-scale-x-100" />
           </button>
         </div>
       )}

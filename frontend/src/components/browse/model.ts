@@ -1,5 +1,9 @@
 // Types and pure helpers shared by the Browse page and its parts (#207).
 import { parseDbTimestamp } from '../../utils/dbTime'
+import { translate, type TranslateFn } from '../../i18n'
+export { shortLabel } from '../../utils/labels'
+
+const defaultT: TranslateFn = (key, vars) => translate('en', key, vars)
 
 export interface Library {
   id: string
@@ -94,21 +98,21 @@ export function scopeLevel(s: Scope): ScopeLevel {
 }
 
 /** Episode titles are stored as "<show> – <season> – <episode>". */
-export function parseEpisodeTitle(title: string): { show: string; season: string; episode: string } {
+export function parseEpisodeTitle(title: string, t: TranslateFn = defaultT): { show: string; season: string; episode: string } {
   const parts = title.split(' – ')
   if (parts.length >= 3) {
     return { show: parts[0].trim(), season: parts[1].trim(), episode: parts.slice(2).join(' – ').trim() }
   }
-  return { show: 'Unknown Show', season: 'Unknown Season', episode: title }
+  return { show: t('unknown_show'), season: t('unknown_season'), episode: title }
 }
 
 /** Groups episodes by show: the Plex show guid, or the parsed name for rows synced before it was stored. */
-export function showKeyOf(t: Title): string {
-  return t.show_guid || parseEpisodeTitle(t.title).show
+export function showKeyOf(t: Title, translateFn: TranslateFn = defaultT): string {
+  return t.show_guid || parseEpisodeTitle(t.title, translateFn).show
 }
 
-export function showNameOf(t: Title): string {
-  return t.show_title || parseEpisodeTitle(t.title).show
+export function showNameOf(t: Title, translateFn: TranslateFn = defaultT): string {
+  return t.show_title || parseEpisodeTitle(t.title, translateFn).show
 }
 
 export function inScope(t: Title, s: Scope): boolean {
@@ -151,11 +155,6 @@ export function segmentLabels(seg: Segment): string[] {
   return seg.labels ? seg.labels.split(',').map(l => l.trim()).filter(Boolean) : []
 }
 
-/** "FEMALE_BREAST_EXPOSED" -> "F Breast"; free-text labels of imported segments pass through. */
-export function shortLabel(label: string): string {
-  return label.replace('_EXPOSED', '').replace('FEMALE_', 'F ').replace('MALE_', 'M ').replace('GENITALIA', 'Gen.').replace('BREAST', 'Breast').replace('_', ' ')
-}
-
 /** What found a segment, for the "Found by" filter: the detector for scanner results, else the source. */
 export function segmentOrigin(seg: Segment): string {
   return seg.detector || seg.source || 'scanner'
@@ -185,11 +184,11 @@ export function segmentPasses(s: Segment, f: SegmentFilters): boolean {
   return true
 }
 
-export const SEGMENT_STATE_LABELS: Record<SegmentState, string> = {
-  all: 'All segments',
-  active: 'Active only',
-  fp_user: 'False positives (marked by you)',
-  fp_verifier: 'Rejected by the verifier',
+export const SEGMENT_STATE_LABEL_KEYS: Record<SegmentState, 'seg_state_all' | 'seg_state_active' | 'seg_state_fp_user' | 'seg_state_fp_verifier'> = {
+  all: 'seg_state_all',
+  active: 'seg_state_active',
+  fp_user: 'seg_state_fp_user',
+  fp_verifier: 'seg_state_fp_verifier',
 }
 
 /**
@@ -197,11 +196,11 @@ export const SEGMENT_STATE_LABELS: Record<SegmentState, string> = {
  * episode is named by its own title, with its show and season as context unless the level
  * already says them. Every row and every segment heading names titles this way.
  */
-export function titleNameParts(t: Title, level: ScopeLevel, flat: boolean): { name: string; context: string } {
+export function titleNameParts(t: Title, level: ScopeLevel, flat: boolean, translateFn: TranslateFn = defaultT): { name: string; context: string } {
   const extra = [t.year ? String(t.year) : '', t.content_rating].filter(Boolean)
   if (t.media_type !== 'episode') return { name: t.title, context: extra.join(' · ') }
-  const p = parseEpisodeTitle(t.title)
-  const where = level === 'season' && !flat ? [] : level === 'show' && !flat ? [p.season] : [showNameOf(t), p.season]
+  const p = parseEpisodeTitle(t.title, translateFn)
+  const where = level === 'season' && !flat ? [] : level === 'show' && !flat ? [p.season] : [showNameOf(t, translateFn), p.season]
   return { name: p.episode, context: [...where, t.content_rating].filter(Boolean).join(' · ') }
 }
 

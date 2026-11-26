@@ -1,3 +1,5 @@
+import { useT } from '../i18n'
+
 /**
  * Shows when in the film a segment's thumbnail was taken (#133). Without it, a thumbnail
  * that shows the start of a scene reads as "nothing here" and the segment gets marked a
@@ -12,13 +14,14 @@ export function formatFrameTime(ms: number): string {
 }
 
 export default function ThumbnailTime({ ms }: { ms?: number | null }) {
+  const { t } = useT()
   if (ms == null) return null
   return (
     <div
-      title="The time in the film this frame was taken from"
-      className="absolute top-0.5 right-0.5 bg-black/70 text-[10px] text-gray-300 px-1 py-0.5 rounded"
+      title={t('thumb_time_title')}
+      className="absolute top-0.5 end-0.5 bg-black/70 text-[10px] text-gray-300 px-1 py-0.5 rounded"
     >
-      frame {formatFrameTime(ms)}
+      {t('thumb_time_frame', { time: formatFrameTime(ms) })}
     </div>
   )
 }

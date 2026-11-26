@@ -45,11 +45,11 @@ export default function CollapsibleSection({ id, title, hint, defaultOpen = true
         <button
           onClick={toggle}
           aria-expanded={open}
-          className="flex items-center gap-2 flex-1 min-w-0 text-left group"
+          className="flex items-center gap-2 flex-1 min-w-0 text-start group"
         >
           <ChevronDown
             size={15}
-            className={`text-muted group-hover:text-gray-300 transition-transform flex-shrink-0 ${open ? '' : '-rotate-90'}`}
+            className={`text-muted group-hover:text-gray-300 transition-transform flex-shrink-0 ${open ? '' : '-rotate-90 rtl:rotate-90'}`}
           />
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">{title}</h2>
           {hint && <span className="text-xs text-muted truncate">— {hint}</span>}

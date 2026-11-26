@@ -1,9 +1,19 @@
 import { X } from 'lucide-react'
 import { ActorPicker } from './ActorPicker'
-import { SegmentFilters, SegmentState, SEGMENT_STATE_LABELS, shortLabel } from './model'
+import { SegmentFilters, SegmentState, SEGMENT_STATE_LABEL_KEYS, shortLabel } from './model'
+import { useT } from '../../i18n'
+import { originDisplayName } from '../../utils/segmentOrigin'
 
 export const STATUS_TABS = ['all', 'pending', 'scanning', 'done', 'failed'] as const
 export type StatusTab = typeof STATUS_TABS[number]
+
+const STATUS_TAB_KEYS: Record<StatusTab, 'filter_status_all' | 'filter_status_pending' | 'filter_status_scanning' | 'filter_status_done' | 'filter_status_failed'> = {
+  all: 'filter_status_all',
+  pending: 'filter_status_pending',
+  scanning: 'filter_status_scanning',
+  done: 'filter_status_done',
+  failed: 'filter_status_failed',
+}
 
 /** Title-level filters. The name search sits in the toolbar; the rest open in the panel (#208). */
 export interface TitleFilters {
@@ -31,7 +41,6 @@ export function titleFiltersActive(f: TitleFilters): boolean {
   return !!(f.name || f.actors.length || f.rating !== 'all' || f.status !== 'all' || f.yearFrom || f.yearTo || f.scanFrom || f.scanTo)
 }
 
-const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 const inputCls = 'w-full min-w-0 px-2 py-1.5 bg-plex-dark border border-plex-border rounded-lg text-sm text-gray-200 placeholder-muted focus:border-plex-orange/50'
 const fieldLabel = 'block text-[11px] uppercase tracking-wide text-muted mb-1'
 
@@ -78,6 +87,7 @@ interface PanelProps {
 
 /** The filters behind the toolbar's Filters button, inline below the toolbar (not an overlay). */
 export function FilterPanel(p: PanelProps) {
+  const { t: tr } = useT()
   const t = p.titles
   const toggleLabel = (label: string) => {
     const next = new Set(p.segments.labels)
@@ -89,7 +99,7 @@ export function FilterPanel(p: PanelProps) {
       {p.showTitleSection && (
         <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1.6fr]">
           <div className="sm:col-span-2 xl:col-span-4">
-            <span className={fieldLabel}>Scan status</span>
+            <span className={fieldLabel}>{tr('filter_scan_status')}</span>
             <div className="flex flex-wrap p-0.5 gap-0.5 rounded-lg bg-black/25 border border-plex-border w-fit max-w-full">
               {STATUS_TABS.map(s => (
                 <button
@@ -98,52 +108,52 @@ export function FilterPanel(p: PanelProps) {
                   aria-pressed={t.status === s}
                   className={`px-3 py-1 text-xs rounded-md transition-colors whitespace-nowrap ${t.status === s ? 'bg-plex-orange text-black font-semibold' : 'text-gray-400 hover:text-gray-100 hover:bg-white/5'}`}
                 >
-                  {s === 'all' ? 'All' : capital(s)}
-                  <span className={`ml-1.5 tabular-nums ${t.status === s ? 'opacity-70' : 'text-muted'}`}>{p.statusCounts[s] ?? 0}</span>
+                  {tr(STATUS_TAB_KEYS[s])}
+                  <span className={`ms-1.5 tabular-nums ${t.status === s ? 'opacity-70' : 'text-muted'}`}>{p.statusCounts[s] ?? 0}</span>
                 </button>
               ))}
             </div>
           </div>
           <div>
-            <span className={fieldLabel}>Actor</span>
+            <span className={fieldLabel}>{tr('filter_actor')}</span>
             <ActorPicker suggestions={p.castSuggestions} sort={p.castSort} onSort={p.onCastSort}
               selected={t.actors} onChange={actors => p.onTitles({ actors })}
               match={t.actorMatch} onMatch={actorMatch => p.onTitles({ actorMatch })} photos={p.actorPhotos} />
           </div>
           <label>
-            <span className={fieldLabel}>Rating</span>
-            <select value={t.rating} aria-label="Filter by rating" onChange={e => p.onTitles({ rating: e.target.value })} className={inputCls}>
-              <option value="all">All ratings</option>
+            <span className={fieldLabel}>{tr('filter_rating')}</span>
+            <select value={t.rating} aria-label={tr('filter_rating_aria')} onChange={e => p.onTitles({ rating: e.target.value })} className={inputCls}>
+              <option value="all">{tr('filter_all_ratings')}</option>
               {p.ratings.map(r => <option key={r} value={r}>{r}</option>)}
             </select>
           </label>
           <div>
-            <span className={fieldLabel}>Released</span>
+            <span className={fieldLabel}>{tr('filter_released')}</span>
             <div className="flex items-center gap-1.5">
-              <input type="number" placeholder="From" aria-label="Released from year" value={t.yearFrom} onChange={e => p.onTitles({ yearFrom: e.target.value })} className={inputCls} />
+              <input type="number" placeholder={tr('filter_from')} aria-label={tr('filter_released_from_aria')} value={t.yearFrom} onChange={e => p.onTitles({ yearFrom: e.target.value })} className={inputCls} />
               <span className="text-muted">–</span>
-              <input type="number" placeholder="To" aria-label="Released to year" value={t.yearTo} onChange={e => p.onTitles({ yearTo: e.target.value })} className={inputCls} />
+              <input type="number" placeholder={tr('filter_to')} aria-label={tr('filter_released_to_aria')} value={t.yearTo} onChange={e => p.onTitles({ yearTo: e.target.value })} className={inputCls} />
             </div>
           </div>
           <div>
-            <span className={fieldLabel}>Scanned</span>
+            <span className={fieldLabel}>{tr('filter_scanned')}</span>
             <div className="flex items-center gap-1.5">
-              <input type="date" aria-label="Scanned from" value={t.scanFrom} onChange={e => p.onTitles({ scanFrom: e.target.value })} className={inputCls} />
+              <input type="date" aria-label={tr('filter_scanned_from_aria')} value={t.scanFrom} onChange={e => p.onTitles({ scanFrom: e.target.value })} className={inputCls} />
               <span className="text-muted">–</span>
-              <input type="date" aria-label="Scanned to" value={t.scanTo} onChange={e => p.onTitles({ scanTo: e.target.value })} className={inputCls} />
+              <input type="date" aria-label={tr('filter_scanned_to_aria')} value={t.scanTo} onChange={e => p.onTitles({ scanTo: e.target.value })} className={inputCls} />
               {/* Titles not scanned yet have no scan date, so any range hides pending and scanning ones (#217). */}
               {(t.scanFrom || t.scanTo) && (
-                <button type="button" onClick={() => p.onTitles({ scanFrom: '', scanTo: '' })} className="btn-outline text-xs px-2 py-1 flex-shrink-0">Clear</button>
+                <button type="button" onClick={() => p.onTitles({ scanFrom: '', scanTo: '' })} className="btn-outline text-xs px-2 py-1 flex-shrink-0">{tr('common_clear')}</button>
               )}
             </div>
           </div>
           <label className="flex items-center gap-2 text-sm text-gray-300 sm:col-span-2 xl:col-span-4">
             <input type="checkbox" checked={t.showIgnored} onChange={e => p.onTitles({ showIgnored: e.target.checked })} className="w-4 h-4 accent-plex-orange" />
-            Show ignored and out-of-scope titles
+            {tr('filter_show_ignored')}
           </label>
           {titleFiltersActive(t) || t.showIgnored ? (
             <div className="sm:col-span-2 xl:col-span-4">
-              <button type="button" onClick={() => p.onTitles({ ...NO_TITLE_FILTERS, name: t.name })} className="btn-outline text-xs">Reset filters</button>
+              <button type="button" onClick={() => p.onTitles({ ...NO_TITLE_FILTERS, name: t.name })} className="btn-outline text-xs">{tr('filter_reset')}</button>
             </div>
           ) : null}
         </div>
@@ -152,21 +162,21 @@ export function FilterPanel(p: PanelProps) {
       {p.showSegmentSection && (
         <div className={`grid gap-3 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 ${p.showTitleSection ? 'pt-3 border-t border-plex-border' : ''}`}>
           <label>
-            <span className={fieldLabel}>Segment state</span>
-            <select value={p.segments.state} aria-label="Segment state" onChange={e => p.onSegments({ ...p.segments, state: e.target.value as SegmentState })} className={inputCls}>
-              {(Object.keys(SEGMENT_STATE_LABELS) as SegmentState[]).map(s => <option key={s} value={s}>{SEGMENT_STATE_LABELS[s]}</option>)}
+            <span className={fieldLabel}>{tr('filter_segment_state')}</span>
+            <select value={p.segments.state} aria-label={tr('filter_segment_state')} onChange={e => p.onSegments({ ...p.segments, state: e.target.value as SegmentState })} className={inputCls}>
+              {(Object.keys(SEGMENT_STATE_LABEL_KEYS) as SegmentState[]).map(s => <option key={s} value={s}>{tr(SEGMENT_STATE_LABEL_KEYS[s])}</option>)}
             </select>
           </label>
           <label>
-            <span className={fieldLabel}>Found by</span>
-            <select value={p.segments.origin} aria-label="Found by" onChange={e => p.onSegments({ ...p.segments, origin: e.target.value })} className={inputCls}>
-              <option value="">Anything</option>
-              {p.segmentOrigins.map(o => <option key={o} value={o}>{o}</option>)}
+            <span className={fieldLabel}>{tr('filter_found_by')}</span>
+            <select value={p.segments.origin} aria-label={tr('filter_found_by')} onChange={e => p.onSegments({ ...p.segments, origin: e.target.value })} className={inputCls}>
+              <option value="">{tr('filter_anything')}</option>
+              {p.segmentOrigins.map(o => <option key={o} value={o}>{originDisplayName(o, tr)}</option>)}
             </select>
           </label>
           {p.segmentLabels.length > 0 && (
             <div className="sm:col-span-2">
-              <span className={fieldLabel}>Labels</span>
+              <span className={fieldLabel}>{tr('filter_labels')}</span>
               <div className="flex flex-wrap gap-1.5">
                 {p.segmentLabels.map(label => {
                   const on = p.segments.labels.has(label)
@@ -178,7 +188,7 @@ export function FilterPanel(p: PanelProps) {
                       title={label}
                       className={`text-xs px-2 py-1 rounded-full border transition-colors ${on ? 'bg-plex-orange/20 text-plex-orange border-plex-orange/50' : 'text-gray-400 border-plex-border hover:text-gray-200'}`}
                     >
-                      {shortLabel(label)}
+                      {shortLabel(label, tr)}
                     </button>
                   )
                 })}
@@ -202,32 +212,33 @@ interface ChipsProps {
 
 /** The active filters as removable chips, so a closed panel still says what is narrowing the list. */
 export function FilterChips({ titles: t, onTitles, segments: s, onSegments, showSegments, onClearAll }: ChipsProps) {
+  const { t: tr } = useT()
   const chips: { key: string; text: string; clear: () => void }[] = []
-  if (t.status !== 'all') chips.push({ key: 'status', text: `Status: ${capital(t.status)}`, clear: () => onTitles({ status: 'all' }) })
+  if (t.status !== 'all') chips.push({ key: 'status', text: tr('filter_chip_status', { status: tr(STATUS_TAB_KEYS[t.status]) }), clear: () => onTitles({ status: 'all' }) })
   for (const a of t.actors) {
-    chips.push({ key: `a:${a}`, text: `Actor: ${a}`, clear: () => onTitles({ actors: t.actors.filter(x => x !== a) }) })
+    chips.push({ key: `a:${a}`, text: tr('filter_chip_actor', { name: a }), clear: () => onTitles({ actors: t.actors.filter(x => x !== a) }) })
   }
-  if (t.rating !== 'all') chips.push({ key: 'rating', text: `Rating: ${t.rating}`, clear: () => onTitles({ rating: 'all' }) })
-  if (t.yearFrom || t.yearTo) chips.push({ key: 'year', text: `Released ${t.yearFrom || '…'} – ${t.yearTo || '…'}`, clear: () => onTitles({ yearFrom: '', yearTo: '' }) })
-  if (t.scanFrom || t.scanTo) chips.push({ key: 'scan', text: `Scanned ${t.scanFrom || '…'} – ${t.scanTo || '…'}`, clear: () => onTitles({ scanFrom: '', scanTo: '' }) })
-  if (t.showIgnored) chips.push({ key: 'ignored', text: 'Showing ignored', clear: () => onTitles({ showIgnored: false }) })
+  if (t.rating !== 'all') chips.push({ key: 'rating', text: tr('filter_chip_rating', { rating: t.rating }), clear: () => onTitles({ rating: 'all' }) })
+  if (t.yearFrom || t.yearTo) chips.push({ key: 'year', text: tr('filter_chip_released', { from: t.yearFrom || '…', to: t.yearTo || '…' }), clear: () => onTitles({ yearFrom: '', yearTo: '' }) })
+  if (t.scanFrom || t.scanTo) chips.push({ key: 'scan', text: tr('filter_chip_scanned', { from: t.scanFrom || '…', to: t.scanTo || '…' }), clear: () => onTitles({ scanFrom: '', scanTo: '' }) })
+  if (t.showIgnored) chips.push({ key: 'ignored', text: tr('filter_chip_ignored'), clear: () => onTitles({ showIgnored: false }) })
   if (showSegments) {
-    if (s.state !== 'all') chips.push({ key: 'state', text: SEGMENT_STATE_LABELS[s.state], clear: () => onSegments({ ...s, state: 'all' }) })
-    if (s.origin) chips.push({ key: 'origin', text: `Found by ${s.origin}`, clear: () => onSegments({ ...s, origin: '' }) })
+    if (s.state !== 'all') chips.push({ key: 'state', text: tr(SEGMENT_STATE_LABEL_KEYS[s.state]), clear: () => onSegments({ ...s, state: 'all' }) })
+    if (s.origin) chips.push({ key: 'origin', text: tr('filter_chip_origin', { origin: originDisplayName(s.origin, tr) }), clear: () => onSegments({ ...s, origin: '' }) })
     for (const label of s.labels) {
-      chips.push({ key: `l:${label}`, text: shortLabel(label), clear: () => { const n = new Set(s.labels); n.delete(label); onSegments({ ...s, labels: n }) } })
+      chips.push({ key: `l:${label}`, text: shortLabel(label, tr), clear: () => { const n = new Set(s.labels); n.delete(label); onSegments({ ...s, labels: n }) } })
     }
   }
   if (chips.length === 0) return null
   return (
     <div className="flex flex-wrap items-center gap-1.5 mb-3">
       {chips.map(c => (
-        <span key={c.key} className="flex items-center gap-1 text-xs pl-2 pr-1 py-0.5 rounded-full bg-plex-orange/15 text-plex-orange border border-plex-orange/40">
+        <span key={c.key} className="flex items-center gap-1 text-xs ps-2 pe-1 py-0.5 rounded-full bg-plex-orange/15 text-plex-orange border border-plex-orange/40">
           {c.text}
-          <button onClick={c.clear} aria-label={`Remove filter ${c.text}`} className="p-0.5 rounded-full hover:bg-plex-orange/20"><X size={11} /></button>
+          <button onClick={c.clear} aria-label={tr('filter_remove_aria', { text: c.text })} className="p-0.5 rounded-full hover:bg-plex-orange/20"><X size={11} /></button>
         </span>
       ))}
-      <button onClick={onClearAll} className="text-xs text-gray-400 hover:text-white px-1">Clear all</button>
+      <button onClick={onClearAll} className="text-xs text-gray-400 hover:text-white px-1">{tr('common_clear_all')}</button>
     </div>
   )
 }

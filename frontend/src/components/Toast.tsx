@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AlertCircle, CheckCircle, X } from 'lucide-react'
+import { useT } from '../i18n'
 
 type Tone = 'error' | 'success'
 interface ToastItem {
@@ -57,7 +58,7 @@ export function Toaster() {
   }, [])
 
   return createPortal(
-    <div className="fixed z-[60] bottom-20 md:bottom-4 right-4 left-4 sm:left-auto sm:w-96 flex flex-col gap-2 pointer-events-none">
+    <div className="fixed z-[60] bottom-20 md:bottom-4 end-4 start-4 sm:start-auto sm:w-96 flex flex-col gap-2 pointer-events-none">
       {/* Two live regions: errors interrupt, confirmations wait their turn. */}
       <div role="alert" className="flex flex-col gap-2">
         {list.filter(t => t.tone === 'error').map(t => <ToastCard key={t.id} item={t} />)}
@@ -71,6 +72,7 @@ export function Toaster() {
 }
 
 function ToastCard({ item }: { item: ToastItem }) {
+  const { t } = useT()
   const error = item.tone === 'error'
   return (
     <div className="pointer-events-auto flex items-start gap-2.5 rounded-lg border border-plex-border bg-plex-dark px-3 py-2.5 text-sm text-gray-200 shadow-xl">
@@ -81,7 +83,7 @@ function ToastCard({ item }: { item: ToastItem }) {
       <button
         type="button"
         onClick={() => dismiss(item.id)}
-        aria-label="Dismiss"
+        aria-label={t('common_dismiss')}
         className="p-0.5 rounded text-gray-400 hover:text-white transition-colors flex-shrink-0"
       >
         <X size={14} />

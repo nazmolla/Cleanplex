@@ -5,6 +5,7 @@ import SegmentPlayer from '../SegmentPlayer'
 import SkipFileImport from '../SkipFileImport'
 import SegmentRow from './SegmentRow'
 import { Segment, SegmentFilters, Title, msToTimecode, segmentLabels, segmentOrigin, segmentPasses } from './model'
+import { useT } from '../../i18n'
 
 // Guids per batch request: keeps one request's SQL parameter list and reply size bounded.
 const BATCH_GUIDS = 300
@@ -34,6 +35,7 @@ interface Props {
  * fetched at, so a scan, import or delete elsewhere refetches only the titles it touched.
  */
 export default function SegmentsView({ titles, single, nameOf, onOpenTitle, onImported, filters, onOptions }: Props) {
+  const { t: tr } = useT()
   const [segs, setSegs] = useState<Record<string, Segment[]>>({})
   // The title's counts when its list was fetched. Compared with later counts rather than
   // the list length, because the list hides disabled labels and the count does not.
@@ -130,22 +132,23 @@ export default function SegmentsView({ titles, single, nameOf, onOpenTitle, onIm
 
       <div className="flex items-center gap-3">
         <p className="text-xs text-muted tabular-nums" role="status">
-          {loading ? 'Loading segments…'
-            : filtered ? `${total} of ${inScope.length} segments match`
-            : `${total} segment${total === 1 ? '' : 's'}${single ? '' : ` in ${groups.length} title${groups.length === 1 ? '' : 's'}`}`}
+          {loading ? tr('segs_loading')
+            : filtered ? tr('segs_match_count', { matched: total, total: inScope.length })
+            : single ? tr('segs_count_single', { segments: tr('unit_segment', { count: total }) })
+            : tr('segs_count_multi', { segments: tr('unit_segment', { count: total }), titles: tr('unit_title', { count: groups.length }) })}
         </p>
         {/* Import and export are occasional, so they stay folded away until asked for. */}
         {single && (
-          <button onClick={() => setShowImport(v => !v)} aria-expanded={showImport} className="ml-auto btn-outline text-xs">
-            {showImport ? 'Close import' : 'Import skip files'}
+          <button onClick={() => setShowImport(v => !v)} aria-expanded={showImport} className="ms-auto btn-outline text-xs">
+            {showImport ? tr('segs_close_import') : tr('segs_import_files')}
           </button>
         )}
       </div>
 
-      {failed && <p className="text-sm text-red-400">Could not load segments. Change the level or reload the page to retry.</p>}
+      {failed && <p className="text-sm text-red-400">{tr('segs_load_error')}</p>}
       {!loading && !failed && total === 0 && (
         <p className="text-sm text-muted py-8 text-center">
-          {inScope.length > 0 ? 'No segments match the segment filters.' : 'No segments here.'}
+          {inScope.length > 0 ? tr('segs_none_matching') : tr('segs_none_here')}
         </p>
       )}
 
@@ -155,11 +158,11 @@ export default function SegmentsView({ titles, single, nameOf, onOpenTitle, onIm
           <section key={g.title.plex_guid} className="space-y-2">
             {!single && (
               <h3 className="flex items-baseline gap-2 min-w-0">
-                <button onClick={() => onOpenTitle(g.title)} className="text-sm font-semibold text-gray-100 hover:text-plex-orange truncate text-left">
+                <button onClick={() => onOpenTitle(g.title)} className="text-sm font-semibold text-gray-100 hover:text-plex-orange truncate text-start">
                   {name}
                 </button>
                 {context && <span className="text-xs text-muted truncate">{context}</span>}
-                <span className="ml-auto text-xs text-muted flex-shrink-0 tabular-nums">{g.count}</span>
+                <span className="ms-auto text-xs text-muted flex-shrink-0 tabular-nums">{g.count}</span>
               </h3>
             )}
             <div className="space-y-2">
@@ -174,15 +177,15 @@ export default function SegmentsView({ titles, single, nameOf, onOpenTitle, onIm
       {total > limit && (
         <div className="text-center">
           <button onClick={() => setLimit(l => l + PAGE)} className="btn-outline">
-            Show more ({total - limit} left)
+            {tr('browse_show_more', { count: total - limit })}
           </button>
         </div>
       )}
 
       {previewSeg && (
         <Modal
-          title="Segment preview"
-          subtitle={<>{msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)} · clip includes 5s either side</>}
+          title={tr('segs_preview_title')}
+          subtitle={<><span dir="ltr">{msToTimecode(previewSeg.start_ms)} → {msToTimecode(previewSeg.end_ms)}</span> · {tr('segs_preview_subtitle')}</>}
           size="xl"
           onClose={() => setPreviewSeg(null)}
         >

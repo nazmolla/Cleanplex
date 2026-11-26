@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { ThumbsDown, Undo2 } from 'lucide-react'
 import { api } from '../api/client'
 import { toast } from './Toast'
+import { useT } from '../i18n'
 
 interface Props {
   seg: { id: number; false_positive?: boolean; auto_rejected?: boolean; community_rejected?: boolean }
@@ -16,6 +17,7 @@ interface Props {
  * for tuning detection later.
  */
 export default function FalsePositiveButton({ seg, onChange }: Props) {
+  const { t } = useT()
   const [busy, setBusy] = useState(false)
   const marked = !!seg.false_positive
 
@@ -25,7 +27,7 @@ export default function FalsePositiveButton({ seg, onChange }: Props) {
       await api.post(`/api/segments/${seg.id}/false-positive`, { false_positive: !marked })
       onChange(seg.id, !marked)
     } catch (err: any) {
-      toast.error(`Could not update this segment: ${err.message || 'Unknown error'}`)
+      toast.error(t('fp_update_error', { error: err.message || t('common_unknown_error') }))
     } finally {
       setBusy(false)
     }
@@ -36,13 +38,13 @@ export default function FalsePositiveButton({ seg, onChange }: Props) {
       onClick={toggle}
       disabled={busy}
       title={
-        seg.auto_rejected ? 'Restore: the verifier was wrong, this segment is real'
-          : seg.community_rejected ? 'Restore: Hayaa users called this a false positive, but it is real'
-          : marked ? 'Undo: this segment is real'
+        seg.auto_rejected ? t('fp_title_auto_rejected')
+          : seg.community_rejected ? t('fp_title_community')
+          : marked ? t('fp_title_undo')
           // Distinct from a preference: with Hayaa this is a vote that nothing is there (#222).
-          : 'False positive: nothing is there. Shared with Hayaa as a vote; to stop skipping a kind of scene, lower the viewer\'s category level instead'
+          : t('fp_title_mark')
       }
-      aria-label={seg.auto_rejected || seg.community_rejected ? 'Restore segment' : marked ? 'Undo false positive' : 'Mark as false positive'}
+      aria-label={seg.auto_rejected || seg.community_rejected ? t('fp_aria_restore') : marked ? t('fp_aria_undo') : t('fp_aria_mark')}
       aria-pressed={marked}
       className={`p-2 rounded-lg transition-colors disabled:opacity-40 ${
         marked
@@ -57,6 +59,7 @@ export default function FalsePositiveButton({ seg, onChange }: Props) {
 
 /** Shown next to a marked segment's time range. */
 export function FalsePositiveTag({ autoRejected = false }: { autoRejected?: boolean }) {
+  const { t } = useT()
   return (
     <span
       className={`text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap ${
@@ -65,7 +68,7 @@ export function FalsePositiveTag({ autoRejected = false }: { autoRejected?: bool
           : 'bg-amber-400/10 border-amber-400/30 text-amber-300'
       }`}
     >
-      {autoRejected ? 'Rejected by verifier' : 'False positive'}
+      {autoRejected ? t('fp_tag_verifier') : t('fp_tag_fp')}
     </span>
   )
 }

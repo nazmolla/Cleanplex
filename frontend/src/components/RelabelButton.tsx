@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { Tag } from 'lucide-react'
 import { api } from '../api/client'
 import Modal from './Modal'
+import { useT } from '../i18n'
+import { prettyLabel } from '../utils/labels'
 
 interface Props {
   seg: { id: number; labels?: string }
@@ -24,21 +26,16 @@ function loadLabels(): Promise<string[]> {
   return labelRequest
 }
 
-const pretty = (label: string) => {
-  const s = label.toLowerCase().replace(/_/g, ' ').replace(/^face (female|male)$/, '$1 face')
-  return s.charAt(0).toUpperCase() + s.slice(1)
-}
-
 // The detector tiers, highest first, in step with LABEL_SEVERITY in importers/_common.py
 // (#230). A label not listed is minimal; minimal labels keep this order, male chest last.
 const TIERS = [
-  { name: 'High', note: 'Exposed genitalia, female breast', heading: 'text-red-300', bar: 'border-red-400/70',
+  { nameKey: 'relabel_tier_high' as const, noteKey: 'relabel_tier_high_note' as const, heading: 'text-red-300', bar: 'border-red-400/70',
     labels: ['FEMALE_GENITALIA_EXPOSED', 'MALE_GENITALIA_EXPOSED', 'FEMALE_BREAST_EXPOSED'] },
-  { name: 'Medium', note: 'Exposed buttocks, anus, belly', heading: 'text-amber-300', bar: 'border-amber-400/70',
+  { nameKey: 'relabel_tier_medium' as const, noteKey: 'relabel_tier_medium_note' as const, heading: 'text-amber-300', bar: 'border-amber-400/70',
     labels: ['BUTTOCKS_EXPOSED', 'ANUS_EXPOSED', 'BELLY_EXPOSED'] },
-  { name: 'Low', note: 'Covered genitalia, female breast', heading: 'text-sky-300', bar: 'border-sky-400/70',
+  { nameKey: 'relabel_tier_low' as const, noteKey: 'relabel_tier_low_note' as const, heading: 'text-sky-300', bar: 'border-sky-400/70',
     labels: ['FEMALE_GENITALIA_COVERED', 'FEMALE_BREAST_COVERED'] },
-  { name: 'Minimal', note: 'Everything else', heading: 'text-gray-300', bar: 'border-plex-border',
+  { nameKey: 'relabel_tier_minimal' as const, noteKey: 'relabel_tier_minimal_note' as const, heading: 'text-gray-300', bar: 'border-plex-border',
     labels: ['BUTTOCKS_COVERED', 'ANUS_COVERED', 'BELLY_COVERED', 'FEET_EXPOSED', 'FEET_COVERED',
              'ARMPITS_EXPOSED', 'ARMPITS_COVERED', 'FACE_FEMALE', 'FACE_MALE',
              'MALE_BREAST_EXPOSED', 'MALE_BREAST_COVERED'] },
@@ -66,6 +63,7 @@ function grouped(all: string[]) {
  * correction is stored as feedback next to the detector's original labels.
  */
 export default function RelabelButton({ seg, onChange }: Props) {
+  const { t } = useT()
   const [open, setOpen] = useState(false)
   const [all, setAll] = useState<string[]>([])
   const [attempt, setAttempt] = useState(0)
@@ -80,9 +78,9 @@ export default function RelabelButton({ seg, onChange }: Props) {
     let cancelled = false
     loadLabels()
       .then(labels => { if (!cancelled) { setAll(labels); setError('') } })
-      .catch(() => { if (!cancelled) setError('Could not load the label list.') })
+      .catch(() => { if (!cancelled) setError(t('relabel_load_error')) })
     return () => { cancelled = true }
-  }, [open, attempt])
+  }, [open, attempt, t])
 
   const show = () => {
     setPicked((seg.labels || '').split(',').map(l => l.trim()).filter(Boolean))
@@ -101,7 +99,7 @@ export default function RelabelButton({ seg, onChange }: Props) {
       onChange(seg.id, res.labels)
       setOpen(false)
     } catch (err: any) {
-      setError(err.message || 'Could not save the labels.')
+      setError(err.message || t('relabel_save_error'))
     } finally {
       setBusy(false)
     }
@@ -111,34 +109,33 @@ export default function RelabelButton({ seg, onChange }: Props) {
     <>
       <button
         onClick={show}
-        title="Wrong label? Correct what this segment shows"
-        aria-label="Edit labels"
+        title={t('relabel_btn_title')}
+        aria-label={t('relabel_btn_aria')}
         className="p-2 rounded-lg text-gray-400 hover:text-sky-300 hover:bg-sky-400/10 transition-colors"
       >
         <Tag size={16} />
       </button>
       {open && (
         <Modal
-          title="Edit labels"
+          title={t('relabel_modal_title')}
           onClose={() => setOpen(false)}
           dismissible={!busy}
           footer={
             <>
-              <button onClick={() => setOpen(false)} disabled={busy} className="btn-outline">Cancel</button>
-              <button onClick={save} disabled={busy || picked.length === 0} className="btn-primary">Save</button>
+              <button onClick={() => setOpen(false)} disabled={busy} className="btn-outline">{t('common_cancel')}</button>
+              <button onClick={save} disabled={busy || picked.length === 0} className="btn-primary">{t('common_save')}</button>
             </>
           }
         >
           <p className="text-xs text-gray-400 mb-4">
-            Tick what this segment shows. Its highest label sets its severity; each viewer's level decides what
-            gets skipped.
+            {t('relabel_desc')}
           </p>
           <div className="space-y-3">
             {grouped(all).map(tier => (
-              <section key={tier.name} className={`border-l-2 ${tier.bar} pl-3`}>
+              <section key={tier.nameKey} className={`border-s-2 ${tier.bar} ps-3`}>
                 <h3 className="text-sm mb-1.5">
-                  <span className={`font-medium ${tier.heading}`}>{tier.name}</span>
-                  <span className="text-xs text-muted ml-2">{tier.note}</span>
+                  <span className={`font-medium ${tier.heading}`}>{t(tier.nameKey)}</span>
+                  <span className="text-xs text-muted ms-2">{t(tier.noteKey)}</span>
                 </h3>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5">
                   {tier.labels.map(label => (
@@ -149,7 +146,7 @@ export default function RelabelButton({ seg, onChange }: Props) {
                         onChange={() => toggle(label)}
                         className="w-4 h-4 accent-plex-orange"
                       />
-                      {pretty(label)}
+                      {prettyLabel(label, t)}
                     </label>
                   ))}
                 </div>
@@ -158,15 +155,15 @@ export default function RelabelButton({ seg, onChange }: Props) {
           </div>
           {picked.length > 0 && all.length > 0 && (
             <p className="text-xs text-muted mt-3">
-              Severity: <span className={`font-medium ${TIERS[severityTier(picked)].heading}`}>{TIERS[severityTier(picked)].name}</span>
+              {t('relabel_severity')} <span className={`font-medium ${TIERS[severityTier(picked)].heading}`}>{t(TIERS[severityTier(picked)].nameKey)}</span>
             </p>
           )}
-          {all.length === 0 && !error && <p className="text-xs text-muted">Loading labels…</p>}
+          {all.length === 0 && !error && <p className="text-xs text-muted">{t('relabel_loading')}</p>}
           {error && (
             <p className="text-xs text-red-400 mt-3" role="alert">
               {error}{' '}
               {all.length === 0 && (
-                <button onClick={() => { setError(''); setAttempt(n => n + 1) }} className="underline hover:text-red-300">Retry</button>
+                <button onClick={() => { setError(''); setAttempt(n => n + 1) }} className="underline hover:text-red-300">{t('common_retry')}</button>
               )}
             </p>
           )}

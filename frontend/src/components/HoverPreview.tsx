@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import { useT } from '../i18n'
 
 interface Props {
   /** The segment's hover_url; empty until the overnight job has rendered it (#114). */
@@ -16,6 +17,7 @@ interface Props {
  * nothing is downloaded for a list nobody points at, and leaving stops playback.
  */
 export default function HoverPreview({ src, className = '', fit = 'cover', children }: Props) {
+  const { t } = useT()
   const [hovered, setHovered] = useState(false)
   return (
     <div
@@ -31,7 +33,7 @@ export default function HoverPreview({ src, className = '', fit = 'cover', child
           muted
           loop
           playsInline
-          aria-label="Segment preview"
+          aria-label={t('hover_preview_aria')}
           className={`absolute inset-0 w-full h-full bg-black pointer-events-none ${fit === 'contain' ? 'object-contain' : 'object-cover'}`}
         />
       )}
