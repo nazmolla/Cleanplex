@@ -41,8 +41,10 @@ PUSHES_PER_DAY = 20
 PULLS_PER_DAY = 60
 # Automatic sync keeps a fifth of each daily quota free for a manual sync.
 AUTO_BUDGET = 0.8
-OBS_PER_PUSH = 2000
-MEDIA_PER_PUSH = 2000
+# Hayaa allows 2,000 per request, but writes each item to table storage; smaller batches keep
+# every request well inside HTTP_TIMEOUT_S.
+OBS_PER_PUSH = 500
+MEDIA_PER_PUSH = 200
 PULL_BATCH = 500
 # Hayaa refuses a body over 256 KB, whatever the item count; batches stay well under it.
 BODY_BUDGET = 192 * 1024
