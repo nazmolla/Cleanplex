@@ -82,8 +82,54 @@ async def get_libraries():
         return {"libraries": [], "error": "Plex not configured"}
 
 
+def _versions_payload(item) -> list[dict]:
+    """Extract per-version payloads from a Plex MediaItem for DB storage."""
+    versions = getattr(item, "versions", None)
+    if versions:
+        return [
+            {
+                "plex_media_id": str(v.plex_media_id),
+                "media_index": idx,
+                "resolution": v.resolution or "",
+                "file_path": v.file_path,
+                "part_files": json.dumps(v.part_files or [v.file_path]),
+                "part_ids": json.dumps(v.part_ids or []),
+                "file_size": int(v.file_size or 0),
+                "duration_ms": int(v.duration_ms or 0),
+            }
+            for idx, v in enumerate(versions)
+            if v.file_path
+        ]
+    return [
+        {
+            "plex_media_id": "",
+            "media_index": 0,
+            "resolution": "",
+            "file_path": item.file_path,
+            "part_files": json.dumps(getattr(item, "part_files", None) or [item.file_path]),
+            "part_ids": json.dumps(getattr(item, "part_ids", None) or []),
+            "file_size": 0,
+            "duration_ms": int(getattr(item, "duration_ms", 0) or 0),
+        }
+    ]
+
+
+def _plex_files_for_version(job: dict, item) -> list[str]:
+    """Find the current Plex part files corresponding to a stored failed version row."""
+    versions = getattr(item, "versions", None) or []
+    mid = str(job.get("plex_media_id") or "")
+    fpath = job.get("file_path") or ""
+    for v in versions:
+        if mid and str(v.plex_media_id) == mid:
+            return v.part_files or [v.file_path]
+    for v in versions:
+        if fpath and v.file_path == fpath:
+            return v.part_files or [v.file_path]
+    return getattr(item, "part_files", None) or [item.file_path]
+
+
 async def _requeue_changed_failures(failed: list[dict], plex_items: dict) -> int:
-    """Queue again the failed titles whose files changed or that failed long enough ago; return how many (#190)."""
+    """Queue again the failed versions whose files changed or that failed long enough ago; return how many (#190, #233)."""
     if not failed:
         return 0
     excluded = set(json.loads(await db.get_setting("excluded_library_ids", "[]")))
@@ -91,9 +137,15 @@ async def _requeue_changed_failures(failed: list[dict], plex_items: dict) -> int
     now = time.time()
     candidates = [j for j in failed if j["plex_guid"] in plex_items and scan_mod.is_scan_eligible(j, excluded, ratings)]
     flags = await asyncio.to_thread(lambda: [
-        scan_mod.failed_job_retryable(j, plex_items[j["plex_guid"]].part_files or [plex_items[j["plex_guid"]].file_path], now)
+        scan_mod.failed_job_retryable(j, _plex_files_for_version(j, plex_items[j["plex_guid"]]), now)
         for j in candidates
     ])
+    vids = [j["version_id"] for j, retry in zip(candidates, flags) if retry and j.get("version_id")]
+    if vids:
+        await db.reset_version_jobs(vids)
+        await scan_mod.rebuild_queue()
+        events.publish("scanner_changed")
+        return len(vids)
     guids = [j["plex_guid"] for j, retry in zip(candidates, flags) if retry]
     if guids:
         await db.reset_scan_jobs(guids)
@@ -122,9 +174,10 @@ async def sync_library(library_id: str):
 
         # Refresh mutable Plex metadata for all existing titles in one transaction
         # so that manual rating changes in Plex are reflected after sync.
+        existing_items = [i for i in file_items if i.plex_guid in existing_guids]
         await db.refresh_scan_job_metadata_batch([
             (i.plex_guid, i.title, i.file_path, i.rating_key, i.content_rating, i.year, i.show_guid, i.show_rating_key, json.dumps(i.part_files))
-            for i in file_items if i.plex_guid in existing_guids
+            for i in existing_items
         ])
 
         # Remove DB entries for titles Plex no longer reports in this library
@@ -134,26 +187,50 @@ async def sync_library(library_id: str):
         if removed:
             logger.info(f"Library {library_id} sync: removed {removed} stale titles")
 
-        await db.replace_title_parts([(pid, i.rating_key) for i in file_items for pid in i.part_ids])
-
         added = await db.upsert_scan_jobs_batch([
             {
                 "plex_guid": i.plex_guid, "title": i.title, "file_path": i.file_path,
                 "rating_key": i.rating_key, "library_id": i.library_id, "library_title": i.library_title,
                 "content_rating": i.content_rating, "media_type": i.media_type, "year": i.year,
                 "show_guid": i.show_guid, "show_rating_key": i.show_rating_key,
-                "part_files": json.dumps(i.part_files),
+                "part_files": json.dumps(i.part_files), "duration_ms": i.duration_ms,
+                "versions": _versions_payload(i),
             }
             for i in file_items if i.plex_guid not in existing_guids
         ])
+        sync_res = await db.sync_title_versions_batch([
+            {
+                "plex_guid": i.plex_guid,
+                "rating_key": i.rating_key,
+                "title": i.title,
+                "versions": _versions_payload(i),
+            }
+            for i in existing_items
+        ])
+
+        versions_map = await db.get_title_versions_for_guids([i.plex_guid for i in file_items])
+        part_pairs: list[tuple[int, str, int]] = []
+        for it in file_items:
+            vlist = versions_map.get(it.plex_guid, [])
+            by_mid = {v["plex_media_id"]: v["id"] for v in vlist if v["plex_media_id"]}
+            by_path = {v["file_path"]: v["id"] for v in vlist if v["file_path"]}
+            fallback_vid = vlist[0]["id"] if vlist else 0
+            for ver in getattr(it, "versions", []) or []:
+                vid = by_mid.get(str(ver.plex_media_id)) or by_path.get(ver.file_path) or fallback_vid
+                for pid in ver.part_ids:
+                    part_pairs.append((pid, it.rating_key, vid))
+            if not getattr(it, "versions", None):
+                for pid in it.part_ids:
+                    part_pairs.append((pid, it.rating_key, fallback_vid))
+        await db.replace_title_parts(part_pairs)
 
         retried = await _requeue_changed_failures(failed_before, {i.plex_guid: i for i in file_items})
 
-        logger.info(f"Library {library_id} synced: {added} new titles added, {retried} failed titles retried")
-        if added:
+        logger.info(f"Library {library_id} synced: {added} new titles, {len(sync_res['inserted'])} new versions, {retried} failed retried")
+        if added or sync_res["inserted"]:
             await scan_mod.sync_queue()
         events.publish("titles_changed", library_id=library_id)
-        return {"ok": True, "synced": len(items), "new": added, "removed": removed, "retried": retried}
+        return {"ok": True, "synced": len(items), "new": added, "new_versions": len(sync_res["inserted"]), "removed": removed, "retried": retried}
     except RuntimeError as e:
         logger.error(f"Plex client error during library sync: {e}")
         return {"ok": False, "error": str(e)}
@@ -161,15 +238,13 @@ async def sync_library(library_id: str):
 
 @router.get("/libraries/{library_id}/titles")
 async def get_titles_in_library(library_id: str):
-    """Return all scan jobs (titles) for a given library, with Plex poster URLs.
-
-    Poster URLs are built from show_rating_key stored in the DB — no Plex API call
-    is needed per episode. Falls back to get_episode_show_art for rows that predate
-    the show_rating_key column (e.g. episodes synced before this change).
-    """
+    """Return all titles for a given library with per-version status and Plex poster URLs."""
     jobs = await db.get_scan_jobs_by_library(library_id)
+    versions_by_guid = await db.get_title_versions_for_library(library_id)
     seg_counts = await db.get_segment_counts_for_library(library_id)
     fp_counts = await db.get_false_positive_counts_for_library(library_id)
+    ver_seg_counts = await db.get_segment_counts_by_version_for_library(library_id)
+    ver_fp_counts = await db.get_false_positive_counts_by_version_for_library(library_id)
     cast = await db.get_cast_for_library(library_id)
     photos = await db.get_actor_photos_for_library(library_id)
 
@@ -219,6 +294,23 @@ async def get_titles_in_library(library_id: str):
             else:
                 poster_url = thumb_url
 
+        versions_payload = [
+            {
+                "id": v["id"],
+                "plex_media_id": v.get("plex_media_id") or "",
+                "resolution": v.get("resolution") or "",
+                "file_path": v.get("file_path") or "",
+                "status": v.get("status") or "pending",
+                "progress": float(v.get("progress") or 0.0),
+                "finished_at": v.get("finished_at"),
+                "error_msg": (v.get("error_msg") or "") if v.get("status") == "failed" else "",
+                "duration_ms": int(v.get("duration_ms") or 0),
+                "segment_count": ver_seg_counts.get(v["id"], 0),
+                "false_positive_count": ver_fp_counts.get(v["id"], 0),
+            }
+            for v in versions_by_guid.get(job["plex_guid"], [])
+        ]
+
         result.append({
             "plex_guid": job["plex_guid"],
             "rating_key": job.get("rating_key", ""),
@@ -241,6 +333,7 @@ async def get_titles_in_library(library_id: str):
             "year": job.get("year"),
             "cast": cast.get(job["plex_guid"], []),
             "ignored": bool(job.get("ignored", 0)),
+            "versions": versions_payload,
         })
     # Actor photos for the actor filter (#227), as /api/plex-image paths: Plex's photo transcoder
     # fetches and shrinks the remote image, and the image proxy caches it and keeps the token server-side.
@@ -360,6 +453,7 @@ async def get_segments_batch(data: dict):
         result.append({
             "id": seg["id"],
             "plex_guid": seg["plex_guid"],
+            "version_id": int(seg.get("version_id") or 0),
             "title": seg["title"],
             "start_ms": seg["start_ms"],
             "end_ms": seg["end_ms"],
@@ -394,11 +488,18 @@ async def get_segments_batch(data: dict):
 
 
 @router.get("/titles/{plex_guid:path}/segments")
-async def get_segments_for_title(plex_guid: str):
-    """Return all segments for a specific title with all detected labels."""
+async def get_segments_for_title(plex_guid: str, version_id: int | None = None):
+    """Return all segments for a specific title (or one media version) with all detected labels."""
     global _scan_labels_cache
     now = time.monotonic()
-    if _scan_labels_cache and now - _scan_labels_cache[0] < _SCAN_LABELS_CACHE_TTL:
+    if version_id is not None and version_id > 0:
+        segments = await db.get_segments_for_version(version_id, include_false_positives=True)
+        if _scan_labels_cache and now - _scan_labels_cache[0] < _SCAN_LABELS_CACHE_TTL:
+            scan_labels_raw_str = _scan_labels_cache[1]
+        else:
+            scan_labels_raw_str = await db.get_setting("scan_labels", "[]") or "[]"
+            _scan_labels_cache = (now, scan_labels_raw_str)
+    elif _scan_labels_cache and now - _scan_labels_cache[0] < _SCAN_LABELS_CACHE_TTL:
         # Cache hit: fetch segments only — single DB connection open.
         # Review list: include marked false positives so they can be undone.
         segments = await db.get_segments_for_guid(plex_guid, include_false_positives=True)
@@ -420,6 +521,7 @@ async def get_segments_for_title(plex_guid: str):
         result.append({
             "id": seg["id"],
             "plex_guid": seg["plex_guid"],
+            "version_id": int(seg.get("version_id") or 0),
             "title": seg["title"],
             "start_ms": seg["start_ms"],
             "end_ms": seg["end_ms"],
@@ -544,7 +646,9 @@ async def _segment_source(segment_id: int) -> tuple[dict, str, str | None]:
     if not seg:
         raise HTTPException(status_code=404, detail="Segment not found")
 
-    job = await db.get_scan_job_by_guid(seg["plex_guid"])
+    vid = int(seg.get("version_id") or 0)
+    ver = await db.get_title_version(vid) if vid else None
+    job = ver or await db.get_scan_job_by_guid(seg["plex_guid"])
     if not job:
         # Library sync drops a removed or re-matched title's job but keeps its segments for a while.
         raise HTTPException(status_code=404, detail="This title is no longer in the library, so its source file is unknown")
@@ -740,11 +844,16 @@ async def delete_segment(segment_id: int):
 
 
 @router.delete("/titles/{plex_guid:path}/segments")
-async def delete_all_segments_for_title(plex_guid: str):
-    """Delete all segments for a specific title."""
-    for seg in await db.get_segments_for_guid(plex_guid, include_false_positives=True):
-        await hayaa_sync.on_segment_deleted(seg)
-    deleted = await segment_files.delete_segments_for_guid(plex_guid)
+async def delete_all_segments_for_title(plex_guid: str, version_id: int | None = None):
+    """Delete all segments for a title, or only for one media version when version_id is passed."""
+    if version_id is not None and version_id > 0:
+        for seg in await db.get_segments_for_version(version_id, include_false_positives=True):
+            await hayaa_sync.on_segment_deleted(seg)
+        deleted = await segment_files.delete_segments_for_version(version_id)
+    else:
+        for seg in await db.get_segments_for_guid(plex_guid, include_false_positives=True):
+            await hayaa_sync.on_segment_deleted(seg)
+        deleted = await segment_files.delete_segments_for_guid(plex_guid)
     _refresh_cleanplex_summary_for_guid(plex_guid)
     events.publish("segments_changed", guid=plex_guid)
     return {"ok": True, "deleted": deleted}

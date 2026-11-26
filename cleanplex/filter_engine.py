@@ -133,17 +133,26 @@ async def process(
     if time.time() < blocked_until:
         return
 
-    segments = await db.get_segments_for_guid(session.plex_guid)
+    if session.part_id or session.plex_media_id or session.file_path:
+        segments = await db.get_segments_for_session(
+            rating_key=session.rating_key,
+            plex_guid=session.plex_guid,
+            part_id=session.part_id,
+            plex_media_id=session.plex_media_id,
+            file_path=session.file_path,
+        )
+    else:
+        segments = await db.get_segments_for_guid(session.plex_guid)
 
-    # Plex session GUIDs can differ from library-scan GUIDs (ordering of guids[] varies).
-    # Fall back to rating_key lookup so we still find the right segments.
-    if not segments and session.rating_key:
-        segments = await db.get_segments_by_rating_key(session.rating_key)
-        if segments:
-            logger.info(
-                "GUID mismatch for '%s': session_guid=%s, found %d segment(s) via rating_key=%s",
-                session.full_title, session.plex_guid, len(segments), session.rating_key,
-            )
+        # Plex session GUIDs can differ from library-scan GUIDs (ordering of guids[] varies).
+        # Fall back to rating_key lookup so we still find the right segments.
+        if not segments and session.rating_key:
+            segments = await db.get_segments_by_rating_key(session.rating_key)
+            if segments:
+                logger.info(
+                    "GUID mismatch for '%s': session_guid=%s, found %d segment(s) via rating_key=%s",
+                    session.full_title, session.plex_guid, len(segments), session.rating_key,
+                )
 
     if not segments:
         logger.info("No segments found for '%s' (guid=%s, rating_key=%s)", session.full_title, session.plex_guid, session.rating_key)

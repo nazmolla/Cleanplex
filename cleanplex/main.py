@@ -25,7 +25,7 @@ from .thumbnail_backfill import thumbnail_backfill_loop
 from .cast_sync import cast_sync_loop
 from .keyframe_index import keyframe_index_loop
 from .frontdoor import frontdoor_cert_loop
-from .hayaa_sync import hayaa_sync_loop
+from . import hayaa_sync
 from .hayaa_verify import hayaa_verify_loop
 from .web.app import create_app
 from . import stream_proxy
@@ -121,6 +121,8 @@ async def _amain() -> None:
     def get_client():
         return plex_mod.get_client()
 
+    sync_service = hayaa_sync.init_service()
+
     # ── Web server ─────────────────────────────────────────────────────────
     web_app = create_app()
     host = os.environ.get("CLEANPLEX_HOST", "0.0.0.0")
@@ -146,6 +148,8 @@ async def _amain() -> None:
         proxy_app = stream_proxy.create_proxy_app(
             config.plex_url, stream_proxy.db_policy(), keyframes_provider=stream_proxy.db_keyframes,
             session_store=stream_proxy.SessionStore(), part_lookup=stream_proxy.db_part_lookup,
+            part_version_lookup=stream_proxy.db_part_version_lookup,
+            media_version_lookup=stream_proxy.db_media_version_lookup,
             # nginx (the front door) sets X-Forwarded-For only for remote viewers and replaces any
             # client-sent value, so the header is trustworthy here.
             trust_forwarded_for=True,
@@ -177,7 +181,7 @@ async def _amain() -> None:
             ("cast-sync", cast_sync_loop(get_config, get_client)),
             ("keyframe-index", keyframe_index_loop()),
             ("frontdoor-cert", frontdoor_cert_loop(DATA_DIR)),
-            ("hayaa-sync", hayaa_sync_loop()),
+            ("hayaa-sync", sync_service.sync_loop()),
             ("hayaa-verify", hayaa_verify_loop(get_config)),
         )
     ]

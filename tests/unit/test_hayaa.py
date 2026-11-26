@@ -61,6 +61,8 @@ def test_content_key_rejects_an_empty_file():
 async def test_content_key_is_cached_until_the_file_changes(tmp_path, monkeypatch):
     f = tmp_path / "movie.mkv"
     f.write_bytes(BIG)
+    await db.upsert_scan_jobs_batch([{"plex_guid": "g1", "title": "Movie", "file_path": str(f),
+                                      "rating_key": "1", "library_id": "1", "library_title": "Movies"}])
     calls = []
     real = hayaa.content_key_for_file
     monkeypatch.setattr(hayaa, "content_key_for_file", lambda p: calls.append(p) or real(p))
@@ -73,10 +75,63 @@ async def test_content_key_is_cached_until_the_file_changes(tmp_path, monkeypatc
 
 
 async def test_cached_content_key_misses_for_a_changed_or_unknown_file():
-    await db.put_hayaa_content_key("/m/a.mkv", 10, 1, "k" * 64)
-    assert await db.get_hayaa_content_key("/m/a.mkv", 10, 1) == "k" * 64
-    assert await db.get_hayaa_content_key("/m/a.mkv", 11, 1) is None
-    assert await db.get_hayaa_content_key("/m/missing.mkv", 10, 1) is None
+    await db.upsert_scan_jobs_batch([{"plex_guid": "g1", "title": "A", "file_path": "/m/a.mkv",
+                                      "rating_key": "1", "library_id": "1", "library_title": "Movies"}])
+    await db.set_file_content_key("/m/a.mkv", 10, 1, "k" * 64)
+    assert await db.get_file_content_key("/m/a.mkv", 10, 1) == "k" * 64
+    assert await db.get_file_content_key("/m/a.mkv", 11, 1) is None
+    assert await db.get_file_content_key("/m/missing.mkv", 10, 1) is None
+
+
+async def test_migration_moves_legacy_hayaa_content_keys_without_rehashing(tmp_path, monkeypatch):
+    """Existing hayaa_content_keys rows move onto scan_jobs and removed_titles and the table is dropped (#235)."""
+    live_file = tmp_path / "live.mkv"
+    live_file.write_bytes(BIG)
+    st = live_file.stat()
+    db_file = tmp_path / "legacy.db"
+    import aiosqlite
+    async with aiosqlite.connect(str(db_file)) as conn:
+        await conn.executescript(f"""
+            CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE scan_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, plex_guid TEXT UNIQUE NOT NULL,
+                title TEXT, file_path TEXT, part_files TEXT DEFAULT '', rating_key TEXT,
+                library_id TEXT, library_title TEXT, status TEXT DEFAULT 'pending',
+                progress REAL DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE removed_titles (
+                plex_guid TEXT PRIMARY KEY, title TEXT, rating_key TEXT, file_path TEXT,
+                part_files TEXT DEFAULT '', removed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, purged_at TIMESTAMP
+            );
+            CREATE TABLE hayaa_content_keys (
+                file_path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime INTEGER NOT NULL,
+                content_key TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO scan_jobs(plex_guid, title, file_path, rating_key, library_id, library_title)
+                VALUES ('g1', 'Live', '{live_file}', '1', '1', 'Movies');
+            INSERT INTO removed_titles(plex_guid, title, file_path)
+                VALUES ('g2', 'Gone', '/m/gone.mkv');
+            INSERT INTO hayaa_content_keys(file_path, size, mtime, content_key)
+                VALUES ('{live_file}', {st.st_size}, {int(st.st_mtime)}, '{CK_BIG}'),
+                       ('/m/gone.mkv', 789, 101, '{"b" * 64}');
+        """)
+        await conn.commit()
+
+    old_path = db.get_db_path()
+    try:
+        db.set_db_path(db_file)
+        await db.init_db()
+        monkeypatch.setattr(hayaa, "content_key_for_file", lambda _p: (_ for _ in ()).throw(AssertionError("rehashed")))
+        assert await hayaa.content_key_for(str(live_file)) == CK_BIG
+        removed = await db.get_hayaa_removed_titles()
+        assert len(removed) == 1 and removed[0]["content_key"] == "b" * 64 and removed[0]["size"] == 789
+        async with db.get_connection() as conn:
+            row = await (await conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hayaa_content_keys'"
+            )).fetchone()
+        assert row is None
+    finally:
+        db.set_db_path(old_path)
 
 
 def test_key_is_created_once_with_private_permissions():

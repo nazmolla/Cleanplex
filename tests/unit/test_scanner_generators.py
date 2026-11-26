@@ -146,7 +146,6 @@ async def test_a_finished_scan_caches_the_hayaa_content_key(tmp_path):
          patch.object(scanner, "_classify_frame", lambda *a, **k: (False, 0.0, [])):
         await scanner.scan_video("g", Config(scan_step_ms=2000, siglip_enabled=False))
 
-    assert (await db.get_scan_job_by_guid("g"))["status"] == "done"
-    async with db.get_connection() as conn:
-        rows = await conn.execute_fetchall("SELECT content_key FROM hayaa_content_keys WHERE file_path=?", (path,))
-    assert [r["content_key"] for r in rows] == [hayaa.content_key_for_file(Path(path))]
+    job = await db.get_scan_job_by_guid("g")
+    assert job["status"] == "done"
+    assert job["content_key"] == hayaa.content_key_for_file(Path(path))

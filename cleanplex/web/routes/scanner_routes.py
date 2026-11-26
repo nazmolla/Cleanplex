@@ -19,10 +19,11 @@ _tasks: set[asyncio.Task] = set()
 
 
 class ScanTitleRequest(BaseModel):
-    """Request body for scanning a title."""
+    """Request body for scanning a title or one media version."""
     plex_guid: str
     now: bool = False
     library_id: str | None = None
+    version_id: int | None = None
 
 
 class ScanTitlesRequest(BaseModel):
@@ -83,8 +84,20 @@ async def get_scan_queue(
 
 @router.post("/title")
 async def scan_title(body: ScanTitleRequest):
-    """Queue a single title for scanning. If now=true, move to front regardless of time window."""
+    """Queue a single title (or specific version) for scanning. If now=true, move to front regardless of time window."""
     plex_guid = body.plex_guid
+    if body.version_id is not None:
+        vjob = await db.get_title_version(body.version_id)
+        if not vjob or vjob["plex_guid"] != plex_guid:
+            raise HTTPException(status_code=404, detail="Title version not found")
+        await db.reset_version_job(body.version_id)
+        if body.now:
+            await scan_mod.force_scan_job(plex_guid, version_id=body.version_id)
+        else:
+            await scan_mod.enqueue_versions([body.version_id])
+        events.publish("scanner_changed")
+        return {"ok": True, "queued": plex_guid, "version_id": body.version_id}
+
     job = await db.get_scan_job_by_guid(plex_guid)
     if not job:
         # Try to find and create the job from Plex
@@ -97,18 +110,19 @@ async def scan_title(body: ScanTitleRequest):
                 item = next((i for i in items if i.plex_guid == plex_guid), None)
                 if item:
                     logger.info(f"Found title {item.title}, creating scan job")
-                    await db.upsert_scan_job(
-                        plex_guid=item.plex_guid,
-                        title=item.title,
-                        file_path=item.file_path,
-                        rating_key=item.rating_key,
-                        library_id=item.library_id,
-                        library_title=item.library_title,
-                        content_rating=item.content_rating,
-                        media_type=item.media_type,
-                        year=item.year,
-                        part_files=json.dumps(item.part_files),
-                    )
+                    await db.upsert_scan_jobs_batch([{
+                        "plex_guid": item.plex_guid,
+                        "title": item.title,
+                        "file_path": item.file_path,
+                        "rating_key": item.rating_key,
+                        "library_id": item.library_id,
+                        "library_title": item.library_title,
+                        "content_rating": item.content_rating,
+                        "media_type": item.media_type,
+                        "year": item.year,
+                        "part_files": json.dumps(item.part_files),
+                        "duration_ms": item.duration_ms,
+                    }])
                     job = await db.get_scan_job_by_guid(plex_guid)
                     logger.info(f"Scan job created for {plex_guid}")
                 else:
@@ -205,31 +219,43 @@ async def bulk_rescan(body: BulkRescanRequest):
     )
     excluded = set(json.loads(await db.get_setting("excluded_library_ids", "[]")))
     ratings = set(json.loads(await db.get_setting("scan_ratings", "[]")))
-    # A retry cannot succeed while the media file is still gone; leave those on the Failed list.
-    missing: set[str] = set()
+    vids = [j["version_id"] for j in candidates if j.get("version_id") and j["version_id"] not in {0}]
+    missing: set[int] = set()
+    missing_guids: set[str] = set()
     if body.scope == "failed":
         flags = await asyncio.to_thread(lambda: [_source_still_missing(j) for j in candidates])
-        missing = {j["plex_guid"] for j, gone in zip(candidates, flags) if gone}
-    eligible = [
-        j["plex_guid"] for j in candidates
-        if j["plex_guid"] not in missing and scan_mod.is_scan_eligible(j, excluded, ratings)
+        for j, gone in zip(candidates, flags):
+            if gone:
+                if j.get("version_id"):
+                    missing.add(j["version_id"])
+                else:
+                    missing_guids.add(j["plex_guid"])
+    eligible_jobs = [
+        j for j in candidates
+        if (j.get("version_id") not in missing if j.get("version_id") else j["plex_guid"] not in missing_guids)
+        and scan_mod.is_scan_eligible(j, excluded, ratings)
     ]
     # Failed titles that are ignored are never scanned; clearing them takes them off the Failed list.
     ignored_failed = await db.count_failed_ignored(body.library_id) if body.scope == "failed" else 0
     if not body.dry_run and body.scope == "failed" and ignored_failed:
         await db.clear_failed_ignored(body.library_id)
-    if not body.dry_run and eligible:
-        await db.reset_scan_jobs(eligible)
+    if not body.dry_run and eligible_jobs:
+        eligible_vids = [j["version_id"] for j in eligible_jobs if j.get("version_id")]
+        if eligible_vids:
+            await db.reset_version_jobs(eligible_vids)
+        else:
+            await db.reset_scan_jobs([j["plex_guid"] for j in eligible_jobs])
         # Rebuilds the queue in priority order.
         await scan_mod.rebuild_queue()
         events.publish("scanner_changed")
-        logger.info("Queued %d titles for a scheduled rescan (scope=%s)", len(eligible), body.scope)
+        logger.info("Queued %d titles/versions for a scheduled rescan (scope=%s)", len(eligible_jobs), body.scope)
+    missing_count = len(missing) + len(missing_guids)
     return {
         "ok": True,
         "matched": len(candidates),
-        "queued": len(eligible),
-        "skipped_ineligible": len(candidates) - len(eligible) - len(missing),
-        "skipped_missing_file": len(missing),
+        "queued": len(eligible_jobs),
+        "skipped_ineligible": len(candidates) - len(eligible_jobs) - missing_count,
+        "skipped_missing_file": missing_count,
         "ignored_cleared": ignored_failed,
         "dry_run": body.dry_run,
     }

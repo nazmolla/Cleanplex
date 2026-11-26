@@ -22,6 +22,8 @@ async def _job(guid, *, title="Movie", library_id="lib", status="done", version=
     async with db.get_connection() as conn:
         await conn.execute("UPDATE scan_jobs SET status=?, scan_version=?, ignored=?, finished_at=? WHERE plex_guid=?",
                            (status, version, int(ignored), finished, guid))
+        await conn.execute("UPDATE title_versions SET status=?, scan_version=?, finished_at=? WHERE plex_guid=?",
+                           (status, version, finished, guid))
         await conn.commit()
 
 
@@ -177,6 +179,7 @@ async def test_ignored_and_running_episodes_are_left_alone(http_client):
     await _show(3)
     await _job("show-1-ign", title="The Show – Season 1 – Ign", media_type="episode", show_guid="show-1", ignored=True)
     async with db.get_connection() as conn:
+        await conn.execute("UPDATE title_versions SET status='scanning' WHERE plex_guid='show-1-e1'")
         await conn.execute("UPDATE scan_jobs SET status='scanning' WHERE plex_guid='show-1-e1'")
         await conn.commit()
     with patch(f"{SCAN}.enqueue_many", new=AsyncMock()) as enqueue:
@@ -361,10 +364,10 @@ async def test_retry_failed_skips_titles_whose_file_is_still_missing(http_client
     await _job("back", status="failed")
     await _job("probe", status="failed")
     async with db.get_connection() as conn:
-        await conn.execute("UPDATE scan_jobs SET error_msg='File not found: /m/gone.mkv' WHERE plex_guid='gone'")
-        await conn.execute("UPDATE scan_jobs SET error_msg='File not found: x', file_path=? WHERE plex_guid='back'",
+        await conn.execute("UPDATE title_versions SET error_msg='File not found: /m/gone.mkv' WHERE plex_guid='gone'")
+        await conn.execute("UPDATE title_versions SET error_msg='File not found: x', file_path=? WHERE plex_guid='back'",
                            (str(present),))
-        await conn.execute("UPDATE scan_jobs SET error_msg='Could not determine video duration' WHERE plex_guid='probe'")
+        await conn.execute("UPDATE title_versions SET error_msg='Could not determine video duration' WHERE plex_guid='probe'")
         await conn.commit()
     with patch(f"{SCAN}.rebuild_queue", new=AsyncMock()):
         resp = (await http_client.post("/api/scan/rescan", json={"scope": "failed"})).json()

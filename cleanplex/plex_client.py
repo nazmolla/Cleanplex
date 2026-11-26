@@ -53,6 +53,10 @@ class ActiveSession:
     audio_language: str = ""
     # Plex's playback session id (Session.id), the handle the dashboard's Stop terminates.
     playback_session_id: str = ""
+    # Which media version / part of the title is playing (#233).
+    plex_media_id: str = ""
+    part_id: int = 0
+    file_path: str = ""
 
 
 CAST_CHUNK = 40   # rating keys per metadata request; keeps the URL and response modest
@@ -64,6 +68,19 @@ class LibrarySection:
     section_id: str
     title: str
     section_type: str     # "movie" or "show"
+
+
+@dataclass
+class MediaVersion:
+    """One Plex media version of a title (e.g. 1080p vs 4K), with its own parts (#233)."""
+
+    plex_media_id: str = ""
+    resolution: str = ""
+    file_path: str = ""
+    part_files: list = field(default_factory=list)
+    part_ids: list = field(default_factory=list)
+    file_size: int = 0
+    duration_ms: int = 0
 
 
 @dataclass
@@ -87,6 +104,18 @@ class MediaItem:
     part_files: list = field(default_factory=list)
     # Plex part ids of every media version; a direct file request names one of these (#184).
     part_ids: list = field(default_factory=list)
+    versions: list[MediaVersion] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.versions and self.file_path:
+            self.versions = [
+                MediaVersion(
+                    file_path=self.file_path,
+                    part_files=list(self.part_files) if self.part_files else [self.file_path],
+                    part_ids=list(self.part_ids),
+                    duration_ms=self.duration_ms,
+                )
+            ]
 
 
 @dataclass
@@ -181,11 +210,25 @@ class PlexClient:
                 except Exception:
                     volume = None
 
-                # Resolve file path
+                # Resolve played media version, part and audio track (#233).
                 file_path = ""
                 audio_language = ""
-                if s.media and s.media[0].parts:
-                    part = s.media[0].parts[0]
+                plex_media_id = ""
+                part_id = 0
+                media_list = list(s.media or [])
+                chosen_media = next((m for m in media_list if getattr(m, "selected", False)), None)
+                if chosen_media is None:
+                    chosen_media = next(
+                        (m for m in media_list if any(getattr(p, "selected", False) for p in (m.parts or []))),
+                        media_list[0] if media_list else None,
+                    )
+                if chosen_media and chosen_media.parts:
+                    plex_media_id = str(getattr(chosen_media, "id", "") or "")
+                    part = next(
+                        (p for p in chosen_media.parts if getattr(p, "selected", False)),
+                        chosen_media.parts[0],
+                    )
+                    part_id = int(getattr(part, "id", 0) or 0)
                     file_path = part.file or ""
                     # The selected stream is what the viewer actually hears; fall
                     # back to the first audio stream when Plex marks none selected.
@@ -230,6 +273,9 @@ class PlexClient:
                         volume=volume,
                         audio_language=audio_language,
                         playback_session_id=_playback_session_id(s),
+                        plex_media_id=plex_media_id,
+                        part_id=part_id,
+                        file_path=file_path,
                     )
                 )
             except Exception as exc:
@@ -555,24 +601,32 @@ class PlexClient:
 
     def _media_item_from_plex(self, item: Any, library_id: str, library_title: str) -> MediaItem | None:
         try:
-            # For multi-version items, try each media[] entry until we find one
-            # whose primary part file exists on disk. This prevents scan jobs
-            # pointing to stale/missing files when a version was removed.
-            file_path = ""
-            chosen_media = None
+            item_duration = int(getattr(item, "duration", 0) or 0)
+            versions: list[MediaVersion] = []
             for media in (item.media or []):
-                if media.parts and media.parts[0].file:
-                    file_path = media.parts[0].file
-                    chosen_media = media
-                    break
+                parts = [p for p in (media.parts or []) if getattr(p, "file", None)]
+                if not parts:
+                    continue
+                pfiles = [p.file for p in parts]
+                pids = [int(p.id) for p in parts if getattr(p, "id", None)]
+                fsize = sum(int(getattr(p, "size", 0) or 0) for p in parts)
+                mdur = int(getattr(media, "duration", 0) or item_duration or 0)
+                versions.append(
+                    MediaVersion(
+                        plex_media_id=str(getattr(media, "id", "") or ""),
+                        resolution=str(getattr(media, "videoResolution", "") or ""),
+                        file_path=pfiles[0],
+                        part_files=pfiles,
+                        part_ids=pids,
+                        file_size=fsize,
+                        duration_ms=mdur,
+                    )
+                )
 
-            # Collect all part file paths from the chosen media version.
-            # Multi-part movies (CD1/CD2) have multiple parts[] under one media[].
-            part_files: list[str] = []
-            if chosen_media and chosen_media.parts:
-                part_files = [p.file for p in chosen_media.parts if p.file]
-
-            part_ids = [int(p.id) for media in (item.media or []) for p in (media.parts or []) if getattr(p, "id", None)]
+            first = versions[0] if versions else None
+            file_path = first.file_path if first else ""
+            part_files = first.part_files if first else []
+            part_ids = [pid for v in versions for pid in v.part_ids]
 
             guid = ""
             if hasattr(item, "guids") and item.guids:
@@ -605,7 +659,8 @@ class PlexClient:
                 show_rating_key=show_rating_key,
                 part_files=part_files,
                 part_ids=part_ids,
-                duration_ms=int(getattr(item, "duration", 0) or 0),
+                duration_ms=first.duration_ms if first and first.duration_ms else item_duration,
+                versions=versions,
             )
         except Exception:
             return None

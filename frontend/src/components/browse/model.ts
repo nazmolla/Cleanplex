@@ -7,6 +7,20 @@ export interface Library {
   type: string
 }
 
+export interface MediaVersion {
+  id: number
+  plex_media_id: string
+  resolution: string
+  file_path: string
+  status: string
+  progress: number
+  finished_at?: string | null
+  error_msg?: string
+  duration_ms: number
+  segment_count: number
+  false_positive_count?: number
+}
+
 export interface Title {
   plex_guid: string
   rating_key: string
@@ -33,11 +47,22 @@ export interface Title {
   error_msg?: string
   /** Set by Browse: the library the title was loaded from. */
   library_id: string
+  /** Per-media-file versions for this title (#233). */
+  versions?: MediaVersion[]
+}
+
+export function versionLabel(v: MediaVersion, includeFile = false): string {
+  const res = (v.resolution || '').trim()
+  const base = v.file_path ? v.file_path.split(/[\\/]/).pop() || v.file_path : ''
+  const resLabel = !res ? '' : res.toLowerCase() === '4k' ? '4K' : /^\d+$/.test(res) ? `${res}p` : res
+  if (resLabel && base && includeFile) return `${resLabel} · ${base}`
+  return resLabel || base || `Version ${v.id}`
 }
 
 export interface Segment {
   id: number
   plex_guid: string
+  version_id?: number
   title: string
   start_ms: number
   end_ms: number

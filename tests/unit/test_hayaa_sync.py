@@ -562,7 +562,9 @@ def test_batches_stay_under_hayaas_body_limit():
 
 async def _state(guid="g1"):
     async with db.get_connection() as conn:
-        rows = await conn.execute_fetchall("SELECT hayaa_sync_state, content_key FROM scan_jobs WHERE plex_guid=?", (guid,))
+        rows = await conn.execute_fetchall(
+            "SELECT hayaa_sync_state, content_key FROM title_versions WHERE plex_guid=?", (guid,)
+        )
     return dict(rows[0])
 
 
@@ -668,3 +670,121 @@ async def test_titles_waiting_for_another_holder_are_not_pulled_every_sync(tmp_p
     fake.feed = [key]
     await hs.run_sync(manual=True)
     assert len(fake.pulls) == pulls + 1  # ...only when the feed says the title changed
+
+
+# ── SQLite triggers & typed package (#234) ────────────────────────────────────
+
+async def _synced_title(guid="g1", content_key=TK):
+    await db.upsert_scan_jobs_batch([{"plex_guid": guid, "title": "Film", "file_path": f"/m/{guid}.mkv",
+                                      "rating_key": "1", "library_id": "1", "library_title": "Movies"}])
+    await db.set_title_content_key(guid, content_key, 1000, 100)
+    await db.mark_hayaa_sending([guid])
+    await db.mark_hayaa_synced([guid])
+    assert (await _state(guid))["hayaa_sync_state"] == "synced"
+
+
+async def test_trigger_scan_done_marks_pending_but_progress_does_not():
+    await _synced_title()
+    await db.update_scan_job_status("g1", "scanning", progress=0.5)
+    assert (await _state())["hayaa_sync_state"] == "synced"
+    await db.update_scan_job_status("g1", "done", progress=1.0, scan_version=4)
+    assert (await _state())["hayaa_sync_state"] == "pending"
+
+
+async def test_trigger_segment_insert_marks_pending_only_for_own_segments():
+    await _synced_title()
+    await db.insert_segment("g1", "Film", 10_000, 20_000, source="hayaa", detector="hayaa")
+    assert (await _state())["hayaa_sync_state"] == "synced"
+
+    await db.insert_segment("g1", "Film", 30_000, 40_000, source="scanner", labels="BUTTOCKS_EXPOSED")
+    assert (await _state())["hayaa_sync_state"] == "pending"
+
+
+async def test_trigger_segment_update_marks_pending_for_own_and_fp_not_label_backfill():
+    await _synced_title()
+    own_id = await db.insert_segment("g1", "Film", 10_000, 20_000, source="scanner", labels="BUTTOCKS_EXPOSED")
+    pulled_id = await db.insert_segment("g1", "Film", 30_000, 40_000, source="hayaa", labels="")
+    await db.mark_hayaa_sending(["g1"])
+    await db.mark_hayaa_synced(["g1"])
+
+    # Backfilling labels on a pulled segment must not trigger a push.
+    assert await db.fill_hayaa_segment_labels(pulled_id, "BUTTOCKS_EXPOSED")
+    assert (await _state())["hayaa_sync_state"] == "synced"
+
+    # Marking a pulled segment false positive IS a reject vote and must trigger a push.
+    async with db.get_connection() as conn:
+        await conn.execute("UPDATE segments SET false_positive=1 WHERE id=?", (pulled_id,))
+        await conn.commit()
+    assert (await _state())["hayaa_sync_state"] == "pending"
+
+    # Editing an own segment's bounds/labels/false_positive triggers a push.
+    for sql, params in [
+        ("UPDATE segments SET labels='FEMALE_BREAST_EXPOSED' WHERE id=?", (own_id,)),
+        ("UPDATE segments SET start_ms=11000 WHERE id=?", (own_id,)),
+        ("UPDATE segments SET end_ms=21000 WHERE id=?", (own_id,)),
+        ("UPDATE segments SET false_positive=1 WHERE id=?", (own_id,)),
+    ]:
+        await db.mark_hayaa_sending(["g1"])
+        await db.mark_hayaa_synced(["g1"])
+        async with db.get_connection() as conn:
+            await conn.execute(sql, params)
+            await conn.commit()
+        assert (await _state())["hayaa_sync_state"] == "pending"
+
+
+async def test_trigger_segment_delete_marks_pending_only_for_own_segments():
+    await _synced_title()
+    own_id = await db.insert_segment("g1", "Film", 10_000, 20_000, source="scanner", labels="BUTTOCKS_EXPOSED")
+    pulled_id = await db.insert_segment("g1", "Film", 30_000, 40_000, source="hayaa")
+    await db.mark_hayaa_sending(["g1"])
+    await db.mark_hayaa_synced(["g1"])
+
+    await db.delete_segment(pulled_id)
+    assert (await _state())["hayaa_sync_state"] == "synced"
+
+    await db.delete_segment(own_id)
+    assert (await _state())["hayaa_sync_state"] == "pending"
+
+
+async def test_trigger_feedback_marks_pending():
+    await _synced_title()
+    sid = await db.insert_segment("g1", "Film", 10_000, 20_000, source="scanner", labels="BUTTOCKS_EXPOSED")
+    await db.mark_hayaa_sending(["g1"])
+    await db.mark_hayaa_synced(["g1"])
+
+    await db.mark_segment_false_positive(sid)
+    assert (await _state())["hayaa_sync_state"] == "pending"
+
+
+async def test_triggers_override_insert_update_delete_mark_pending():
+    await _synced_title()
+    await db.set_hayaa_override(TK, "c1", "keep")
+    assert (await _state())["hayaa_sync_state"] == "pending"
+
+    await db.mark_hayaa_sending(["g1"])
+    await db.mark_hayaa_synced(["g1"])
+    await db.set_hayaa_override(TK, "c1", "restore")
+    assert (await _state())["hayaa_sync_state"] == "pending"
+
+    await db.mark_hayaa_sending(["g1"])
+    await db.mark_hayaa_synced(["g1"])
+    await db.set_hayaa_override(TK, "c1", None)
+    assert (await _state())["hayaa_sync_state"] == "pending"
+
+
+async def test_trigger_verify_state_update_marks_pending():
+    await _synced_title()
+    await db.replace_hayaa_claims(TK, "g1", [hs.parse_view(_view(), None)[0]])
+    await db.mark_hayaa_sending(["g1"])
+    await db.mark_hayaa_synced(["g1"])
+
+    await db.update_hayaa_claim(TK, "c1", verify_state="hit", verify_family="nudenet", verify_conf=0.8)
+    assert (await _state())["hayaa_sync_state"] == "pending"
+
+
+def test_hayaa_sync_service_instances_do_not_share_state():
+    svc1 = hs.HayaaSyncService()
+    svc2 = hs.HayaaSyncService()
+    svc1._phase = "pushing"
+    assert svc2.phase == ""
+    assert not svc1.running() and not svc2.running()

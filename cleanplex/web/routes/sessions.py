@@ -38,8 +38,18 @@ async def _filtering_state(session, enabled: bool, prefs_cache: dict[str, dict])
         if not rating_allowed(job.get("content_rating"), json.loads(await db.get_setting("scan_ratings", "[]"))):
             return "rating_skipped"
         return "not_scanned"
-    segments = await db.get_segments_for_guid(session.plex_guid)
-    if not segments and session.rating_key:
+    segments = (
+        await db.get_segments_for_session(
+            rating_key=session.rating_key,
+            plex_guid=session.plex_guid,
+            part_id=getattr(session, "part_id", 0),
+            plex_media_id=getattr(session, "plex_media_id", ""),
+            file_path=getattr(session, "file_path", ""),
+        )
+        if (getattr(session, "part_id", 0) or getattr(session, "plex_media_id", "") or getattr(session, "file_path", ""))
+        else await db.get_segments_for_guid(session.plex_guid)
+    )
+    if not segments and not (getattr(session, "part_id", 0) or getattr(session, "plex_media_id", "") or getattr(session, "file_path", "")) and session.rating_key:
         segments = await db.get_segments_by_rating_key(session.rating_key)
     if session.user not in prefs_cache:
         prefs_cache[session.user] = await db.get_user_category_prefs(session.user)
@@ -119,8 +129,10 @@ async def scanner_status():
     queue_items = [
         {
             "position": pos + 1,
+            "version_id": job.get("version_id"),
             "guid": job["plex_guid"],
             "title": job["title"] or job["plex_guid"],
+            "resolution": job.get("resolution") or "",
             "media_type": job.get("media_type") or "movie",
             "content_rating": job.get("content_rating") or "",
             "force": bool(job.get("force_scan")),
@@ -160,8 +172,18 @@ async def skip_session_title(session_key: str):
     if not session.is_controllable:
         raise HTTPException(status_code=409, detail="Session is not remotely controllable")
 
-    segments = await db.get_segments_for_guid(session.plex_guid)
-    if not segments and session.rating_key:
+    segments = (
+        await db.get_segments_for_session(
+            rating_key=session.rating_key,
+            plex_guid=session.plex_guid,
+            part_id=getattr(session, "part_id", 0),
+            plex_media_id=getattr(session, "plex_media_id", ""),
+            file_path=getattr(session, "file_path", ""),
+        )
+        if (getattr(session, "part_id", 0) or getattr(session, "plex_media_id", "") or getattr(session, "file_path", ""))
+        else await db.get_segments_for_guid(session.plex_guid)
+    )
+    if not segments and not (getattr(session, "part_id", 0) or getattr(session, "plex_media_id", "") or getattr(session, "file_path", "")) and session.rating_key:
         segments = await db.get_segments_by_rating_key(session.rating_key)
 
     if not segments:
