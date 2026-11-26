@@ -242,14 +242,36 @@ def _check_url(url: str, what: str) -> str:
 
 # The Hayaa service this build talks to. Not shown in the UI; the hayaa_api_url / hayaa_auth_url
 # settings still override them (a local Hayaa dev server, for instance).
-DEFAULT_API_URL = "https://hayaa-api-oxc7hijrqqqmk.azurewebsites.net"
-DEFAULT_AUTH_URL = "https://hayaa-auth-oxc7hijrqqqmk.azurewebsites.net"
+# One host serves both sign-in and /api/v1 since Hayaa moved to a single VM (#237).
+DEFAULT_API_URL = "https://hayaa-dev.canadacentral.cloudapp.azure.com"
+DEFAULT_AUTH_URL = DEFAULT_API_URL
 
 
 def urls_from(settings: dict[str, str]) -> tuple[str, str]:
     """(api_url, auth_url): the saved settings, else this build's defaults."""
     return ((settings.get("hayaa_api_url") or "").strip() or DEFAULT_API_URL,
             (settings.get("hayaa_auth_url") or "").strip() or DEFAULT_AUTH_URL)
+
+
+async def reset_for_server_change() -> bool:
+    """Start the Hayaa state over when the server URL changed since the last start (#237).
+
+    A new server has none of this instance's observations and never issued its token, so the
+    token and signing key are deleted (the user signs in again; a fresh key is made) and the
+    database forgets what was exchanged (db.reset_hayaa_state). Returns True when it reset.
+    """
+    global _access
+    settings = await db.get_all_settings()
+    api = urls_from(settings)[0].strip().rstrip("/")
+    if settings.get("hayaa_server") == api:
+        return False
+    for path in (_token_path(), _key_path()):
+        await asyncio.to_thread(path.unlink, True)
+    _access = None
+    await db.reset_hayaa_state()
+    await db.set_setting("hayaa_server", api)
+    logger.info("Hayaa server is now %s: signed out and sync state reset", api)
+    return True
 
 
 async def get_urls() -> tuple[str, str]:

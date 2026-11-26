@@ -3810,6 +3810,30 @@ async def mark_all_hayaa_pending() -> None:
         await conn.commit()
 
 
+# Progress and pacing a Hayaa server keeps track of with this instance; meaningless to another server.
+HAYAA_SERVER_SETTINGS = (
+    "hayaa_feed_cursor", "hayaa_partial", "hayaa_deferred", "hayaa_quota",
+    "hayaa_paused_until", "hayaa_last_result", "hayaa_last_sync",
+)
+
+
+async def reset_hayaa_state() -> None:
+    """Forget everything exchanged with a Hayaa server (#237), so a new server gets it all again.
+
+    Clears the sent-ledger, staged claims, the title map and the overrides (keyed by that
+    server's claim ids), drops HAYAA_SERVER_SETTINGS and marks every version pending. Content
+    keys (they describe the files) and segments are kept.
+    """
+    async with get_connection() as conn:
+        for table in ("hayaa_sent", "hayaa_claims", "hayaa_titles", "hayaa_overrides"):
+            await conn.execute(f"DELETE FROM {table}")
+        await conn.execute(
+            f"DELETE FROM settings WHERE key IN ({_in(HAYAA_SERVER_SETTINGS)})", HAYAA_SERVER_SETTINGS
+        )
+        await conn.execute("UPDATE title_versions SET hayaa_sync_state='pending'")
+        await conn.commit()
+
+
 async def set_file_content_key(
     file_path: str, size: int, mtime: int, content_key: str, version_id: int | None = None
 ) -> None:

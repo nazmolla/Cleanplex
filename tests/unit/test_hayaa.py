@@ -292,3 +292,76 @@ def test_proofs_for_file_reject_bad_positions(tmp_path):
     assert set(hayaa.proofs_for_file(f, [3, 1000])) == {"3", "1000"}
     with pytest.raises(ValueError):
         hayaa.proofs_for_file(f, [1024])
+
+
+# ── Moving to a new Hayaa server (#237) ────────────────────────────────────────
+
+def test_built_in_urls_point_at_the_single_hayaa_host():
+    assert hayaa.DEFAULT_API_URL == "https://hayaa-dev.canadacentral.cloudapp.azure.com"
+    assert hayaa.DEFAULT_AUTH_URL == hayaa.DEFAULT_API_URL
+
+
+async def _state_for_old_server():
+    """A linked instance that has synced with another server: ledger, claims, overrides, progress."""
+    await db.upsert_scan_jobs_batch([{"plex_guid": "g1", "title": "Film", "file_path": "/m/film.mkv",
+                                      "rating_key": "1", "library_id": "1", "library_title": "Movies"}])
+    await db.set_file_content_key("/m/film.mkv", 10, 20, "ck1")
+    seg = await db.insert_segment("g1", "Film", 1_000, 2_000, labels="BUTTOCKS_EXPOSED", severity="medium")
+    async with db.get_connection() as conn:
+        await conn.execute("INSERT INTO hayaa_titles(title_key, plex_guid) VALUES ('ck1', 'g1')")
+        await conn.execute("INSERT INTO hayaa_sent(obs_id, base_id, title_key, kind) VALUES ('o1', 'b1', 'ck1', 'seg')")
+        await conn.execute("INSERT INTO hayaa_claims(title_key, claim_id, plex_guid, start_ms, end_ms, status, basis) "
+                           "VALUES ('ck1', 'c1', 'g1', 0, 1, 'accepted', 'consensus')")
+        await conn.execute("INSERT INTO hayaa_overrides(title_key, claim_id, verdict) VALUES ('ck1', 'c1', 'delete')")
+        await conn.execute("UPDATE title_versions SET hayaa_sync_state='synced'")
+        await conn.commit()
+    for k in ("hayaa_feed_cursor", "hayaa_partial", "hayaa_deferred", "hayaa_quota",
+              "hayaa_paused_until", "hayaa_last_result", "hayaa_last_sync"):
+        await db.set_setting(k, "old")
+    await db.set_setting("hayaa_server", "https://old.example")
+    hayaa.load_or_create_key()
+    hayaa._write_private(hayaa._token_path(), b"refresh")
+    return seg
+
+
+async def _count(table):
+    async with db.get_connection() as conn:
+        return (await (await conn.execute(f"SELECT COUNT(*) FROM {table}")).fetchone())[0]
+
+
+async def test_a_new_server_starts_the_hayaa_state_over_and_keeps_keys_and_segments():
+    seg = await _state_for_old_server()
+    old_key = hayaa._key_path().read_bytes()
+
+    assert await hayaa.reset_for_server_change() is True
+
+    for table in ("hayaa_sent", "hayaa_claims", "hayaa_titles", "hayaa_overrides"):
+        assert await _count(table) == 0, table
+    settings = await db.get_all_settings()
+    for k in ("hayaa_feed_cursor", "hayaa_partial", "hayaa_deferred", "hayaa_quota",
+              "hayaa_paused_until", "hayaa_last_result", "hayaa_last_sync"):
+        assert k not in settings, k
+    assert settings["hayaa_server"] == hayaa.DEFAULT_API_URL
+    async with db.get_connection() as conn:
+        states = {r[0] for r in await conn.execute_fetchall("SELECT hayaa_sync_state FROM title_versions")}
+    assert states == {"pending"}
+    assert not hayaa.is_linked() and not hayaa._key_path().exists()
+    assert hayaa.load_or_create_key().private_bytes_raw() != old_key  # a new identity for the new server
+    assert await db.get_file_content_key("/m/film.mkv", 10, 20) == "ck1"
+    assert seg in {s["id"] for s in await db.get_segments_for_guid("g1")}
+
+
+async def test_the_same_server_again_changes_nothing():
+    await _state_for_old_server()
+    await db.set_setting("hayaa_server", hayaa.DEFAULT_API_URL)
+
+    assert await hayaa.reset_for_server_change() is False
+
+    assert await _count("hayaa_sent") == 1 and hayaa.is_linked()
+
+
+async def test_a_settings_override_is_the_server_that_counts():
+    await _state_for_old_server()
+    await db.set_setting("hayaa_api_url", "https://old.example")
+
+    assert await hayaa.reset_for_server_change() is False

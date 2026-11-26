@@ -89,6 +89,8 @@ async def _amain() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     db.set_db_path(DATA_DIR / "cleanplex.db")
     await db.init_db()
+    # Before the sync service starts: a new Hayaa server must not see the old server's state (#237).
+    await hayaa.reset_for_server_change()
 
     config = await Config.load()
     setup_logging(config.log_level)
