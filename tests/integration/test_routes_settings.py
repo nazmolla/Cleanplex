@@ -374,3 +374,13 @@ async def test_library_ratings_are_normalized_with_counts_and_sources(http_clien
 async def test_library_ratings_empty_without_titles(http_client):
     resp = await http_client.get("/api/settings/ratings")
     assert resp.status_code == 200 and resp.json() == []
+
+
+async def test_saved_seek_buffers_are_what_live_skipping_uses(http_client):
+    """Seek before/after edit pre_/post_buffer_ms, which Config gives the filter engine (#238)."""
+    from cleanplex.config import Config
+
+    resp = await http_client.put("/api/settings", json={"pre_buffer_ms": "1500", "post_buffer_ms": "4000"})
+    assert resp.status_code == 200
+    config = await Config.load()
+    assert (config.pre_buffer_ms, config.post_buffer_ms) == (1500, 4000)

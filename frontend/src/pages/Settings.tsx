@@ -21,7 +21,8 @@ interface Settings {
   plex_token_set?: boolean
   poll_interval: string
   confidence_threshold: string
-  skip_buffer_ms: string
+  pre_buffer_ms: string
+  post_buffer_ms: string
   scan_step_ms: string
   scan_workers: string
   nudenet_model: string
@@ -77,7 +78,8 @@ const DEFAULT: Settings = {
   plex_token: '',
   poll_interval: '5',
   confidence_threshold: '0.6',
-  skip_buffer_ms: '3000',
+  pre_buffer_ms: '3000',
+  post_buffer_ms: '3000',
   scan_step_ms: '5000',
   scan_workers: '2',
   nudenet_model: '320n',
@@ -105,15 +107,16 @@ const DEFAULT: Settings = {
   hover_window_end: '07:00',
 }
 
+// A <label> around the control, so each box is named by its label for screen readers (#238).
 function Field({ label, hint, unit, children }: { label: string; hint?: string; unit?: string; children: React.ReactNode }) {
   return (
-    <div>
-      <label className="block text-sm font-medium text-gray-300 mb-1">{label}</label>
+    <label className="block">
+      <span className="block text-sm font-medium text-gray-300 mb-1">{label}</span>
       {unit ? (
-        <div className="flex items-center gap-2 max-w-xs">{children}<span className="text-xs text-muted flex-shrink-0">{unit}</span></div>
+        <span className="flex items-center gap-2 max-w-xs">{children}<span className="text-xs text-muted flex-shrink-0">{unit}</span></span>
       ) : children}
-      {hint && <p className="text-xs text-muted mt-1">{hint}</p>}
-    </div>
+      {hint && <span className="block text-xs text-muted mt-1">{hint}</span>}
+    </label>
   )
 }
 
@@ -432,13 +435,20 @@ export default function SettingsPage() {
               <Card title={t('settings_sec_filtering')} desc={t('settings_filtering_desc')}>
                 <EnforcementPanel />
               </Card>
-              <Card title={t('settings_live_skip')} desc={t('settings_playback_desc')}>
+              <Card title={t('settings_stream_check')} desc={t('settings_stream_check_desc')}>
+                <Field label={t('settings_stream_check_interval')} hint={t('settings_stream_check_interval_hint')} unit={t('unit_seconds_short')}>
+                  <input type="number" min="2" max="30" value={form.poll_interval} onChange={set('poll_interval')} className={numCls} />
+                </Field>
+              </Card>
+              {/* Seek-based skipping is the fallback for streams the front door did not edit;
+                  edited streams are cut at the exact segment edges and use no buffer (#238). */}
+              <Card title={t('settings_fallback_skip')} desc={t('settings_fallback_skip_desc')}>
                 <div className="space-y-4">
-                  <Field label={t('settings_poll_interval')} hint={t('settings_poll_interval_hint')} unit={t('unit_seconds_short')}>
-                    <input type="number" min="2" max="30" value={form.poll_interval} onChange={set('poll_interval')} className={numCls} />
+                  <Field label={t('settings_seek_before')} hint={t('settings_seek_before_hint')} unit={t('unit_ms_short')}>
+                    <input type="number" min="0" max="30000" step="500" value={form.pre_buffer_ms} onChange={set('pre_buffer_ms')} className={numCls} />
                   </Field>
-                  <Field label={t('settings_skip_buffer')} hint={t('settings_skip_buffer_hint')} unit={t('unit_ms_short')}>
-                    <input type="number" min="0" step="500" value={form.skip_buffer_ms} onChange={set('skip_buffer_ms')} className={numCls} />
+                  <Field label={t('settings_seek_after')} hint={t('settings_seek_after_hint')} unit={t('unit_ms_short')}>
+                    <input type="number" min="0" max="30000" step="500" value={form.post_buffer_ms} onChange={set('post_buffer_ms')} className={numCls} />
                   </Field>
                 </div>
               </Card>

@@ -360,3 +360,24 @@ describe('Settings redesign (#236)', () => {
     expect(screen.queryByRole('button', { name: /Save Settings/ })).not.toBeInTheDocument()
   })
 })
+
+describe('Fallback skipping buffers (#238)', () => {
+  it('saves Seek before and Seek after as the buffers live skipping uses', async () => {
+    mockApi.put.mockResolvedValue({})
+    const base = mockApi.get.getMockImplementation()!
+    mockApi.get.mockImplementation((path: string) => path.includes('enforcement')
+      ? Promise.resolve({ enabled: true, mute_mode: 'leave', backstop: true, proxied_last_day: 0,
+                          plex: { relay: '0', dlna: '0', transcode_limit: 6 } })
+      : base(path))
+    render(<MemoryRouter initialEntries={['/settings?section=playback']}><Settings /></MemoryRouter>)
+    fireEvent.change(await screen.findByLabelText(/^Seek before/), { target: { value: '1500' } })
+    fireEvent.change(screen.getByLabelText(/^Seek after/), { target: { value: '4000' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save Settings/ }))
+
+    await waitFor(() => expect(mockApi.put).toHaveBeenCalled())
+    const body = mockApi.put.mock.calls[0][1]
+    expect(body.pre_buffer_ms).toBe('1500')
+    expect(body.post_buffer_ms).toBe('4000')
+    expect(screen.queryByText(/Skip Buffer/)).not.toBeInTheDocument()
+  })
+})

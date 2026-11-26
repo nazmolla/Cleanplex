@@ -131,13 +131,13 @@ All configuration is done via the **web UI** at `http://your-server:7979/setting
 | Plex Token | — | Your Plex authentication token |
 | Hayaa service URL | — | Hayaa sync API, https (plain http only to this machine, for Hayaa's dev server) |
 | Hayaa sign-in URL | — | Hayaa's sign-in (OAuth) host, https |
-| Poll Interval | 5s | How often to check active streams |
+| Stream check interval | 5s | Longest wait between checks of Plex's active streams: stops filtered streams that bypassed the front door, updates the Dashboard, and drives fallback skipping (checks tighten near a segment) |
 | Confidence Threshold | 0.6 | NudeNet score threshold (0–1). Lower = more sensitive. |
 | NudeNet Model | 320n | `320n` is bundled and fastest; `640m` is larger and more accurate, downloaded once on first use (or pre-download it in the same section) |
 | Scan Frame Interval | 5000 ms | How often a frame is sampled while scanning. Lower catches shorter scenes but scans slower |
 | Hardware video decoding | on | Use the machine's video decoder for scans when it has one (much faster on 4K HEVC); a file it cannot decode falls back to software |
 | Per-Label Thresholds | blank | Optional per-label NudeNet threshold (NudeNet Detection section). A blank label uses the Confidence Threshold. Stored in `label_thresholds` |
-| Pre / Post Buffer | 3000 ms each | How far a segment is widened before its start and after its end (`pre_buffer_ms`, `post_buffer_ms`), so the flagged content is never briefly shown and the filter does not re-trigger on the tail |
+| Seek before / Seek after | 3000 ms each | Fallback skipping only: how far a segment is widened before its start and after its end (`pre_buffer_ms`, `post_buffer_ms`), so the flagged content is never briefly shown and the filter does not re-trigger on the tail. Streams the front door edits are cut at the exact segment edges |
 | Profanity Wordlist | built-in | JSON array of words the subtitle scanner mutes. Empty uses the bundled list |
 | Skip Event Retention | 90 days | How long skip history is kept before being pruned at startup |
 | Scan Window | 23:00–06:00 | Time window when background scanning runs; *Scan now* ignores it |
@@ -328,7 +328,7 @@ Tabs (linkable with `?tab=`), and sections that can be minimised (remembered per
 #### Settings
 - **Plex Connection** — Server URL and token, with a connection test
 - **Users** — Per-account filtering and category levels (above)
-- **Playback** — Poll interval. (The *Skip Buffer* field does not currently change playback; the pre/post buffers are `pre_buffer_ms` and `post_buffer_ms` in the settings API, see issue #170)
+- **Playback & Enforcement** — front door status and Plex settings, stream check interval, and the Seek before / Seek after buffers for fallback skipping
 - **Scan Scope & Schedule** — Scan window, *Rescan Titles*, hover previews, scanner workers and hardware decoding, content-rating filter, library exclusions
 - **NudeNet Detection** — Model (320n / 640m), confidence threshold, scan frame interval, detector labels, per-label thresholds
 - **SigLIP Fallback** — Enable it, threshold, per-label thresholds, consecutive frames, end-credits handling, the false-positive verifier
