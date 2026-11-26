@@ -9,6 +9,7 @@ import EnforcementPanel from '../components/EnforcementPanel'
 import HayaaPanel from '../components/HayaaPanel'
 import { normalizeRating } from '../utils/ratings'
 import { useT } from '../i18n'
+import { prettyLabel } from '../utils/labels'
 
 // A content rating in the libraries as Scan ratings compares it (#219); sources are Plex's spellings.
 interface LibraryRating { rating: string; count: number; sources: string[] }
@@ -121,14 +122,14 @@ function LabelThresholds({ labels, value, globalValue, disabled, onChange }: {
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
       {labels.map(label => (
         <label key={label} className="flex items-center justify-between gap-3 text-sm text-gray-300">
-          <span className="truncate">{label}</span>
+          <span className="truncate" title={label}>{prettyLabel(label, t)}</span>
           <input
             type="number" min="0" max="1" step="0.05"
             value={map[label] ?? ''}
             placeholder={globalValue}
             disabled={disabled}
             onChange={e => update(label, e.target.value)}
-            aria-label={t('settings_label_threshold_aria', { label })}
+            aria-label={t('settings_label_threshold_aria', { label: prettyLabel(label, t) })}
             className="w-24 bg-plex-card border border-plex-border rounded px-2 py-1 text-sm text-gray-100 disabled:opacity-40"
           />
         </label>
@@ -569,7 +570,7 @@ export default function SettingsPage() {
                     return (
                       <label key={label} className="flex items-center gap-2 cursor-pointer">
                         <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 accent-plex-orange" />
-                        <span className={`text-sm ${checked ? 'text-gray-100' : 'text-muted'}`}>{label}</span>
+                        <span className={`text-sm ${checked ? 'text-gray-100' : 'text-muted'}`} title={label}>{prettyLabel(label, t)}</span>
                       </label>
                     )
                   })}

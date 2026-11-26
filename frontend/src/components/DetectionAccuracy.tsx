@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import { useLiveRefresh } from '../api/events'
 import { segmentOrigin } from '../utils/segmentOrigin'
 import { useT } from '../i18n'
+import { prettyLabel } from '../utils/labels'
 
 interface Row {
   source: string
@@ -77,7 +78,7 @@ export default function DetectionAccuracy() {
             {rows.map(r => (
               <tr key={`${r.source}|${r.detector}|${r.label}`} className="border-b border-plex-border/50 text-gray-300">
                 <td className="py-1.5 pe-3 whitespace-nowrap">{segmentOrigin(r, t)}</td>
-                <td className="py-1.5 pe-3 whitespace-nowrap">{r.label}</td>
+                <td className="py-1.5 pe-3 whitespace-nowrap" title={r.label}>{prettyLabel(r.label, t)}</td>
                 <td className="py-1.5 pe-3 text-end">{r.total}</td>
                 <td className="py-1.5 pe-3 text-end">{r.false_positives}</td>
                 <td className={`py-1.5 pe-3 text-end ${r.false_positive_rate >= 0.3 ? 'text-amber-300' : ''}`}>

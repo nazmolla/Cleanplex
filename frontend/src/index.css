@@ -64,3 +64,9 @@
 ::-webkit-scrollbar-thumb {
   @apply bg-plex-border rounded;
 }
+
+/* Numbers read left to right in Arabic too: without this, RTL bidi shows "0.7" as "7." in number boxes. */
+[dir='rtl'] input[type='number'] {
+  direction: ltr;
+  text-align: right;
+}
