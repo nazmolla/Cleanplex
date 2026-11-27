@@ -14,6 +14,7 @@
 set -euo pipefail
 
 RUN_USER="${1:-server}"
+HOST="${HAYAA_HOST:-0.0.0.0}"
 LABEL="com.homeserv.cleanplex"
 INSTALL_DIR="/opt/cleanplex"
 PLIST="/Library/LaunchDaemons/${LABEL}.plist"
@@ -91,6 +92,7 @@ cat > "$PLIST" <<PLIST
     <key>HOME</key><string>${RUN_HOME}</string>
     <key>USER</key><string>${RUN_USER}</string>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>CLEANPLEX_HOST</key><string>${HOST}</string>
     <key>CLEANPLEX_PORT</key><string>${PORT}</string>
     <key>CLEANPLEX_PROXY_PORT</key><string>7981</string>
     <key>CLEANPLEX_PROXY_HOST</key><string>127.0.0.1</string>
@@ -141,5 +143,9 @@ echo "  Status:  sudo launchctl print system/${LABEL} | head -20"
 echo "  Logs:    tail -f ${LOG_FILE}"
 echo "  Restart: sudo launchctl kickstart -k system/${LABEL}"
 echo "  Stop:    sudo launchctl bootout system/${LABEL}"
-echo "  Web UI:  http://$(ipconfig getifaddr en0 2>/dev/null || echo localhost):${PORT}"
+if [ "$HOST" = "127.0.0.1" ]; then
+  echo "  Web UI:  http://localhost:${PORT}"
+else
+  echo "  Web UI:  http://$(ipconfig getifaddr en0 2>/dev/null || echo localhost):${PORT}"
+fi
 echo "  Data:    ${RUN_HOME}/.cleanplex"

@@ -1,7 +1,64 @@
 # Installation
 
-!!! tip "Recommended: Docker"
-    Most people should use **Docker**. There is nothing to build or compile: pick the setup that matches yours below, start the container, and open `http://<your-server>:7979`. On **Unraid** it is a few clicks in Community Apps, with no command line at all.
+## The easy way: one command
+
+Install this on the **same computer that runs Plex Media Server**.
+
+=== "Windows"
+    Open **PowerShell** and paste:
+
+    ```powershell
+    irm https://nazmolla.github.io/Cleanplex/install.ps1 | iex
+    ```
+
+    - Downloads Hayaa for Plex to your user folder (no administrator prompt needed)
+    - Installs Python and `ffmpeg` automatically if they are missing
+    - Sets Hayaa for Plex to start automatically when you sign in, with the web UI reachable only from this computer (`http://localhost:7979`)
+
+    When it finishes, your browser opens Hayaa for Plex and a short setup guides you through the rest.
+
+=== "Mac"
+    Open **Terminal** and paste:
+
+    ```bash
+    curl -fsSL https://nazmolla.github.io/Cleanplex/install.sh | sh
+    ```
+
+    - Finds your Plex account and installs Hayaa for Plex as a background service
+    - Sets up Python and `ffmpeg` (using Homebrew if installed) automatically
+    - Starts Hayaa for Plex right away (reachable only from this Mac at `http://localhost:7979`) and opens it in your browser
+
+    When it finishes, your browser opens Hayaa for Plex and a short setup guides you through the rest.
+
+=== "Linux"
+    Open a terminal and paste:
+
+    ```bash
+    curl -fsSL https://nazmolla.github.io/Cleanplex/install.sh | sh
+    ```
+
+    - Finds your Plex account and installs Hayaa for Plex as a `systemd` service
+    - Installs Python and `ffmpeg` automatically using your system's package manager
+    - Starts Hayaa for Plex right away (reachable only from this machine at `http://localhost:7979`) and opens the setup page
+
+    When it finishes, your browser opens Hayaa for Plex and a short setup guides you through the rest.
+
+**Filtering every device (front door):** At the end of setup, the installer asks if you also want to filter Plex on TVs, phones, and Plex Web (by routing Plex's port `32400` through Hayaa's [front door](../playback/front-door.md)). It opens nothing new to the internet: clients keep using Plex's usual port. Saying no is fine — you can set it up later.
+
+**Opening the web UI from other devices on your network:** Because Hayaa for Plex has no login, the one-line installer locks the web UI to this computer by default. If you want to open it from another phone or computer at home, pass `--allow-network` (Mac/Linux) or `$env:HAYAA_ALLOW_NETWORK="1"` before the command (Windows) — be aware that anyone on your network can then open and change Hayaa:
+
+- **Mac / Linux:** `curl -fsSL https://nazmolla.github.io/Cleanplex/install.sh | sh -s -- --allow-network`
+- **Windows (PowerShell):** `$env:HAYAA_ALLOW_NETWORK="1"; irm https://nazmolla.github.io/Cleanplex/install.ps1 | iex`
+
+**Updating:** Run the same command again. Your settings, scanned library, and history in `~/.cleanplex` are kept untouched.
+
+**Uninstalling:** Stops and removes the service and app files, while keeping your `~/.cleanplex` data folder:
+
+- **Mac / Linux:** `curl -fsSL https://nazmolla.github.io/Cleanplex/install.sh | sh -s -- --uninstall`
+- **Windows (PowerShell):** `$env:HAYAA_UNINSTALL="1"; irm https://nazmolla.github.io/Cleanplex/install.ps1 | iex`
+
+!!! tip "Recommended for NAS boxes: Docker"
+    On a NAS (Unraid, Synology, QNAP, TrueNAS) or if you already run Plex in Docker, use **Docker**. There is nothing to build or compile: pick the setup that matches yours below, start the container, and open `http://<your-server>:7979`. On **Unraid** it is a few clicks in Community Apps, with no command line at all.
 
 ## Install with Docker (recommended)
 
