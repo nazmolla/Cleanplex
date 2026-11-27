@@ -1,0 +1,66 @@
+name: release-bundle
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and attach bundles to (e.g. v0.2.3)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Assemble bundle
+        run: |
+          test -f cleanplex/web/static/index.html
+          mkdir -p bundle
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='tests' \
+            --exclude='frontend' \
+            --exclude='docs' \
+            --exclude='website' \
+            --exclude='bundle' \
+            --exclude='.venv' \
+            --exclude='.uv' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='.env' \
+            ./ bundle/
+          tar -czf hayaa-for-plex.tar.gz -C bundle .
+          (cd bundle && zip -qr ../hayaa-for-plex.zip .)
+
+      - name: Attach bundles to GitHub release
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" hayaa-for-plex.tar.gz hayaa-for-plex.zip --clobber
