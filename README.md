@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/images/hayaa-icon.png" alt="Hayaa for Plex icon" width="128"></p>
+
 # Hayaa for Plex (formerly Cleanplex)
 
 > **Cleanplex is becoming Hayaa for Plex.** Only the name and look change for now: the repository, the Docker images (`ghcr.io/nazmolla/cleanplex`, `mnazmi/cleanplex`), settings and data all stay the same, and nothing needs updating. Hayaa for Plex is an independent project; it works with Plex but is not made or endorsed by Plex.
