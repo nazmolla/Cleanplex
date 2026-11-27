@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom'
 import { LayoutDashboard, Film, BarChart2, Settings } from 'lucide-react'
 import { Toaster } from './Toast'
 import { useT } from '../i18n'
+import HayaaBanner from './HayaaBanner'
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const { t } = useT()
@@ -46,6 +47,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
       {/* Main content */}
       <main className="flex-1 overflow-y-auto bg-plex-darker p-4 md:p-6 pb-20 md:pb-6">
+        <HayaaBanner />
         {children}
       </main>
 

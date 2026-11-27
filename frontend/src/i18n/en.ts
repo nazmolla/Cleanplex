@@ -380,6 +380,10 @@ export const en = {
   ver_group_stat: '{group}: {fp} false of {n} frames, accuracy {auc}',
 
   // Hayaa panel & sync
+  hayaa_banner_title: 'New: Hayaa community sync',
+  hayaa_banner_body: 'Scanning a film takes hours. With Hayaa, a title scanned on one Cleanplex server helps every server with the same file. Only time ranges and labels are shared, never titles, file names or frames.',
+  hayaa_banner_on: 'Turn it on',
+  hayaa_banner_later: 'Not now',
   hayaa_load_error: 'Could not load Hayaa status',
   hayaa_signed_in_toast: 'Signed in to Hayaa',
   hayaa_signin_error: 'Could not start signing in',
