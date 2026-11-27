@@ -20,13 +20,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       {/* Sidebar — desktop only */}
       <aside className="hidden md:flex w-56 flex-shrink-0 bg-hayaa-dark border-e border-hayaa-border flex-col">
         <div className="p-5 border-b border-hayaa-border">
-          <div className="flex items-center gap-2.5">
+          <NavLink to="/settings?section=about" className="flex items-center gap-2.5">
             <img src={hayaaIcon} alt="" className="h-8 w-8 rounded-lg" />
             <div className="leading-tight">
               <div className="text-hayaa-gold font-bold text-lg tracking-wide">{t('brand_name')}</div>
               <div className="text-xs text-muted">{t('brand_formerly')}</div>
             </div>
-          </div>
+          </NavLink>
         </div>
         <nav aria-label={t('nav_main')} className="flex-1 p-3 space-y-1">
           {nav.map(({ to, icon: Icon, label }) => (

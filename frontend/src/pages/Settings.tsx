@@ -7,6 +7,7 @@ import BulkRescan from '../components/BulkRescan'
 import VerifierPanel, { VerifierTraining } from '../components/VerifierPanel'
 import EnforcementPanel from '../components/EnforcementPanel'
 import HayaaPanel from '../components/HayaaPanel'
+import hayaaIcon from '../assets/hayaa-icon-64.png'
 import { normalizeRating } from '../utils/ratings'
 import { useT } from '../i18n'
 import { prettyLabel } from '../utils/labels'
@@ -52,8 +53,8 @@ interface Settings {
 
 // Seven sections grouped by what the user is doing (#236). Users, Hayaa and Maintenance save or act
 // on their own; the others edit the buffered form and share one Save bar.
-type SectionId = 'general' | 'users' | 'playback' | 'schedule' | 'detection' | 'hayaa' | 'maintenance'
-const SECTION_IDS: SectionId[] = ['general', 'users', 'playback', 'schedule', 'detection', 'hayaa', 'maintenance']
+type SectionId = 'general' | 'users' | 'playback' | 'schedule' | 'detection' | 'hayaa' | 'maintenance' | 'about'
+const SECTION_IDS: SectionId[] = ['general', 'users', 'playback', 'schedule', 'detection', 'hayaa', 'maintenance', 'about']
 const BUFFERED: SectionId[] = ['general', 'playback', 'schedule', 'detection']
 // Section ids from before #236, so old links (and /users) still open the right place.
 const LEGACY_SECTIONS: Record<string, SectionId> = {
@@ -306,6 +307,7 @@ export default function SettingsPage() {
     { id: 'detection', label: t('settings_sec_detection') },
     { id: 'hayaa', label: t('settings_sec_hayaa_sync') },
     { id: 'maintenance', label: t('settings_sec_maintenance') },
+    { id: 'about', label: t('about_title') },
   ]
 
   const checkbox = (key: keyof Settings, label: string, hint?: string, disabled?: boolean) => (
@@ -652,6 +654,32 @@ export default function SettingsPage() {
                     </p>
                   )}
                   <VerifierPanel value={form.verifier_loss_pct} onChange={v => setForm(f => ({ ...f, verifier_loss_pct: v }))} />
+                </div>
+              </Card>
+            </>
+          )}
+
+          {section === 'about' && (
+            <>
+              <Card title={t('about_meaning_title')}>
+                <div className="flex items-start gap-4">
+                  <img src={hayaaIcon} alt="" className="h-16 w-16 flex-shrink-0 rounded-xl" />
+                  <div className="space-y-3 text-sm text-gray-300">
+                    <p>{t('about_meaning_1')}</p>
+                    <p>{t('about_meaning_2')}</p>
+                  </div>
+                </div>
+              </Card>
+              <Card title={t('about_vision_title')}>
+                <div className="space-y-3 text-sm text-gray-300">
+                  <p>{t('about_vision_intro')}</p>
+                  <ul className="list-disc space-y-2 ps-5">
+                    <li><strong className="text-gray-100">{t('about_v1_title')}</strong> {t('about_v1')}</li>
+                    <li><strong className="text-gray-100">{t('about_v2_title')}</strong> {t('about_v2')}</li>
+                    <li><strong className="text-gray-100">{t('about_v3_title')}</strong> {t('about_v3')}</li>
+                    <li><strong className="text-gray-100">{t('about_v4_title')}</strong> {t('about_v4')}</li>
+                  </ul>
+                  <p className="text-xs text-muted">{t('about_disclaimer')}</p>
                 </div>
               </Card>
             </>
