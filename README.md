@@ -2,6 +2,8 @@
 
 # Hayaa for Plex (formerly Cleanplex)
 
+**Documentation website: https://nazmolla.github.io/Cleanplex/**
+
 > **Cleanplex is becoming Hayaa for Plex.** Only the name and look change for now: the repository, the Docker images (`ghcr.io/nazmolla/cleanplex`, `mnazmi/cleanplex`), settings and data all stay the same, and nothing needs updating. Hayaa for Plex is an independent project; it works with Plex but is not made or endorsed by Plex.
 
 A home server service that watches your Plex streams and, for the accounts you choose, **skips or mutes** the parts of a film that contain nudity or profanity. The scenes are found ahead of time by scanning your library (or imported from skip files other people have made); at playback time it is only a database lookup.
