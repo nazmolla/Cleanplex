@@ -52,11 +52,11 @@ export function UsersPanel() {
       {loading ? (
         <div className="text-muted text-sm">{t('users_loading')}</div>
       ) : users.length === 0 ? (
-        <div className="bg-plex-darker border border-plex-border rounded-xl p-8 text-center text-muted text-sm">
+        <div className="bg-hayaa-darker border border-hayaa-border rounded-xl p-8 text-center text-muted text-sm">
           {t('users_empty')}
         </div>
       ) : (
-        <div className="bg-plex-darker border border-plex-border rounded-xl divide-y divide-plex-border">
+        <div className="bg-hayaa-darker border border-hayaa-border rounded-xl divide-y divide-hayaa-border">
           {users.map(user => (
             <div key={user.username}>
             {/* The whole row opens the category levels; the switch and chevron stop the click themselves. */}
@@ -68,11 +68,11 @@ export function UsersPanel() {
                 <img
                   src={user.thumb}
                   alt={user.username}
-                  className="w-10 h-10 rounded-full bg-plex-border object-cover flex-shrink-0"
+                  className="w-10 h-10 rounded-full bg-hayaa-border object-cover flex-shrink-0"
                   onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
                 />
               ) : (
-                <div className="w-10 h-10 rounded-full bg-plex-border flex items-center justify-center flex-shrink-0">
+                <div className="w-10 h-10 rounded-full bg-hayaa-border flex items-center justify-center flex-shrink-0">
                   <UserCircle2 size={22} className="text-muted" />
                 </div>
               )}
@@ -104,7 +104,7 @@ export function UsersPanel() {
                 onClick={e => { e.stopPropagation(); toggle(user.username, !user.enabled) }}
                 disabled={saving[user.username]}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50 ${
-                  user.enabled ? 'bg-plex-orange' : 'bg-plex-border'
+                  user.enabled ? 'bg-hayaa-gold' : 'bg-hayaa-border'
                 }`}
               >
                 <span
@@ -116,7 +116,7 @@ export function UsersPanel() {
             </div>
 
             {expanded === user.username && (
-              <div className="bg-plex-bg/40 border-t border-plex-border">
+              <div className="bg-plex-bg/40 border-t border-hayaa-border">
                 <CategoryMatrix username={user.username} enabled={user.enabled} />
               </div>
             )}

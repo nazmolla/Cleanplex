@@ -47,7 +47,7 @@ interface ScannerStatus {
 
 const NOT_CUT = 'text-gray-400 bg-white/5'
 const FILTERING_BADGES: Record<Session['filtering_state'], { textKey: TranslationKey; cls: string; titleKey: TranslationKey }> = {
-  active: { textKey: 'filter_state_active', cls: 'text-plex-orange bg-plex-orange/10', titleKey: 'filter_state_active_title' },
+  active: { textKey: 'filter_state_active', cls: 'text-hayaa-gold bg-hayaa-gold/10', titleKey: 'filter_state_active_title' },
   clear: { textKey: 'filter_state_clear', cls: 'text-green-400 bg-green-400/10', titleKey: 'filter_state_clear_title' },
   ignored: { textKey: 'filter_state_ignored', cls: NOT_CUT, titleKey: 'filter_state_ignored_title' },
   library_excluded: { textKey: 'filter_state_library_excluded', cls: NOT_CUT, titleKey: 'filter_state_library_excluded_title' },
@@ -172,18 +172,18 @@ export default function Dashboard() {
         {loading ? (
           <div className="text-muted text-sm">{t('common_loading')}</div>
         ) : sessions.length === 0 ? (
-          <div className="bg-plex-card border border-plex-border rounded-xl px-4 py-5 text-sm text-muted">
+          <div className="bg-hayaa-card border border-hayaa-border rounded-xl px-4 py-5 text-sm text-muted">
             {t('dash_no_active_streams')}
           </div>
         ) : (
           <div className="grid gap-3 lg:grid-cols-2">
             {sessions.map(s => (
-              <div key={s.session_key} className="bg-plex-card border border-plex-border rounded-xl p-4 flex gap-4">
+              <div key={s.session_key} className="bg-hayaa-card border border-hayaa-border rounded-xl p-4 flex gap-4">
                 {s.thumb_url && (
                   <img
                     src={s.thumb_url}
                     alt=""
-                    className="w-16 h-24 object-cover rounded-lg flex-shrink-0 bg-plex-border"
+                    className="w-16 h-24 object-cover rounded-lg flex-shrink-0 bg-hayaa-border"
                     onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
                   />
                 )}
@@ -203,9 +203,9 @@ export default function Dashboard() {
                   </div>
                   <div className="mt-auto pt-3 flex items-center gap-3">
                     <span className="text-xs text-muted tabular-nums" dir="ltr">{msToTime(s.position_ms)}</span>
-                    <div className="flex-1 h-1.5 bg-plex-border rounded-full overflow-hidden">
+                    <div className="flex-1 h-1.5 bg-hayaa-border rounded-full overflow-hidden">
                       <div
-                        className="h-full bg-plex-orange rounded-full transition-all"
+                        className="h-full bg-hayaa-gold rounded-full transition-all"
                         style={{ width: `${s.duration_ms ? (s.position_ms / s.duration_ms) * 100 : 0}%` }}
                       />
                     </div>
@@ -230,7 +230,7 @@ export default function Dashboard() {
       {scanner && (
         <section aria-labelledby="dash-scanner">
           <h2 id="dash-scanner" className={SECTION_HEADING}>{t('dash_scanner')}</h2>
-          <div className="bg-plex-card border border-plex-border rounded-xl">
+          <div className="bg-hayaa-card border border-hayaa-border rounded-xl">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-sm">
               <span className="flex items-center gap-2">
                 <span className={`w-2 h-2 rounded-full flex-shrink-0 ${scanner.paused ? 'bg-yellow-500' : scannerIdle ? 'bg-faint' : 'bg-green-500 animate-pulse'}`} />
@@ -247,13 +247,13 @@ export default function Dashboard() {
             </div>
 
             {scanner.active_scans.length > 0 && (
-              <div className="border-t border-plex-border px-4 py-3 space-y-3">
+              <div className="border-t border-hayaa-border px-4 py-3 space-y-3">
                 {scanner.active_scans.map(scan => (
                   <div key={scan.guid} className="flex items-center gap-3 text-sm">
                     <span className="text-gray-200 truncate w-1/3 min-w-0" title={scan.title}>{scan.title}</span>
-                    <div className="flex-1 h-1.5 bg-plex-border rounded-full overflow-hidden">
+                    <div className="flex-1 h-1.5 bg-hayaa-border rounded-full overflow-hidden">
                       <div
-                        className="h-full bg-plex-orange rounded-full transition-all duration-1000"
+                        className="h-full bg-hayaa-gold rounded-full transition-all duration-1000"
                         style={{ width: `${scan.progress * 100}%` }}
                       />
                     </div>
@@ -272,7 +272,7 @@ export default function Dashboard() {
             )}
 
             {scanner.queue_size > 0 && (
-              <div className="border-t border-plex-border">
+              <div className="border-t border-hayaa-border">
                 <button
                   className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/5 transition-colors rounded-b-xl"
                   onClick={() => setQueueExpanded(e => !e)}
@@ -280,15 +280,15 @@ export default function Dashboard() {
                 >
                   <ChevronRight size={15} className={`text-faint transition-transform ${queueExpanded ? 'rotate-90' : 'rtl:-scale-x-100'}`} />
                   <span className="tabular-nums">{t('dash_queued_count', { count: scanner.queue_size })}</span>
-                  {forcedCount > 0 && <span className="text-plex-orange">{t('dash_forced_count', { count: forcedCount })}</span>}
+                  {forcedCount > 0 && <span className="text-hayaa-gold">{t('dash_forced_count', { count: forcedCount })}</span>}
                 </button>
                 {queueExpanded && (
-                  <div className="divide-y divide-plex-border border-t border-plex-border max-h-96 overflow-y-auto">
+                  <div className="divide-y divide-hayaa-border border-t border-hayaa-border max-h-96 overflow-y-auto">
                     {scanner.queue_items.map(item => (
                       <div key={item.guid} className="flex items-center gap-3 px-4 py-2 text-sm">
                         <span className="text-muted w-8 text-end flex-shrink-0 tabular-nums">{item.position}</span>
                         {item.force
-                          ? <Zap size={13} className="text-plex-orange flex-shrink-0" />
+                          ? <Zap size={13} className="text-hayaa-gold flex-shrink-0" />
                           : item.media_type === 'episode'
                             ? <Tv size={13} className="text-faint flex-shrink-0" />
                             : <Film size={13} className="text-faint flex-shrink-0" />

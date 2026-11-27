@@ -61,7 +61,7 @@ export default function TitleSegments({
     : segs
 
   return (
-    <div className="px-3 py-3 ps-10 border-b border-plex-border bg-black/20 space-y-2">
+    <div className="px-3 py-3 ps-10 border-b border-hayaa-border bg-black/20 space-y-2">
       {multi && selectedVer && (
         <div className="flex flex-wrap items-center gap-2 pb-1">
           <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label={t('versions_tablist_aria')}>
@@ -77,8 +77,8 @@ export default function TitleSegments({
                   title={v.file_path}
                   className={`px-2.5 py-1 rounded text-xs flex items-center gap-1.5 border ${
                     active
-                      ? 'bg-plex-orange/15 border-plex-orange text-plex-orange'
-                      : 'border-plex-border text-gray-300 hover:text-white'
+                      ? 'bg-hayaa-gold/15 border-hayaa-gold text-hayaa-gold'
+                      : 'border-hayaa-border text-gray-300 hover:text-white'
                   }`}
                 >
                   <span className="font-medium">{versionLabel(v, dupRes, t)}</span>

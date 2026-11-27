@@ -55,11 +55,11 @@ export default function SegmentCard({ seg, onPreview, onChange, onDeleted, capti
     }
   }
 
-  const timeCls = `font-mono text-sm ${seg.false_positive ? 'text-gray-400 line-through' : 'text-plex-orange'}`
+  const timeCls = `font-mono text-sm ${seg.false_positive ? 'text-gray-400 line-through' : 'text-hayaa-gold'}`
   const labels = segmentLabels(seg)
 
   return (
-    <div className={`flex flex-col bg-plex-card border rounded-xl overflow-hidden ${seg.false_positive ? 'border-amber-400/30' : 'border-plex-border'}`}>
+    <div className={`flex flex-col bg-hayaa-card border rounded-xl overflow-hidden ${seg.false_positive ? 'border-amber-400/30' : 'border-hayaa-border'}`}>
       <button
         onClick={() => onPreview(seg)}
         aria-label={t('seg_play_aria', { time: msToTimecode(seg.start_ms) })}
@@ -106,11 +106,11 @@ export default function SegmentCard({ seg, onPreview, onChange, onDeleted, capti
         {seg.created_at && <p className="text-xs text-muted">{t('seg_detected_at', { date: formatDate(parseDbTimestamp(seg.created_at)) })}</p>}
       </div>
 
-      <div className="flex items-center justify-between gap-1 px-2 py-1.5 border-t border-plex-border">
+      <div className="flex items-center justify-between gap-1 px-2 py-1.5 border-t border-hayaa-border">
         <a href={`/api/segments/${seg.id}/vlc`} title={t('seg_open_vlc')} aria-label={t('seg_open_vlc')} className="p-2 text-gray-400 hover:text-blue-400 hover:bg-blue-400/10 rounded-lg transition-colors">
           <Tv2 size={16} />
         </a>
-        <button onClick={jump} disabled={jumping} title={t('analytics_jump_seg')} aria-label={t('analytics_jump_seg')} className="p-2 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors disabled:opacity-40">
+        <button onClick={jump} disabled={jumping} title={t('analytics_jump_seg')} aria-label={t('analytics_jump_seg')} className="p-2 text-gray-400 hover:text-hayaa-gold hover:bg-hayaa-gold/10 rounded-lg transition-colors disabled:opacity-40">
           <SkipForward size={16} />
         </button>
         <RelabelButton seg={seg} onChange={(_, l) => onChange({ ...seg, labels: l })} />

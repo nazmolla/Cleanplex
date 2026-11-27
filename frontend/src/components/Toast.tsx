@@ -75,7 +75,7 @@ function ToastCard({ item }: { item: ToastItem }) {
   const { t } = useT()
   const error = item.tone === 'error'
   return (
-    <div className="pointer-events-auto flex items-start gap-2.5 rounded-lg border border-plex-border bg-plex-dark px-3 py-2.5 text-sm text-gray-200 shadow-xl">
+    <div className="pointer-events-auto flex items-start gap-2.5 rounded-lg border border-hayaa-border bg-hayaa-dark px-3 py-2.5 text-sm text-gray-200 shadow-xl">
       {error
         ? <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
         : <CheckCircle size={16} className="text-green-400 flex-shrink-0 mt-0.5" />}

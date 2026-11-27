@@ -78,7 +78,7 @@ function ActionIcon({ label, onClick, disabled, tone, children }: {
   tone?: 'orange' | 'yellow' | 'red'
   children: React.ReactNode
 }) {
-  const hover = tone === 'orange' ? 'text-gray-400 hover:text-plex-orange hover:bg-plex-orange/15'
+  const hover = tone === 'orange' ? 'text-gray-400 hover:text-hayaa-gold hover:bg-hayaa-gold/15'
     : tone === 'yellow' ? 'text-gray-400 hover:text-yellow-400 hover:bg-yellow-500/15'
     : tone === 'red' ? 'text-gray-400 hover:text-red-400 hover:bg-red-400/10'
     : 'text-gray-400 hover:text-white hover:bg-white/5'
@@ -705,7 +705,7 @@ export default function Browse() {
     const url = plexWebUrl(ratingKey)
     if (!url) return null
     return (
-      <a href={url} target="_blank" rel="noopener noreferrer" title={label} aria-label={label} className="p-1.5 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors">
+      <a href={url} target="_blank" rel="noopener noreferrer" title={label} aria-label={label} className="p-1.5 text-gray-400 hover:text-hayaa-gold hover:bg-hayaa-gold/10 rounded-lg transition-colors">
         <ExternalLink size={15} />
       </a>
     )
@@ -917,7 +917,7 @@ export default function Browse() {
     return parts.join(' · ') || tr('browse_nothing_here')
   })()
 
-  const inputCls = 'px-2 py-1.5 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200 placeholder-muted focus:border-plex-orange/50'
+  const inputCls = 'px-2 py-1.5 bg-hayaa-card border border-hayaa-border rounded-lg text-sm text-gray-200 placeholder-muted focus:border-hayaa-gold/50'
   const views = level === 'title' ? VIEWS.filter(v => v.id !== 'titles') : VIEWS
   const showTitleFilters = level !== 'title'
   const filtersButton = showTitleFilters || view === 'segments'
@@ -939,7 +939,7 @@ export default function Browse() {
                 onClick={() => go(lib.id ? { lib: lib.id } : {})}
                 aria-current={active ? 'true' : undefined}
                 onContextMenu={lib.id ? e => openScanMenu(e, { lib: lib.id }) : undefined}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-start transition-colors ${active ? 'bg-plex-orange/20 text-plex-orange' : 'text-gray-300 hover:text-gray-100 hover:bg-white/5'}`}
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-start transition-colors ${active ? 'bg-hayaa-gold/20 text-hayaa-gold' : 'text-gray-300 hover:text-gray-100 hover:bg-white/5'}`}
               >
                 <Icon size={16} className="flex-shrink-0" />
                 <span className="truncate">{lib.title}</span>
@@ -964,7 +964,7 @@ export default function Browse() {
         </nav>
         <div className="flex items-center gap-3 mb-3 min-w-0">
           {headerImage && headerImage.kind !== 'icon' && headerImage.src && (
-            <SafeImg src={headerImage.src} className={`${headerImage.kind === 'still' ? 'w-28 h-16' : 'w-11 h-16'} rounded bg-plex-border flex-shrink-0`} />
+            <SafeImg src={headerImage.src} className={`${headerImage.kind === 'still' ? 'w-28 h-16' : 'w-11 h-16'} rounded bg-hayaa-border flex-shrink-0`} />
           )}
           <div className="min-w-0 me-auto">
             <div className="flex items-center gap-2 min-w-0">
@@ -987,7 +987,7 @@ export default function Browse() {
                 library or show: they are the buttons people reach for first (#215). */}
             {selectedTitles.length > 0 && !scopeTitle ? (
               <>
-                <span className="text-xs text-plex-orange me-1 whitespace-nowrap">{tr('unit_selected_title', { count: selectedTitles.length })}</span>
+                <span className="text-xs text-hayaa-gold me-1 whitespace-nowrap">{tr('unit_selected_title', { count: selectedTitles.length })}</span>
                 <ActionIcon label={tr('browse_act_scan_sel_tonight_count', { titles: tr('unit_selected_title', { count: selectedTitles.length }) })} onClick={() => { scanTitles(selectedTitles, false); setSelected(new Set()) }}><Moon size={15} /></ActionIcon>
                 <ActionIcon label={tr('browse_act_scan_sel_now_count', { titles: tr('unit_selected_title', { count: selectedTitles.length }) })} onClick={() => { scanTitles(selectedTitles, true); setSelected(new Set()) }} tone="orange"><Zap size={15} /></ActionIcon>
               </>
@@ -1003,14 +1003,14 @@ export default function Browse() {
 
         {/* Toolbar: one row. The name search is always here; the other filters open below it. */}
         <div className="flex flex-wrap items-center gap-2 mb-2">
-          <div role="tablist" aria-label={tr('browse_show_tablist_aria')} className="flex p-0.5 gap-0.5 rounded-lg bg-black/25 border border-plex-border">
+          <div role="tablist" aria-label={tr('browse_show_tablist_aria')} className="flex p-0.5 gap-0.5 rounded-lg bg-black/25 border border-hayaa-border">
             {views.map(v => (
               <button
                 key={v.id}
                 role="tab"
                 aria-selected={view === v.id}
                 onClick={() => go(scope, v.id)}
-                className={`px-3 py-1 text-sm rounded-md transition-colors ${view === v.id ? 'bg-plex-orange text-black font-semibold' : 'text-gray-400 hover:text-gray-100 hover:bg-white/5'}`}
+                className={`px-3 py-1 text-sm rounded-md transition-colors ${view === v.id ? 'bg-hayaa-gold text-black font-semibold' : 'text-gray-400 hover:text-gray-100 hover:bg-white/5'}`}
               >
                 {tr(v.labelKey)}
               </button>
@@ -1027,11 +1027,11 @@ export default function Browse() {
               onClick={() => setFiltersOpen(o => !o)}
               aria-expanded={filtersOpen}
               aria-controls="browse-filters"
-              className={`flex items-center gap-1.5 ${inputCls} ${filtersOpen || panelFilterCount ? 'border-plex-orange/50 text-plex-orange' : 'hover:text-white'}`}
+              className={`flex items-center gap-1.5 ${inputCls} ${filtersOpen || panelFilterCount ? 'border-hayaa-gold/50 text-hayaa-gold' : 'hover:text-white'}`}
             >
               <SlidersHorizontal size={14} />
               {tr('browse_filters_btn')}
-              {panelFilterCount > 0 && <span className="text-xs tabular-nums bg-plex-orange text-black rounded-full px-1.5">{panelFilterCount}</span>}
+              {panelFilterCount > 0 && <span className="text-xs tabular-nums bg-hayaa-gold text-black rounded-full px-1.5">{panelFilterCount}</span>}
             </button>
           )}
           {showTitleFilters && (
@@ -1077,11 +1077,11 @@ export default function Browse() {
           <div className="mb-2 flex items-center gap-3 text-xs text-muted whitespace-nowrap overflow-hidden">
             {scannerStatus && scannerStatus.active_scans.length > 0 && (
               <span className="flex items-center gap-3 min-w-0" title={scannerStatus.active_scans.map(s => `${s.title} ${Math.round(s.progress * 100)}%`).join('\n')}>
-                <span className="text-plex-orange animate-pulse flex-shrink-0">●</span>
+                <span className="text-hayaa-gold animate-pulse flex-shrink-0">●</span>
                 {scannerStatus.active_scans.map(scan => (
                   <span key={scan.guid} className="flex items-baseline gap-1 min-w-0">
                     <span className="text-gray-300 truncate max-w-[14rem]">{scan.title}</span>
-                    <span className="text-plex-orange flex-shrink-0">{Math.round(scan.progress * 100)}%</span>
+                    <span className="text-hayaa-gold flex-shrink-0">{Math.round(scan.progress * 100)}%</span>
                   </span>
                 ))}
               </span>
@@ -1099,7 +1099,7 @@ export default function Browse() {
           {loading ? (
             <div className="text-muted text-sm">{tr('common_loading')}</div>
           ) : level === 'title' && !scopeTitle ? (
-            <div className="text-muted text-sm">{tr('browse_title_missing')} <button onClick={() => go({})} className="text-plex-orange hover:underline">{tr('browse_back_all')}</button></div>
+            <div className="text-muted text-sm">{tr('browse_title_missing')} <button onClick={() => go({})} className="text-hayaa-gold hover:underline">{tr('browse_back_all')}</button></div>
           ) : level === 'title' && scopeTitle ? (
             view === 'markers' ? (
               <div className="space-y-3">
@@ -1140,7 +1140,7 @@ export default function Browse() {
                   {libsInScope.filter(id => markerNotCached.has(id)).map(id => (
                     <p key={id} className="mb-2 text-sm text-muted">
                       {tr('browse_markers_not_cached', { library: libById.get(id)?.title ?? tr('browse_this_library') })}{' '}
-                      <button onClick={() => refreshMarkerList(id)} className="text-plex-orange hover:underline">{tr('browse_load_it_now')}</button>
+                      <button onClick={() => refreshMarkerList(id)} className="text-hayaa-gold hover:underline">{tr('browse_load_it_now')}</button>
                     </p>
                   ))}
                 </>
@@ -1148,16 +1148,16 @@ export default function Browse() {
               {rows.length === 0 ? (
                 <div className="text-muted text-sm py-8 text-center">{tr('browse_empty_matches')}</div>
               ) : (
-                <div className="rounded-xl border border-plex-border bg-plex-card overflow-hidden">
+                <div className="rounded-xl border border-hayaa-border bg-hayaa-card overflow-hidden">
                   {/* Column header; becomes the bulk-action bar while something is selected. */}
-                  <div className="sticky top-0 z-10 flex items-center gap-3 px-3 py-2 bg-plex-dark border-b border-plex-border text-[11px] uppercase tracking-wide text-muted">
+                  <div className="sticky top-0 z-10 flex items-center gap-3 px-3 py-2 bg-hayaa-dark border-b border-hayaa-border text-[11px] uppercase tracking-wide text-muted">
                     <input
                       type="checkbox"
                       checked={allSelected}
                       onChange={() => setSelected(allSelected ? new Set() : new Set(matchedGuids))}
                       title={tr('browse_select_all_aria')}
                       aria-label={tr('browse_select_all_aria')}
-                      className={`${COL.check} h-4 accent-plex-orange`}
+                      className={`${COL.check} h-4 accent-hayaa-gold`}
                     />
                     {selectedTitles.length > 0 ? (
                       <div className="flex-1 flex flex-wrap items-center gap-1 normal-case tracking-normal">
@@ -1215,7 +1215,7 @@ export default function Browse() {
             {tr('browse_delete_modal_body_before', { segments: tr('unit_segment', { count: pendingDelete.count }) })} <strong>{pendingDelete.label}</strong>{tr('browse_delete_modal_body_after')}
           </p>
           <label className="flex items-center gap-2 cursor-pointer select-none">
-            <input type="checkbox" checked={skipDeleteConfirm} onChange={e => toggleSkipConfirm(e.target.checked)} className="w-4 h-4 accent-plex-orange" />
+            <input type="checkbox" checked={skipDeleteConfirm} onChange={e => toggleSkipConfirm(e.target.checked)} className="w-4 h-4 accent-hayaa-gold" />
             <span className="text-xs text-gray-400">{tr('browse_dont_ask_again')}</span>
           </label>
         </Modal>

@@ -41,7 +41,7 @@ export function titleFiltersActive(f: TitleFilters): boolean {
   return !!(f.name || f.actors.length || f.rating !== 'all' || f.status !== 'all' || f.yearFrom || f.yearTo || f.scanFrom || f.scanTo)
 }
 
-const inputCls = 'w-full min-w-0 px-2 py-1.5 bg-plex-dark border border-plex-border rounded-lg text-sm text-gray-200 placeholder-muted focus:border-plex-orange/50'
+const inputCls = 'w-full min-w-0 px-2 py-1.5 bg-hayaa-dark border border-hayaa-border rounded-lg text-sm text-gray-200 placeholder-muted focus:border-hayaa-gold/50'
 const fieldLabel = 'block text-[11px] uppercase tracking-wide text-muted mb-1'
 
 /** How the actor filter's suggestions are ordered (#227). */
@@ -95,18 +95,18 @@ export function FilterPanel(p: PanelProps) {
     p.onSegments({ ...p.segments, labels: next })
   }
   return (
-    <div className="mb-3 rounded-xl border border-plex-border bg-plex-card/60 p-3 space-y-3" id="browse-filters">
+    <div className="mb-3 rounded-xl border border-hayaa-border bg-hayaa-card/60 p-3 space-y-3" id="browse-filters">
       {p.showTitleSection && (
         <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_1.6fr]">
           <div className="sm:col-span-2 xl:col-span-4">
             <span className={fieldLabel}>{tr('filter_scan_status')}</span>
-            <div className="flex flex-wrap p-0.5 gap-0.5 rounded-lg bg-black/25 border border-plex-border w-fit max-w-full">
+            <div className="flex flex-wrap p-0.5 gap-0.5 rounded-lg bg-black/25 border border-hayaa-border w-fit max-w-full">
               {STATUS_TABS.map(s => (
                 <button
                   key={s}
                   onClick={() => p.onTitles({ status: s })}
                   aria-pressed={t.status === s}
-                  className={`px-3 py-1 text-xs rounded-md transition-colors whitespace-nowrap ${t.status === s ? 'bg-plex-orange text-black font-semibold' : 'text-gray-400 hover:text-gray-100 hover:bg-white/5'}`}
+                  className={`px-3 py-1 text-xs rounded-md transition-colors whitespace-nowrap ${t.status === s ? 'bg-hayaa-gold text-black font-semibold' : 'text-gray-400 hover:text-gray-100 hover:bg-white/5'}`}
                 >
                   {tr(STATUS_TAB_KEYS[s])}
                   <span className={`ms-1.5 tabular-nums ${t.status === s ? 'opacity-70' : 'text-muted'}`}>{p.statusCounts[s] ?? 0}</span>
@@ -148,7 +148,7 @@ export function FilterPanel(p: PanelProps) {
             </div>
           </div>
           <label className="flex items-center gap-2 text-sm text-gray-300 sm:col-span-2 xl:col-span-4">
-            <input type="checkbox" checked={t.showIgnored} onChange={e => p.onTitles({ showIgnored: e.target.checked })} className="w-4 h-4 accent-plex-orange" />
+            <input type="checkbox" checked={t.showIgnored} onChange={e => p.onTitles({ showIgnored: e.target.checked })} className="w-4 h-4 accent-hayaa-gold" />
             {tr('filter_show_ignored')}
           </label>
           {titleFiltersActive(t) || t.showIgnored ? (
@@ -160,7 +160,7 @@ export function FilterPanel(p: PanelProps) {
       )}
 
       {p.showSegmentSection && (
-        <div className={`grid gap-3 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 ${p.showTitleSection ? 'pt-3 border-t border-plex-border' : ''}`}>
+        <div className={`grid gap-3 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 ${p.showTitleSection ? 'pt-3 border-t border-hayaa-border' : ''}`}>
           <label>
             <span className={fieldLabel}>{tr('filter_segment_state')}</span>
             <select value={p.segments.state} aria-label={tr('filter_segment_state')} onChange={e => p.onSegments({ ...p.segments, state: e.target.value as SegmentState })} className={inputCls}>
@@ -186,7 +186,7 @@ export function FilterPanel(p: PanelProps) {
                       onClick={() => toggleLabel(label)}
                       aria-pressed={on}
                       title={label}
-                      className={`text-xs px-2 py-1 rounded-full border transition-colors ${on ? 'bg-plex-orange/20 text-plex-orange border-plex-orange/50' : 'text-gray-400 border-plex-border hover:text-gray-200'}`}
+                      className={`text-xs px-2 py-1 rounded-full border transition-colors ${on ? 'bg-hayaa-gold/20 text-hayaa-gold border-hayaa-gold/50' : 'text-gray-400 border-hayaa-border hover:text-gray-200'}`}
                     >
                       {shortLabel(label, tr)}
                     </button>
@@ -233,9 +233,9 @@ export function FilterChips({ titles: t, onTitles, segments: s, onSegments, show
   return (
     <div className="flex flex-wrap items-center gap-1.5 mb-3">
       {chips.map(c => (
-        <span key={c.key} className="flex items-center gap-1 text-xs ps-2 pe-1 py-0.5 rounded-full bg-plex-orange/15 text-plex-orange border border-plex-orange/40">
+        <span key={c.key} className="flex items-center gap-1 text-xs ps-2 pe-1 py-0.5 rounded-full bg-hayaa-gold/15 text-hayaa-gold border border-hayaa-gold/40">
           {c.text}
-          <button onClick={c.clear} aria-label={tr('filter_remove_aria', { text: c.text })} className="p-0.5 rounded-full hover:bg-plex-orange/20"><X size={11} /></button>
+          <button onClick={c.clear} aria-label={tr('filter_remove_aria', { text: c.text })} className="p-0.5 rounded-full hover:bg-hayaa-gold/20"><X size={11} /></button>
         </span>
       ))}
       <button onClick={onClearAll} className="text-xs text-gray-400 hover:text-white px-1">{tr('common_clear_all')}</button>

@@ -35,7 +35,7 @@ const TIERS = [
     labels: ['BUTTOCKS_EXPOSED', 'ANUS_EXPOSED', 'BELLY_EXPOSED'] },
   { nameKey: 'relabel_tier_low' as const, noteKey: 'relabel_tier_low_note' as const, heading: 'text-sky-300', bar: 'border-sky-400/70',
     labels: ['FEMALE_GENITALIA_COVERED', 'FEMALE_BREAST_COVERED'] },
-  { nameKey: 'relabel_tier_minimal' as const, noteKey: 'relabel_tier_minimal_note' as const, heading: 'text-gray-300', bar: 'border-plex-border',
+  { nameKey: 'relabel_tier_minimal' as const, noteKey: 'relabel_tier_minimal_note' as const, heading: 'text-gray-300', bar: 'border-hayaa-border',
     labels: ['BUTTOCKS_COVERED', 'ANUS_COVERED', 'BELLY_COVERED', 'FEET_EXPOSED', 'FEET_COVERED',
              'ARMPITS_EXPOSED', 'ARMPITS_COVERED', 'FACE_FEMALE', 'FACE_MALE',
              'MALE_BREAST_EXPOSED', 'MALE_BREAST_COVERED'] },
@@ -144,7 +144,7 @@ export default function RelabelButton({ seg, onChange }: Props) {
                         type="checkbox"
                         checked={picked.includes(label)}
                         onChange={() => toggle(label)}
-                        className="w-4 h-4 accent-plex-orange"
+                        className="w-4 h-4 accent-hayaa-gold"
                       />
                       {prettyLabel(label, t)}
                     </label>

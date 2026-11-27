@@ -175,7 +175,7 @@ export default function HayaaSync() {
 
   const r = st.last_result
   const paused = st.paused_until && st.paused_until * 1000 > Date.now()
-  const selectCls = "w-full px-3 py-2 bg-plex-darker border border-plex-border rounded-lg text-sm text-gray-100"
+  const selectCls = "w-full px-3 py-2 bg-hayaa-darker border border-hayaa-border rounded-lg text-sm text-gray-100"
 
   return (
     <div className="space-y-5">
@@ -226,12 +226,12 @@ export default function HayaaSync() {
         </label>
         <div className="text-sm space-y-2">
           <label className="flex items-center gap-2 text-gray-300">
-            <input type="checkbox" checked={st.auto_sync} onChange={e => save({ auto_sync: e.target.checked })} className="w-4 h-4 accent-plex-orange" />
+            <input type="checkbox" checked={st.auto_sync} onChange={e => save({ auto_sync: e.target.checked })} className="w-4 h-4 accent-hayaa-gold" />
             {t('hayaa_auto_sync')}
           </label>
           <label className="flex items-center gap-2 text-gray-300">
             {t('hayaa_every')}
-            <select className="px-2 py-1 bg-plex-darker border border-plex-border rounded text-sm text-gray-100"
+            <select className="px-2 py-1 bg-hayaa-darker border border-hayaa-border rounded text-sm text-gray-100"
                     value={st.interval_h} disabled={!st.auto_sync}
                     onChange={e => save({ interval_h: Number(e.target.value) })}>
               {[3, 6, 12, 24, 48].map(h => <option key={h} value={h}>{t('hayaa_hours', { hours: h })}</option>)}
@@ -251,7 +251,7 @@ export default function HayaaSync() {
           <p className="text-xs text-muted mb-2">
             {t('hayaa_review_hint')}
           </p>
-          <ul className="divide-y divide-plex-border">
+          <ul className="divide-y divide-hayaa-border">
             {held.map(c => (
               <li key={`${c.title_key}:${c.claim_id}`} className="py-2 flex flex-wrap items-center gap-3 text-sm">
                 <span className="text-gray-100 min-w-0 flex-1 truncate">{c.title || t('hayaa_unknown_title')}</span>
@@ -270,7 +270,7 @@ export default function HayaaSync() {
         <div>
           <h3 className="text-sm font-semibold text-gray-300 mb-2">{t('hayaa_fps_heading', { count: fps.length })}</h3>
           <p className="text-xs text-muted mb-2">{t('hayaa_fps_hint')}</p>
-          <ul className="divide-y divide-plex-border">
+          <ul className="divide-y divide-hayaa-border">
             {fps.map(f => (
               <li key={f.id} className="py-2 flex flex-wrap items-center gap-3 text-sm">
                 <span className="text-gray-100 min-w-0 flex-1 truncate">{f.title}</span>

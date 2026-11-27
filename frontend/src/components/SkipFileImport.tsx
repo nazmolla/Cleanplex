@@ -74,14 +74,14 @@ export default function SkipFileImport({ plexGuid, versionId, onImported }: Prop
   }
 
   return (
-    <div className="bg-plex-card border border-plex-border rounded-xl p-4 space-y-3">
+    <div className="bg-hayaa-card border border-hayaa-border rounded-xl p-4 space-y-3">
       <div className="flex items-center gap-2">
         <button
           onClick={() => setMode('file')}
           className={`px-2.5 py-1 rounded text-xs flex items-center gap-1 border ${
             mode === 'file'
-              ? 'bg-plex-orange border-plex-orange text-black'
-              : 'border-plex-border text-gray-400'
+              ? 'bg-hayaa-gold border-hayaa-gold text-black'
+              : 'border-hayaa-border text-gray-400'
           }`}
         >
           <Upload size={12} /> {t('import_tab_file')}
@@ -90,8 +90,8 @@ export default function SkipFileImport({ plexGuid, versionId, onImported }: Prop
           onClick={() => setMode('paste')}
           className={`px-2.5 py-1 rounded text-xs flex items-center gap-1 border ${
             mode === 'paste'
-              ? 'bg-plex-orange border-plex-orange text-black'
-              : 'border-plex-border text-gray-400'
+              ? 'bg-hayaa-gold border-hayaa-gold text-black'
+              : 'border-hayaa-border text-gray-400'
           }`}
         >
           <ClipboardPaste size={12} /> {t('import_tab_paste')}
@@ -102,7 +102,7 @@ export default function SkipFileImport({ plexGuid, versionId, onImported }: Prop
             type="checkbox"
             checked={replace}
             onChange={e => setReplace(e.target.checked)}
-            className="accent-plex-orange"
+            className="accent-hayaa-gold"
           />
           {t('import_replace')}
         </label>
@@ -119,7 +119,7 @@ export default function SkipFileImport({ plexGuid, versionId, onImported }: Prop
               const file = e.target.files?.[0]
               if (file) importFile(file)
             }}
-            className="block w-full text-xs text-gray-400 file:me-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:bg-plex-border file:text-gray-200 hover:file:bg-plex-border/70"
+            className="block w-full text-xs text-gray-400 file:me-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-xs file:bg-hayaa-border file:text-gray-200 hover:file:bg-hayaa-border/70"
           />
           <p className="text-[11px] text-muted mt-2">
             {t('import_formats_before')} <code>.skp</code>{t('import_formats_kodi')} <code>.edl</code>{t('import_formats_mcf')}{' '}
@@ -134,12 +134,12 @@ export default function SkipFileImport({ plexGuid, versionId, onImported }: Prop
             rows={5}
             dir="ltr"
             placeholder={'00:12:30 - 00:13:05 nudity\n1:02:11 to 1:02:20 violence'}
-            className="w-full bg-plex-bg border border-plex-border rounded p-2 text-xs text-gray-200 font-mono"
+            className="w-full bg-plex-bg border border-hayaa-border rounded p-2 text-xs text-gray-200 font-mono"
           />
           <button
             onClick={importPaste}
             disabled={busy || !pasted.trim()}
-            className="mt-2 px-3 py-1.5 rounded text-xs bg-plex-orange text-black font-medium disabled:opacity-40"
+            className="mt-2 px-3 py-1.5 rounded text-xs bg-hayaa-gold text-black font-medium disabled:opacity-40"
           >
             {busy ? t('import_importing') : t('import_btn')}
           </button>

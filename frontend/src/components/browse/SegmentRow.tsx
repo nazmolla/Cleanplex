@@ -53,11 +53,11 @@ export default function SegmentRow({ seg, onPreview, onChange, onDeleted }: Prop
     }
   }
 
-  const timeCls = `font-mono text-sm ${seg.false_positive ? 'text-gray-400 line-through' : 'text-plex-orange'}`
+  const timeCls = `font-mono text-sm ${seg.false_positive ? 'text-gray-400 line-through' : 'text-hayaa-gold'}`
   const labels = segmentLabels(seg)
 
   return (
-    <div className={`flex flex-col sm:flex-row bg-plex-card border rounded-xl overflow-hidden ${seg.false_positive ? 'border-amber-400/30' : 'border-plex-border'}`}>
+    <div className={`flex flex-col sm:flex-row bg-hayaa-card border rounded-xl overflow-hidden ${seg.false_positive ? 'border-amber-400/30' : 'border-hayaa-border'}`}>
       <button onClick={() => onPreview(seg)} aria-label={t('seg_play_aria', { time: msToTimecode(seg.start_ms) })} title={t('seg_play_title')} className="group block w-full sm:w-60 flex-shrink-0">
         <HoverPreview src={seg.hover_url} fit="contain" className={`aspect-video bg-black ${seg.false_positive ? '[&_img]:brightness-50 [&_video]:brightness-50' : ''}`}>
           {seg.has_thumbnail ? (
@@ -102,7 +102,7 @@ export default function SegmentRow({ seg, onPreview, onChange, onDeleted }: Prop
           <a href={`/api/segments/${seg.id}/vlc`} title={t('seg_open_vlc')} aria-label={t('seg_open_vlc')} className="p-2 text-gray-400 hover:text-blue-400 hover:bg-blue-400/10 rounded-lg transition-colors">
             <Tv2 size={16} />
           </a>
-          <button onClick={jump} disabled={jumping} title={t('analytics_jump_seg')} aria-label={t('analytics_jump_seg')} className="p-2 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded-lg transition-colors disabled:opacity-40">
+          <button onClick={jump} disabled={jumping} title={t('analytics_jump_seg')} aria-label={t('analytics_jump_seg')} className="p-2 text-gray-400 hover:text-hayaa-gold hover:bg-hayaa-gold/10 rounded-lg transition-colors disabled:opacity-40">
             <SkipForward size={16} />
           </button>
           <RelabelButton seg={seg} onChange={(_, l) => onChange({ ...seg, labels: l })} />

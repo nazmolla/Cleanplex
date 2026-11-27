@@ -64,7 +64,7 @@ export default function DetectionAccuracy() {
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
-            <tr className="text-start text-muted border-b border-plex-border">
+            <tr className="text-start text-muted border-b border-hayaa-border">
               <th className="py-1.5 pe-3 font-medium">{t('acc_col_detector')}</th>
               <th className="py-1.5 pe-3 font-medium">{t('acc_col_label')}</th>
               <th className="py-1.5 pe-3 font-medium text-end">{t('acc_col_found')}</th>
@@ -76,7 +76,7 @@ export default function DetectionAccuracy() {
           </thead>
           <tbody>
             {rows.map(r => (
-              <tr key={`${r.source}|${r.detector}|${r.label}`} className="border-b border-plex-border/50 text-gray-300">
+              <tr key={`${r.source}|${r.detector}|${r.label}`} className="border-b border-hayaa-border/50 text-gray-300">
                 <td className="py-1.5 pe-3 whitespace-nowrap">{segmentOrigin(r, t)}</td>
                 <td className="py-1.5 pe-3 whitespace-nowrap" title={r.label}>{prettyLabel(r.label, t)}</td>
                 <td className="py-1.5 pe-3 text-end">{r.total}</td>

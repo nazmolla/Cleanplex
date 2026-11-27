@@ -95,9 +95,9 @@ export default function Modal({ title, subtitle, onClose, dismissible = true, si
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className={`w-full ${WIDTH[size]} max-h-[90vh] flex flex-col bg-plex-card border border-plex-border rounded-xl overflow-hidden`}
+        className={`w-full ${WIDTH[size]} max-h-[90vh] flex flex-col bg-hayaa-card border border-hayaa-border rounded-xl overflow-hidden`}
       >
-        <div className="flex items-start gap-3 px-4 py-3 border-b border-plex-border">
+        <div className="flex items-start gap-3 px-4 py-3 border-b border-hayaa-border">
           <div className="flex-1 min-w-0">
             <h2 id={titleId} className="text-sm font-semibold text-gray-100 truncate">{title}</h2>
             {subtitle && <p className="text-xs text-muted mt-0.5">{subtitle}</p>}
@@ -114,7 +114,7 @@ export default function Modal({ title, subtitle, onClose, dismissible = true, si
           </button>
         </div>
         <div className="p-4 overflow-y-auto">{children}</div>
-        {footer && <div className="flex justify-end gap-2 px-4 py-3 border-t border-plex-border">{footer}</div>}
+        {footer && <div className="flex justify-end gap-2 px-4 py-3 border-t border-hayaa-border">{footer}</div>}
       </div>
     </div>,
     document.body,

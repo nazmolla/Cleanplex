@@ -64,7 +64,7 @@ export default function SkipAnalytics() {
 
   if (categories.length === 0 && clients.length === 0 && titles.length === 0) {
     return (
-      <div className="bg-plex-card border border-plex-border rounded-xl p-8 text-center text-muted text-sm">
+      <div className="bg-hayaa-card border border-hayaa-border rounded-xl p-8 text-center text-muted text-sm">
         {t('skip_analytics_empty')}
       </div>
     )
@@ -80,7 +80,7 @@ export default function SkipAnalytics() {
 
   return (
     <div className="grid gap-4 md:grid-cols-2">
-      <section className="bg-plex-card border border-plex-border rounded-xl p-4">
+      <section className="bg-hayaa-card border border-hayaa-border rounded-xl p-4">
         <h3 className="text-sm font-medium text-gray-200 flex items-center gap-1.5 mb-3">
           <Activity size={14} /> {t('skip_analytics_by_category')}
         </h3>
@@ -88,9 +88,9 @@ export default function SkipAnalytics() {
           {categories.map(c => (
             <div key={c.category} className="flex items-center gap-2">
               <span className="text-xs text-gray-400 w-28 truncate">{displayCategory(c.category)}</span>
-              <div className="flex-1 h-2 bg-plex-border rounded overflow-hidden">
+              <div className="flex-1 h-2 bg-hayaa-border rounded overflow-hidden">
                 <div
-                  className="h-full bg-plex-orange"
+                  className="h-full bg-hayaa-gold"
                   style={{ width: `${(c.count / maxCategory) * 100}%` }}
                 />
               </div>
@@ -100,7 +100,7 @@ export default function SkipAnalytics() {
         </div>
       </section>
 
-      <section className="bg-plex-card border border-plex-border rounded-xl p-4">
+      <section className="bg-hayaa-card border border-hayaa-border rounded-xl p-4">
         <h3 className="text-sm font-medium text-gray-200 flex items-center gap-1.5 mb-3">
           <MonitorSmartphone size={14} /> {t('skip_analytics_clients')}
         </h3>
@@ -116,7 +116,7 @@ export default function SkipAnalytics() {
             </thead>
             <tbody className="text-gray-300">
               {clients.map(c => (
-                <tr key={c.client_identifier || c.client_title} className="border-t border-plex-border">
+                <tr key={c.client_identifier || c.client_title} className="border-t border-hayaa-border">
                   <td className="py-1.5 truncate max-w-[10rem]">{c.client_title}</td>
                   <td className="text-end">{c.count}</td>
                   <td
@@ -132,11 +132,11 @@ export default function SkipAnalytics() {
         </div>
       </section>
 
-      <section className="bg-plex-card border border-plex-border rounded-xl p-4 md:col-span-2">
+      <section className="bg-hayaa-card border border-hayaa-border rounded-xl p-4 md:col-span-2">
         <h3 className="text-sm font-medium text-gray-200 flex items-center gap-1.5 mb-3">
           <Film size={14} /> {t('skip_analytics_top_titles')}
         </h3>
-        <div className="divide-y divide-plex-border">
+        <div className="divide-y divide-hayaa-border">
           {titles.map(t => (
             <div key={t.plex_guid} className="flex items-center justify-between py-1.5">
               <span className="text-xs text-gray-300 truncate">{t.title}</span>

@@ -12,7 +12,7 @@ export default function SafeImg({ src, alt = '', className = '', fit = 'cover', 
   // Keyed on src: a new picture gets a new try.
   const [failedSrc, setFailedSrc] = useState('')
   if (!src || failedSrc === src) {
-    return <div className={`${className} flex items-center justify-center bg-plex-border/50 text-faint`} aria-hidden="true"><ImageOff size={iconSize} /></div>
+    return <div className={`${className} flex items-center justify-center bg-hayaa-border/50 text-faint`} aria-hidden="true"><ImageOff size={iconSize} /></div>
   }
   return <img src={src} alt={alt} loading="lazy" onError={() => setFailedSrc(src)} className={`${className} ${fit === 'contain' ? 'object-contain' : 'object-cover'}`} />
 }

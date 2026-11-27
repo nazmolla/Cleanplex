@@ -9,7 +9,7 @@
   }
 
   body {
-    @apply bg-plex-darker text-gray-100 font-sans;
+    @apply bg-hayaa-darker text-gray-100 font-sans;
   }
 
   /* One focus indicator for every control, shown for keyboard focus only (#204).
@@ -44,10 +44,10 @@
   }
   /* Black on orange is 9:1; white on orange is 2.2:1. */
   .btn-primary {
-    @apply bg-plex-orange border-plex-orange text-black hover:bg-[#f0b429];
+    @apply bg-hayaa-gold border-hayaa-gold text-black hover:bg-[#d8a94f];
   }
   .btn-outline {
-    @apply bg-plex-card border-plex-border text-gray-300 hover:text-white hover:border-gray-500;
+    @apply bg-hayaa-card border-hayaa-border text-gray-300 hover:text-white hover:border-gray-500;
   }
   .btn-danger {
     @apply bg-red-500/15 border-red-500/30 text-red-300 hover:bg-red-500/25;
@@ -59,10 +59,10 @@
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  @apply bg-plex-darker;
+  @apply bg-hayaa-darker;
 }
 ::-webkit-scrollbar-thumb {
-  @apply bg-plex-border rounded;
+  @apply bg-hayaa-border rounded;
 }
 
 /* Numbers read left to right in Arabic too: without this, RTL bidi shows "0.7" as "7." in number boxes. */
