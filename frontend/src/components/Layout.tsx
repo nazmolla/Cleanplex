@@ -41,7 +41,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
         <div className="p-3 border-t border-plex-border">
-          <div className="px-1 text-xs text-muted">v0.2.0</div>
+          <div className="px-1 text-xs text-muted">v0.2.1</div>
         </div>
       </aside>
 

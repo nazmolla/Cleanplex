@@ -51,7 +51,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Cleanplex",
         description="Plex content filter service",
-        version="0.2.0",
+        version="0.2.1",
     )
 
     @app.exception_handler(Exception)
