@@ -613,6 +613,14 @@ async def init_db() -> None:
                     # Unexpected error — surface it rather than silently continuing.
                     logger.error("Unexpected migration failure: %s — %s", stmt, exc)
                     raise
+        # Episodes recorded as movies (#246): a row that belongs to a show is an episode. Older
+        # versions could store such rows as "movie", and library syncs never rewrote existing rows,
+        # so they showed as loose titles instead of under their show. Cheap and idempotent.
+        await conn.execute(
+            "UPDATE scan_jobs SET media_type='episode' "
+            "WHERE media_type != 'episode' AND COALESCE(show_guid, '') != ''"
+        )
+        await conn.commit()
         # Consolidate hayaa_content_keys into scan_jobs and removed_titles (#235) without rehashing.
         legacy_ck = await (await conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='hayaa_content_keys'"
@@ -2652,6 +2660,22 @@ async def upsert_scan_jobs_batch(jobs: list[dict]) -> int:
         )
         await conn.commit()
         inserted = conn.total_changes - before
+
+        # Existing rows keep everything else, but which show a title belongs to is Plex's to say:
+        # refresh it, so a row stored with the wrong type or no show heals on the next sync (#246).
+        show_rows = [
+            (j["show_guid"], j.get("show_rating_key", ""), j["plex_guid"],
+             j["show_guid"], j.get("show_rating_key", ""))
+            for j in jobs if j.get("show_guid")
+        ]
+        if show_rows:
+            await conn.executemany(
+                "UPDATE scan_jobs SET media_type='episode', show_guid=?, show_rating_key=? "
+                "WHERE plex_guid=? AND (media_type != 'episode' OR COALESCE(show_guid, '') != ? "
+                "OR COALESCE(show_rating_key, '') != ?)",
+                show_rows,
+            )
+            await conn.commit()
 
         # Ensure titles inserted via legacy callers without explicit sync_title_versions_batch still
         # get a title_versions row.

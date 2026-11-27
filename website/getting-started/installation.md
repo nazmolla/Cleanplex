@@ -43,7 +43,7 @@ Install this on the **same computer that runs Plex Media Server**.
 
     When it finishes, your browser opens Hayaa for Plex and a short setup guides you through the rest.
 
-**Filtering every device (front door):** At the end of setup, the installer asks if you also want to filter Plex on TVs, phones, and Plex Web (by routing Plex's port `32400` through Hayaa's [front door](../playback/front-door.md)). It opens nothing new to the internet: clients keep using Plex's usual port. Saying no is fine — you can set it up later.
+**Filtering every device (front door):** The installer also sets up Hayaa's [front door](../playback/front-door.md), so Plex is filtered on TVs, phones and Plex Web too, not only on the apps Hayaa can control directly. It asks first and the answer is **yes** unless you type `n`. It opens nothing new to the internet: clients keep using Plex's usual port. To skip it without being asked, add `--no-frontdoor` (Mac/Linux) or set `$env:HAYAA_FRONTDOOR="0"` (Windows).
 
 **Opening the web UI from other devices on your network:** Because Hayaa for Plex has no login, the one-line installer locks the web UI to this computer by default. If you want to open it from another phone or computer at home, pass `--allow-network` (Mac/Linux) or `$env:HAYAA_ALLOW_NETWORK="1"` before the command (Windows) — be aware that anyone on your network can then open and change Hayaa:
 

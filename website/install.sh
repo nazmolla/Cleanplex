@@ -345,12 +345,13 @@ echo "  The front door opens nothing new to the internet: clients keep using Ple
 if [ -z "$FRONTDOOR_CHOICE" ]; then
   ANS=""
   if [ -r /dev/tty ]; then
-    printf "  Also filter Plex on every device (TVs, phones, web)? This routes Plex's port 32400 through Hayaa's front door. [y/N] "
+    printf "  Also filter Plex on every device (TVs, phones, web)? This routes Plex's port 32400 through Hayaa's front door. [Y/n] "
     IFS= read -r ANS </dev/tty || ANS=""
   fi
+  # Yes unless the user says no: without the front door only some Plex apps can be filtered.
   case "$ANS" in
-    [yY]|[yY][eE][sS]) FRONTDOOR_CHOICE="yes" ;;
-    *) FRONTDOOR_CHOICE="no" ;;
+    [nN]|[nN][oO]) FRONTDOOR_CHOICE="no" ;;
+    *) FRONTDOOR_CHOICE="yes" ;;
   esac
 fi
 

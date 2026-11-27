@@ -120,6 +120,8 @@ async def scan_title(body: ScanTitleRequest):
                         "content_rating": item.content_rating,
                         "media_type": item.media_type,
                         "year": item.year,
+                        "show_guid": item.show_guid,
+                        "show_rating_key": item.show_rating_key,
                         "part_files": json.dumps(item.part_files),
                         "duration_ms": item.duration_ms,
                     }])
@@ -275,6 +277,7 @@ async def scan_library(library_id: str, body: ScanLibraryRequest):
                     "plex_guid": i.plex_guid, "title": i.title, "file_path": i.file_path,
                     "rating_key": i.rating_key, "library_id": i.library_id, "library_title": i.library_title,
                     "content_rating": i.content_rating, "media_type": i.media_type, "year": i.year,
+                    "show_guid": i.show_guid, "show_rating_key": i.show_rating_key,
                     "part_files": json.dumps(i.part_files),
                 }
                 for i in items if i.file_path

@@ -253,9 +253,10 @@ Write-Host "  The front door opens nothing new to the internet: clients keep usi
 if (-not $fdChoice) {
     $ans = ""
     try {
-        $ans = Read-Host "  Also filter Plex on every device (TVs, phones, web)? This routes Plex's port 32400 through Hayaa's front door. [y/N]"
+        $ans = Read-Host "  Also filter Plex on every device (TVs, phones, web)? This routes Plex's port 32400 through Hayaa's front door. [Y/n]"
     } catch { $ans = "" }
-    if ($ans -match '^(y|yes)$') { $fdChoice = "yes" } else { $fdChoice = "no" }
+    # Yes unless the user says no: without the front door only some Plex apps can be filtered.
+    if ($ans -match '^(n|no)$') { $fdChoice = "no" } else { $fdChoice = "yes" }
 }
 
 if ($fdChoice -eq "yes") {
