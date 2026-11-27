@@ -1,0 +1,97 @@
+site_name: Hayaa for Plex
+site_url: https://nazmolla.github.io/Cleanplex/
+site_description: >-
+  An independent, self-hosted Plex companion that scans your library and skips
+  or mutes nudity and profanity for the accounts you choose.
+repo_url: https://github.com/nazmolla/Cleanplex
+repo_name: nazmolla/Cleanplex
+edit_uri: edit/main/website/
+docs_dir: website
+exclude_docs: |
+  overrides/
+  requirements.txt
+
+copyright: >-
+  Hayaa for Plex (formerly Cleanplex) — GNU GPL v3.0.
+  An independent project that works with Plex, not made or endorsed by Plex.
+
+theme:
+  name: material
+  custom_dir: website/overrides
+  logo: assets/hayaa-icon.png
+  favicon: assets/hayaa-icon.png
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+extra_css:
+  - stylesheets/hayaa.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+
+plugins:
+  - search:
+      lang: en
+
+nav:
+  - Home: index.md
+  - About: about.md
+  - Getting Started:
+      - Requirements: getting-started/requirements.md
+      - Installation: getting-started/installation.md
+      - Finding Your Plex Token: getting-started/plex-token.md
+  - User Guide:
+      - How It Works: guide/how-it-works.md
+      - Configuration: guide/configuration.md
+      - Web UI Pages: guide/web-ui.md
+      - Importing Skip Files: guide/importing-skip-files.md
+      - Profanity Filtering: guide/profanity-filtering.md
+      - Ignored Titles: guide/ignored-titles.md
+      - Scanner Queue & Priority: guide/scanner-queue.md
+  - Detection:
+      - Detection Pipeline & Accuracy: detection/pipeline-and-accuracy.md
+      - Segment Expansion & Skip Logic: detection/segment-expansion-and-skip-logic.md
+  - Playback:
+      - Stream Filtering (Front Door): playback/front-door.md
+      - Client Compatibility: playback/client-compatibility.md
+  - Hayaa Community Sync: hayaa-sync.md
+  - Reference:
+      - Environment Variables: reference/environment-variables.md
+      - Data, Backups & Maintenance: reference/data-backups-maintenance.md
+      - AI Agent (MCP) Endpoint: reference/mcp-endpoint.md
+      - Security: reference/security.md
+  - Troubleshooting: troubleshooting.md
+  - Roadmap: roadmap.md
+  - License: license.md

@@ -38,6 +38,9 @@ _create_*.ps1
 # Generated web assets served by backend
 cleanplex/web/static/
 
+# MkDocs build output
+site/
+
 # Local one-off debug/maintenance helpers
 check_force_scan.py
 check_guid_mismatch.py

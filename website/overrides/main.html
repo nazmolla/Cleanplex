@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block extrahead %}
+  {{ super() }}
+  {% set og_title = config.site_name %}
+  {% if page and page.meta and page.meta.title %}
+    {% set og_title = page.meta.title ~ " - " ~ config.site_name %}
+  {% elif page and page.title and not page.is_homepage %}
+    {% set og_title = page.title ~ " - " ~ config.site_name %}
+  {% endif %}
+  {% set og_description = page.meta.description if page and page.meta and page.meta.description else config.site_description %}
+  <meta property="og:title" content="{{ og_title | e }}" />
+  <meta property="og:description" content="{{ og_description | e }}" />
+  <meta property="og:image" content="https://nazmolla.github.io/Cleanplex/assets/social-preview.png" />
+  <meta property="og:type" content="website" />
+  {% if page and page.canonical_url %}
+  <meta property="og:url" content="{{ page.canonical_url | e }}" />
+  {% endif %}
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="{{ og_title | e }}" />
+  <meta name="twitter:description" content="{{ og_description | e }}" />
+  <meta name="twitter:image" content="https://nazmolla.github.io/Cleanplex/assets/social-preview.png" />
+{% endblock %}
