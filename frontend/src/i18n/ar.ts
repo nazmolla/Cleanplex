@@ -373,6 +373,10 @@ export const ar: DictionarySchema<typeof en> = {
   ver_group_stat: '{group}: {fp} كاذب من أصل {n} إطار، الدقة {auc}',
 
   // Hayaa panel & sync
+  hayaa_banner_title: 'جديد: المزامنة المجتمعية «حياء»',
+  hayaa_banner_body: 'فحص الفيلم يستغرق ساعات. مع حياء، يفيد الفيلم الذي فُحص على خادم Cleanplex واحد كل الخوادم التي لديها الملف نفسه. لا تُشارك إلا النطاقات الزمنية والتصنيفات، ولا تُشارك العناوين أو أسماء الملفات أو الإطارات أبدًا.',
+  hayaa_banner_on: 'تفعيل',
+  hayaa_banner_later: 'ليس الآن',
   hayaa_load_error: 'تعذر تحميل حالة حياء',
   hayaa_signed_in_toast: 'تم تسجيل الدخول إلى حياء',
   hayaa_signin_error: 'تعذر بدء تسجيل الدخول',
