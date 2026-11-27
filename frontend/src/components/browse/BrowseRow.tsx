@@ -13,7 +13,7 @@ export function StatusBadge({ status, progress }: { status: string; progress: nu
       return <span className="text-xs bg-red-500/15 text-red-400 px-2 py-0.5 rounded-full">{t('browse_status_failed')}</span>
     case 'scanning':
       return (
-        <span className="text-xs bg-plex-orange/15 text-plex-orange px-2 py-0.5 rounded-full flex items-center gap-1 w-fit">
+        <span className="text-xs bg-hayaa-gold/15 text-hayaa-gold px-2 py-0.5 rounded-full flex items-center gap-1 w-fit">
           <span className="animate-pulse">●</span> {Math.round(progress * 100)}%
         </span>
       )
@@ -31,7 +31,7 @@ export function GroupStatus({ titles }: { titles: Title[] }) {
   if (!n.scanning && !n.failed && !n.pending) return <span className="text-xs bg-green-500/15 text-green-400 px-2 py-0.5 rounded-full">{t('browse_status_done')}</span>
   return (
     <span className="flex flex-wrap gap-1">
-      {n.scanning > 0 && <span className="text-xs bg-plex-orange/15 text-plex-orange px-2 py-0.5 rounded-full">{t('browse_group_scanning', { count: n.scanning })}</span>}
+      {n.scanning > 0 && <span className="text-xs bg-hayaa-gold/15 text-hayaa-gold px-2 py-0.5 rounded-full">{t('browse_group_scanning', { count: n.scanning })}</span>}
       {n.failed > 0 && <span className="text-xs bg-red-500/15 text-red-400 px-2 py-0.5 rounded-full">{t('browse_group_failed', { count: n.failed })}</span>}
       {n.pending > 0 && <span className="text-xs bg-gray-700/50 text-gray-400 px-2 py-0.5 rounded-full">{t('browse_group_pending', { count: n.pending })}</span>}
     </span>
@@ -65,10 +65,10 @@ export function scannedCell(
 export function CountCell({ count, falsePositives = 0, unit }: { count: number; falsePositives?: number; unit: 'segments' | 'markers' }) {
   const { t } = useT()
   if (count === 0 && falsePositives === 0) return <span className="text-xs text-muted">0</span>
-  const tone = unit === 'markers' ? 'text-plex-orange bg-plex-orange/10 border-plex-orange/30' : 'text-red-400 bg-red-500/10 border-red-500/20'
+  const tone = unit === 'markers' ? 'text-hayaa-gold bg-hayaa-gold/10 border-hayaa-gold/30' : 'text-red-400 bg-red-500/10 border-red-500/20'
   return (
     <span className="flex items-center justify-end gap-1.5 text-xs">
-      <span className={`px-1.5 py-0.5 rounded border font-medium tabular-nums ${count > 0 ? tone : 'text-gray-400 bg-white/5 border-plex-border'}`}>{count}</span>
+      <span className={`px-1.5 py-0.5 rounded border font-medium tabular-nums ${count > 0 ? tone : 'text-gray-400 bg-white/5 border-hayaa-border'}`}>{count}</span>
       {falsePositives > 0 && <span className="flex items-center gap-0.5 text-amber-300 tabular-nums" title={t('browse_fp_count_title', { count: falsePositives })}><ThumbsDown size={10} /> {falsePositives}</span>}
     </span>
   )
@@ -82,10 +82,10 @@ export type RowImage =
 function Thumb({ image }: { image: RowImage }) {
   if (image.kind === 'icon') {
     const Icon = image.icon === 'movie' ? Film : Tv
-    return <div className="w-10 h-[3.75rem] rounded bg-plex-border/50 flex items-center justify-center text-gray-400"><Icon size={18} /></div>
+    return <div className="w-10 h-[3.75rem] rounded bg-hayaa-border/50 flex items-center justify-center text-gray-400"><Icon size={18} /></div>
   }
   const cls = image.kind === 'still' ? 'w-10 h-[1.375rem] md:w-24 md:h-[3.375rem]' : 'w-10 h-[3.75rem]'
-  return <SafeImg src={image.src} className={`${cls} rounded bg-plex-border`} />
+  return <SafeImg src={image.src} className={`${cls} rounded bg-hayaa-border`} />
 }
 
 // Column widths shared by the header and every row, so the columns line up at every level.
@@ -132,7 +132,7 @@ export default function BrowseRow(p: RowProps) {
     <div
       onClick={p.onOpen}
       onContextMenu={p.onContextMenu}
-      className={`group flex flex-wrap md:flex-nowrap items-center gap-x-3 gap-y-1 px-3 py-2 border-b border-plex-border last:border-b-0 cursor-pointer transition-colors ${p.ignored ? 'bg-yellow-500/5 hover:bg-yellow-500/10' : 'hover:bg-white/[0.04]'}`}
+      className={`group flex flex-wrap md:flex-nowrap items-center gap-x-3 gap-y-1 px-3 py-2 border-b border-hayaa-border last:border-b-0 cursor-pointer transition-colors ${p.ignored ? 'bg-yellow-500/5 hover:bg-yellow-500/10' : 'hover:bg-white/[0.04]'}`}
     >
       <input
         type="checkbox"
@@ -140,12 +140,12 @@ export default function BrowseRow(p: RowProps) {
         onChange={p.onCheck}
         onClick={e => e.stopPropagation()}
         aria-label={t('browse_row_select_aria', { name: p.name })}
-        className={`${COL.check} h-4 accent-plex-orange`}
+        className={`${COL.check} h-4 accent-hayaa-gold`}
       />
       <div className={COL.image}><Thumb image={p.image} /></div>
       <div className={COL.name}>
         <div className="flex items-center gap-2 min-w-0">
-          <button onClick={e => { e.stopPropagation(); p.onOpen() }} className="text-sm font-medium text-gray-100 truncate text-start hover:text-plex-orange" title={p.expanded === undefined ? t('browse_row_open_title', { name: p.name }) : t('browse_row_show_segments_title', { name: p.name })} aria-expanded={p.expanded}>
+          <button onClick={e => { e.stopPropagation(); p.onOpen() }} className="text-sm font-medium text-gray-100 truncate text-start hover:text-hayaa-gold" title={p.expanded === undefined ? t('browse_row_open_title', { name: p.name }) : t('browse_row_show_segments_title', { name: p.name })} aria-expanded={p.expanded}>
             {p.name}
           </button>
           {p.badges}

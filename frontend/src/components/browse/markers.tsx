@@ -130,7 +130,7 @@ function MarkerCountBadge({ count }: { count: number }) {
   const { t } = useT()
   if (count === 0) return null
   return (
-    <span className="text-xs px-1.5 py-0.5 rounded bg-plex-orange/15 text-plex-orange border border-plex-orange/25 font-medium">
+    <span className="text-xs px-1.5 py-0.5 rounded bg-hayaa-gold/15 text-hayaa-gold border border-hayaa-gold/25 font-medium">
       {t('unit_marker', { count })}
     </span>
   )
@@ -167,13 +167,13 @@ function ContentRatingBadge({ rating }: { rating: string }) {
 
 function Poster({ src, alt, className }: { src: string; alt: string; className: string }) {
   const [err, setErr] = useState(false)
-  if (!src || err) return <div className={`${className} bg-plex-border/60 rounded flex-shrink-0`} />
+  if (!src || err) return <div className={`${className} bg-hayaa-border/60 rounded flex-shrink-0`} />
   return (
     <img
       src={src}
       alt={alt}
       loading="lazy"
-      className={`${className} object-cover rounded flex-shrink-0 bg-plex-border`}
+      className={`${className} object-cover rounded flex-shrink-0 bg-hayaa-border`}
       onError={() => setErr(true)}
     />
   )
@@ -314,7 +314,7 @@ function MarkerEditor({
   }
 
   return (
-    <div className="bg-black/20 border border-plex-border rounded-xl p-4 space-y-3">
+    <div className="bg-black/20 border border-hayaa-border rounded-xl p-4 space-y-3">
       {/* Header */}
       <div className="flex items-center gap-2 flex-wrap">
         <MarkerTypeBadge type={marker.marker_type} />
@@ -344,19 +344,19 @@ function MarkerEditor({
       >
         {/* Active region */}
         <div
-          className="absolute top-0 h-full bg-plex-orange/25 border-x border-plex-orange/60"
+          className="absolute top-0 h-full bg-hayaa-gold/25 border-x border-hayaa-gold/60"
           style={{ left: `${startPct}%`, width: `${Math.max(0, endPct - startPct)}%` }}
         />
         {/* Start handle */}
         <div
-          className="absolute top-0 h-full w-2 bg-plex-orange rounded-s cursor-ew-resize hover:brightness-125 transition-all"
+          className="absolute top-0 h-full w-2 bg-hayaa-gold rounded-s cursor-ew-resize hover:brightness-125 transition-all"
           style={{ left: `${startPct}%`, transform: 'translateX(-50%)' }}
           onMouseDown={e => { e.preventDefault(); dragging.current = 'start' }}
           title={t('markers_drag_start')}
         />
         {/* End handle */}
         <div
-          className="absolute top-0 h-full w-2 bg-plex-orange rounded-e cursor-ew-resize hover:brightness-125 transition-all"
+          className="absolute top-0 h-full w-2 bg-hayaa-gold rounded-e cursor-ew-resize hover:brightness-125 transition-all"
           style={{ left: `${endPct}%`, transform: 'translateX(-50%)' }}
           onMouseDown={e => { e.preventDefault(); dragging.current = 'end' }}
           title={t('markers_drag_end')}
@@ -379,13 +379,13 @@ function MarkerEditor({
       <div className="flex items-center gap-2 flex-wrap">
         <button
           onClick={handlePlay}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-700/80 hover:bg-gray-600 text-sm text-gray-200 transition-colors border border-plex-border"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-700/80 hover:bg-gray-600 text-sm text-gray-200 transition-colors border border-hayaa-border"
         >
           {previewing ? <><span className="w-3 h-3 border-2 border-gray-300 rounded-sm inline-block" /> {t('markers_stop')}</> : <><Play size={13} /> {t('markers_preview')}</>}
         </button>
         <a
           href={`/api/markers/${marker.id}/vlc`}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-700/80 hover:bg-gray-600 text-sm text-gray-200 transition-colors border border-plex-border"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-700/80 hover:bg-gray-600 text-sm text-gray-200 transition-colors border border-hayaa-border"
           title={t('markers_vlc_title')}
         >
           <Tv2 size={13} /> {t('markers_vlc')}
@@ -393,7 +393,7 @@ function MarkerEditor({
         <button
           onClick={handleSave}
           disabled={saving || !dirty}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-white transition-colors disabled:opacity-40 border border-plex-orange/40 bg-plex-orange/20 hover:bg-plex-orange/30"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-white transition-colors disabled:opacity-40 border border-hayaa-gold/40 bg-hayaa-gold/20 hover:bg-hayaa-gold/30"
         >
           {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
           {saving ? t('common_saving') : dirty ? t('markers_save_plex') : t('common_saved')}
@@ -485,7 +485,7 @@ function AddMarkerForm({
     return (
       <button
         onClick={() => setOpen(true)}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-400 border border-dashed border-plex-border hover:border-plex-orange/40 hover:text-plex-orange transition-colors"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-400 border border-dashed border-hayaa-border hover:border-hayaa-gold/40 hover:text-hayaa-gold transition-colors"
       >
         <Plus size={12} /> {t('markers_add')}
       </button>
@@ -493,7 +493,7 @@ function AddMarkerForm({
   }
 
   return (
-    <div className="bg-black/20 border border-plex-border rounded-xl p-4 space-y-3">
+    <div className="bg-black/20 border border-hayaa-border rounded-xl p-4 space-y-3">
       <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">{t('markers_new')}</p>
       <div className="flex flex-wrap gap-2 items-end">
         <div className="space-y-1">
@@ -501,7 +501,7 @@ function AddMarkerForm({
           <select
             value={markerType}
             onChange={e => setMarkerType(e.target.value as 'intro' | 'credits')}
-            className="bg-plex-dark border border-plex-border rounded px-2 py-1 text-sm text-gray-200 focus:border-plex-orange"
+            className="bg-hayaa-dark border border-hayaa-border rounded px-2 py-1 text-sm text-gray-200 focus:border-hayaa-gold"
           >
             <option value="intro">{t('markers_intro')}</option>
             <option value="credits">{t('markers_credits')}</option>
@@ -513,7 +513,7 @@ function AddMarkerForm({
             dir="ltr"
             value={startVal}
             onChange={e => setStartVal(e.target.value)}
-            className="bg-plex-dark border border-plex-border rounded px-2 py-1 text-sm font-mono text-gray-200 w-36 focus:border-plex-orange"
+            className="bg-hayaa-dark border border-hayaa-border rounded px-2 py-1 text-sm font-mono text-gray-200 w-36 focus:border-hayaa-gold"
           />
         </div>
         <div className="space-y-1">
@@ -522,13 +522,13 @@ function AddMarkerForm({
             dir="ltr"
             value={endVal}
             onChange={e => setEndVal(e.target.value)}
-            className="bg-plex-dark border border-plex-border rounded px-2 py-1 text-sm font-mono text-gray-200 w-36 focus:border-plex-orange"
+            className="bg-hayaa-dark border border-hayaa-border rounded px-2 py-1 text-sm font-mono text-gray-200 w-36 focus:border-hayaa-gold"
           />
         </div>
         <button
           onClick={handleCreate}
           disabled={saving}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-white border border-plex-orange/40 bg-plex-orange/20 hover:bg-plex-orange/30 transition-colors disabled:opacity-50"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-white border border-hayaa-gold/40 bg-hayaa-gold/20 hover:bg-hayaa-gold/30 transition-colors disabled:opacity-50"
         >
           {saving ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
           {t('common_create')}
@@ -627,10 +627,10 @@ export function TitleMarkerPanel({
   const displayLabel = episodeLabel || title.title
 
   return (
-    <div className={`border rounded-xl overflow-hidden transition-colors ${open ? 'border-plex-orange/30' : 'border-plex-border'}`}>
+    <div className={`border rounded-xl overflow-hidden transition-colors ${open ? 'border-hayaa-gold/30' : 'border-hayaa-border'}`}>
       <button
         onClick={handleToggle}
-        className="w-full flex items-center gap-3 px-3 py-2.5 bg-plex-dark hover:bg-white/5 transition-colors text-start"
+        className="w-full flex items-center gap-3 px-3 py-2.5 bg-hayaa-dark hover:bg-white/5 transition-colors text-start"
       >
         {thumbSrc !== undefined && (
           <Poster src={thumbSrc} alt="" className="w-16 h-9 flex-shrink-0" />
@@ -641,7 +641,7 @@ export function TitleMarkerPanel({
         <button
           onClick={handleSync}
           disabled={syncing}
-          className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 border border-plex-border transition-colors disabled:opacity-50 flex-shrink-0"
+          className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 border border-hayaa-border transition-colors disabled:opacity-50 flex-shrink-0"
           title={t('markers_sync_title')}
         >
           <RefreshCw size={11} className={syncing ? 'animate-spin' : ''} />
@@ -660,11 +660,11 @@ export function TitleMarkerPanel({
       )}
 
       {open && (
-        <div className="border-t border-plex-border p-4 space-y-4 bg-plex-darker">
+        <div className="border-t border-hayaa-border p-4 space-y-4 bg-hayaa-darker">
           {markers.length === 0 ? (
             <p className="text-sm text-muted text-center py-6">
               {t('markers_none_stored')}{' '}
-              <button onClick={e => handleSync(e as unknown as React.MouseEvent)} className="text-plex-orange hover:underline">{t('markers_sync_from_plex')}</button>
+              <button onClick={e => handleSync(e as unknown as React.MouseEvent)} className="text-hayaa-gold hover:underline">{t('markers_sync_from_plex')}</button>
             </p>
           ) : (
             markers.map(m => <MarkerEditor key={m.id} marker={m} onUpdate={updateMarker} onDelete={deleteMarker} />)
@@ -696,11 +696,11 @@ export function SyncAllBanner({ progress, onDismiss }: { progress: SyncProgress;
   const { t } = useT()
   const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0
   return (
-    <div className="bg-plex-card border border-plex-border rounded-xl p-4 space-y-2">
+    <div className="bg-hayaa-card border border-hayaa-border rounded-xl p-4 space-y-2">
       <div className="flex items-center gap-2 flex-wrap">
         {progress.finished
           ? <CheckCircle size={15} className="text-green-400 flex-shrink-0" />
-          : <Loader2 size={15} className="animate-spin text-plex-orange flex-shrink-0" />
+          : <Loader2 size={15} className="animate-spin text-hayaa-gold flex-shrink-0" />
         }
         <span className="text-sm text-gray-200 font-medium">
           {progress.finished ? t('markers_sync_complete') : t('markers_syncing')}
@@ -720,7 +720,7 @@ export function SyncAllBanner({ progress, onDismiss }: { progress: SyncProgress;
       {!progress.finished && (
         <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
           <div
-            className="h-full bg-plex-orange rounded-full transition-all duration-300"
+            className="h-full bg-hayaa-gold rounded-full transition-all duration-300"
             style={{ width: `${pct}%` }}
           />
         </div>

@@ -87,7 +87,7 @@ function BarChart({
   maxVal,
   selectedBar,
   onBarClick,
-  colorClass = 'bg-plex-orange',
+  colorClass = 'bg-hayaa-gold',
 }: {
   data: { key: string; count: number; label?: string }[]
   maxVal: number
@@ -117,13 +117,13 @@ function BarChart({
             } : {})}
             className={`w-full text-start flex items-center gap-3 rounded-lg px-3 py-1.5 transition-colors ${
               onBarClick ? 'hover:bg-white/5' : ''
-            } ${isSelected ? 'bg-plex-orange/10 ring-1 ring-plex-orange/30' : ''}`}
+            } ${isSelected ? 'bg-hayaa-gold/10 ring-1 ring-hayaa-gold/30' : ''}`}
           >
             {/* The label column gives way on a narrow screen so the bar keeps some width. */}
             <div className="w-24 sm:w-44 flex-shrink-0 text-xs text-gray-300 truncate" title={label ?? key}>
               {displayLabel}
             </div>
-            <div className="flex-1 h-2.5 bg-plex-border rounded-full overflow-hidden">
+            <div className="flex-1 h-2.5 bg-hayaa-border rounded-full overflow-hidden">
               <div
                 className={`h-full ${colorClass} rounded-full transition-all duration-300`}
                 style={{ width: `${pct}%` }}
@@ -159,13 +159,13 @@ function LayoutToggle({ value, onChange }: { value: Layout; onChange: (next: Lay
       aria-pressed={value === id}
       title={label}
       aria-label={label}
-      className={`p-1.5 rounded-md transition-colors ${value === id ? 'bg-plex-orange text-black' : 'text-gray-400 hover:text-gray-100'}`}
+      className={`p-1.5 rounded-md transition-colors ${value === id ? 'bg-hayaa-gold text-black' : 'text-gray-400 hover:text-gray-100'}`}
     >
       <Icon size={14} />
     </button>
   )
   return (
-    <div className="flex p-0.5 gap-0.5 rounded-lg bg-black/25 border border-plex-border">
+    <div className="flex p-0.5 gap-0.5 rounded-lg bg-black/25 border border-hayaa-border">
       {btn('list', t('analytics_layout_list'), List)}
       {btn('gallery', t('analytics_layout_gallery'), LayoutGrid)}
     </div>
@@ -185,7 +185,7 @@ function SortControl({ value, options, onChange }: {
         id="segment-sort"
         value={value.sort}
         onChange={e => onChange({ ...value, sort: e.target.value as SortKey })}
-        className="bg-plex-card border border-plex-border rounded px-2 py-1 text-gray-200"
+        className="bg-hayaa-card border border-hayaa-border rounded px-2 py-1 text-gray-200"
       >
         {options.map(k => <option key={k} value={k}>{t(SORT_LABELS[k])}</option>)}
       </select>
@@ -194,7 +194,7 @@ function SortControl({ value, options, onChange }: {
         onClick={() => onChange({ ...value, order: value.order === 'desc' ? 'asc' : 'desc' })}
         aria-label={value.order === 'desc' ? t('analytics_sort_desc') : t('analytics_sort_asc')}
         title={value.order === 'desc' ? t('analytics_sort_desc_title') : t('analytics_sort_asc_title')}
-        className="px-2 py-1 rounded border border-plex-border text-gray-200 hover:bg-plex-card"
+        className="px-2 py-1 rounded border border-hayaa-border text-gray-200 hover:bg-hayaa-card"
       >
         {value.order === 'desc' ? '↓' : '↑'}
       </button>
@@ -212,7 +212,7 @@ function Pager({ page, totalPages, onPage, compact = false }: {
   if (totalPages <= 1) return null
   const btn = compact
     ? 'p-1 rounded hover:bg-white/5 disabled:opacity-40'
-    : 'flex items-center gap-1 px-3 py-1.5 bg-plex-card border border-plex-border rounded-lg hover:text-white hover:border-gray-500 disabled:opacity-40 transition-colors'
+    : 'flex items-center gap-1 px-3 py-1.5 bg-hayaa-card border border-hayaa-border rounded-lg hover:text-white hover:border-gray-500 disabled:opacity-40 transition-colors'
   return (
     <div className={`flex items-center text-xs text-gray-400 ${compact ? "gap-2" : "gap-3 justify-center mt-4"}`}>
       <button onClick={() => onPage(Math.max(0, page - 1))} disabled={page === 0} className={btn} aria-label={t('analytics_prev_aria')}>
@@ -469,7 +469,7 @@ export default function Analytics() {
   const renderRow = (seg: Segment) => (
                 <div
                   key={seg.id}
-                  className="bg-plex-card border border-plex-border rounded-xl overflow-hidden flex flex-col sm:flex-row"
+                  className="bg-hayaa-card border border-hayaa-border rounded-xl overflow-hidden flex flex-col sm:flex-row"
                 >
                   {/* Poster + thumbnail side-by-side on mobile */}
                   <div className="flex sm:flex-col">
@@ -479,12 +479,12 @@ export default function Analytics() {
                         src={seg.poster_url}
                         alt=""
                         loading="lazy"
-                        className="w-12 sm:w-20 object-cover bg-plex-border flex-shrink-0"
+                        className="w-12 sm:w-20 object-cover bg-hayaa-border flex-shrink-0"
                         style={{ minHeight: '48px' }}
                         onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
                       />
                     ) : (
-                      <div className="w-12 sm:w-20 bg-plex-border/50 flex-shrink-0" />
+                      <div className="w-12 sm:w-20 bg-hayaa-border/50 flex-shrink-0" />
                     )}
                   </div>
                   {/* Thumbnail */}
@@ -515,7 +515,7 @@ export default function Analytics() {
                         {seg.title}
                       </p>
                       <div className="flex flex-wrap items-center gap-2 mt-1">
-                        <span className="font-mono text-xs text-plex-orange" dir="ltr">
+                        <span className="font-mono text-xs text-hayaa-gold" dir="ltr">
                           {msToTimecode(seg.start_ms)} → {msToTimecode(seg.end_ms)}
                         </span>
                         <span className="text-xs text-muted">
@@ -543,7 +543,7 @@ export default function Analytics() {
                                 key={label}
                                 className={`text-[10px] px-1.5 py-0.5 rounded border ${
                                   isActive
-                                    ? 'bg-plex-orange/20 border-plex-orange/40 text-plex-orange'
+                                    ? 'bg-hayaa-gold/20 border-hayaa-gold/40 text-hayaa-gold'
                                     : 'bg-red-500/10 border-red-500/20 text-red-300'
                                 }`}
                               >
@@ -566,7 +566,7 @@ export default function Analytics() {
                         onClick={() => jumpSeg(seg)}
                         disabled={jumpingSegs[seg.id]}
                         title={t('analytics_jump_seg')}
-                        className="p-1.5 text-gray-400 hover:text-plex-orange hover:bg-plex-orange/10 rounded transition-colors disabled:opacity-40"
+                        className="p-1.5 text-gray-400 hover:text-hayaa-gold hover:bg-hayaa-gold/10 rounded transition-colors disabled:opacity-40"
                       >
                         <SkipForward size={14} />
                       </button>
@@ -597,7 +597,7 @@ export default function Analytics() {
       <h1 className="text-2xl font-bold text-gray-100">{t('analytics_title')}</h1>
 
       {/* Tabs (#117) */}
-      <div role="tablist" aria-label={t('analytics_tabs_aria')} className="flex gap-1 border-b border-plex-border overflow-x-auto">
+      <div role="tablist" aria-label={t('analytics_tabs_aria')} className="flex gap-1 border-b border-hayaa-border overflow-x-auto">
         {TABS.map(tabItem => (
           <button
             key={tabItem.id}
@@ -606,7 +606,7 @@ export default function Analytics() {
             onClick={() => selectTab(tabItem.id)}
             className={`px-4 py-2 text-sm whitespace-nowrap border-b-2 -mb-px transition-colors ${
               tab === tabItem.id
-                ? 'border-plex-orange text-plex-orange font-medium'
+                ? 'border-hayaa-gold text-hayaa-gold font-medium'
                 : 'border-transparent text-gray-400 hover:text-gray-200'
             }`}
           >
@@ -632,10 +632,10 @@ export default function Analytics() {
 
           {/* ── Drill-down: segments per rating for selected label ────────────── */}
           {drillLabel && (
-            <section className="bg-plex-card border border-plex-orange/30 rounded-xl p-4">
+            <section className="bg-hayaa-card border border-hayaa-gold/30 rounded-xl p-4">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-sm font-semibold text-gray-300">
-                  <span className="text-plex-orange">{shortLabel(drillLabel, t)}</span>
+                  <span className="text-hayaa-gold">{shortLabel(drillLabel, t)}</span>
                   <span className="text-muted font-normal ms-2">{t('analytics_by_rating')}</span>
                 </h2>
                 <button
@@ -669,12 +669,12 @@ export default function Analytics() {
                     onClick={() => toggleLabel(lc.label)}
                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors border ${
                       active
-                        ? 'bg-plex-orange/20 border-plex-orange/50 text-plex-orange'
-                        : 'bg-plex-darker border-plex-border text-gray-400 hover:text-gray-200 hover:border-gray-500'
+                        ? 'bg-hayaa-gold/20 border-hayaa-gold/50 text-hayaa-gold'
+                        : 'bg-hayaa-darker border-hayaa-border text-gray-400 hover:text-gray-200 hover:border-gray-500'
                     }`}
                   >
                     {shortLabel(lc.label, t)}
-                    <span className={`tabular-nums ${active ? 'text-plex-orange/70' : 'text-muted'}`}>
+                    <span className={`tabular-nums ${active ? 'text-hayaa-gold/70' : 'text-muted'}`}>
                       {lc.count}
                     </span>
                     {active && <X size={11} />}
@@ -750,7 +750,7 @@ export default function Analytics() {
                   value={fpKind}
                   onChange={e => { setFpKind(e.target.value as typeof fpKind); setFpPage(0) }}
                   aria-label={t('analytics_fp_show_aria')}
-                  className="bg-plex-card border border-plex-border rounded-lg px-2 py-1.5 text-xs text-gray-300"
+                  className="bg-hayaa-card border border-hayaa-border rounded-lg px-2 py-1.5 text-xs text-gray-300"
                 >
                   <option value="all">{t('analytics_fp_all', { count: fpCounts.marked + fpCounts.verifier })}</option>
                   <option value="marked">{t('analytics_fp_marked', { count: fpCounts.marked })}</option>

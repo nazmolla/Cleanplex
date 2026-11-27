@@ -83,7 +83,7 @@ export default function EnforcementPanel() {
           value={data.mute_mode}
           disabled={busy}
           onChange={e => post('/api/enforcement', { mute_mode: e.target.value })}
-          className="mt-1 block w-full max-w-xs px-3 py-2 bg-plex-card border border-plex-border rounded-lg text-sm text-gray-200"
+          className="mt-1 block w-full max-w-xs px-3 py-2 bg-hayaa-card border border-hayaa-border rounded-lg text-sm text-gray-200"
         >
           <option value="leave">{t('enf_mute_leave')}</option>
           <option value="cut">{t('enf_mute_cut')}</option>
@@ -97,7 +97,7 @@ export default function EnforcementPanel() {
           checked={data.backstop}
           disabled={busy}
           onChange={e => post('/api/enforcement', { backstop: e.target.checked })}
-          className="w-4 h-4 accent-plex-orange"
+          className="w-4 h-4 accent-hayaa-gold"
         />
         <span className="text-sm text-gray-300">
           {t('enf_backstop')}
@@ -134,7 +134,7 @@ export default function EnforcementPanel() {
             </span>
             <span className="flex items-center gap-2">
               <input type="number" min="0" max="50" value={limit} onChange={e => setLimit(e.target.value)}
-                className="w-16 px-2 py-1 bg-plex-card border border-plex-border rounded text-sm text-gray-200" aria-label={t('enf_transcodes')} />
+                className="w-16 px-2 py-1 bg-hayaa-card border border-hayaa-border rounded text-sm text-gray-200" aria-label={t('enf_transcodes')} />
               <button disabled={busy || limit === ''} onClick={() => post('/api/enforcement/plex-settings', { transcode_limit: Number(limit) })}
                 className="btn-outline text-xs flex-shrink-0">
                 {t('common_apply')}

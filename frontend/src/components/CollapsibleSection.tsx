@@ -40,7 +40,7 @@ export default function CollapsibleSection({ id, title, hint, defaultOpen = true
   })
 
   return (
-    <section className="bg-plex-card border border-plex-border rounded-xl">
+    <section className="bg-hayaa-card border border-hayaa-border rounded-xl">
       <div className="flex items-center gap-2 px-4 py-3">
         <button
           onClick={toggle}

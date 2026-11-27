@@ -1,4 +1,6 @@
-# Cleanplex
+# Hayaa for Plex (formerly Cleanplex)
+
+> **Cleanplex is becoming Hayaa for Plex.** Only the name and look change for now: the repository, the Docker images (`ghcr.io/nazmolla/cleanplex`, `mnazmi/cleanplex`), settings and data all stay the same, and nothing needs updating. Hayaa for Plex is an independent project; it works with Plex but is not made or endorsed by Plex.
 
 A home server service that watches your Plex streams and, for the accounts you choose, **skips or mutes** the parts of a film that contain nudity or profanity. The scenes are found ahead of time by scanning your library (or imported from skip files other people have made); at playback time it is only a database lookup.
 
@@ -336,7 +338,7 @@ Tabs (linkable with `?tab=`), and sections that can be minimised (remembered per
 - **Hayaa** — Share segments with other Cleanplex servers through the Hayaa service (below)
 - Profanity wordlist and log level are stored as settings (`profanity_wordlist`, `log_level`)
 
-## Hayaa
+## Hayaa community sync
 
 **Scan once, help everyone.** Scanning a film takes hours of CPU; with Hayaa, the first Cleanplex server to scan a file shares what it found, and every other server with the same file gets those segments, confirmed by more users with each sync. Hayaa is new and its library is small, so every server that joins and shares its scans makes it better for everyone. Turn it on under Settings → Community Sync (Hayaa) → **Sign in to Hayaa**. It's free, and you can unlink at any time.
 

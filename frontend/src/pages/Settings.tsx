@@ -123,7 +123,7 @@ function Field({ label, hint, unit, children }: { label: string; hint?: string; 
 /** A titled card; every Settings block uses it so spacing and headings match (#236). */
 function Card({ title, desc, children }: { title: string; desc?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <section className="bg-plex-card border border-plex-border rounded-xl p-5">
+    <section className="bg-hayaa-card border border-hayaa-border rounded-xl p-5">
       <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-1">{title}</h2>
       {desc && <p className="text-xs text-muted mb-4">{desc}</p>}
       <div className={desc ? '' : 'mt-3'}>{children}</div>
@@ -162,7 +162,7 @@ function LabelThresholds({ detector, labels, value, globalValue, disabled, onCha
             disabled={disabled}
             onChange={e => update(label, e.target.value)}
             aria-label={t('settings_label_threshold_aria', { label: prettyLabel(label, t), detector })}
-            className="w-24 bg-plex-card border border-plex-border rounded px-2 py-1 text-sm text-gray-100 disabled:opacity-40"
+            className="w-24 bg-hayaa-card border border-hayaa-border rounded px-2 py-1 text-sm text-gray-100 disabled:opacity-40"
           />
         </label>
       ))}
@@ -288,7 +288,7 @@ export default function SettingsPage() {
     }
   }
 
-  const inputCls = "w-full px-3 py-2 bg-plex-darker border border-plex-border rounded-lg text-sm text-gray-100 placeholder-muted focus:border-plex-orange/60 transition-colors"
+  const inputCls = "w-full px-3 py-2 bg-hayaa-darker border border-hayaa-border rounded-lg text-sm text-gray-100 placeholder-muted focus:border-hayaa-gold/60 transition-colors"
   // Numbers and times are short; a full-width box makes them look like free text.
   const numCls = inputCls + ' max-w-xs disabled:opacity-40'
   const timeCls = inputCls + ' w-36'
@@ -315,7 +315,7 @@ export default function SettingsPage() {
         checked={key === 'siglip_enabled' || key === 'ignore_credits' ? form[key] === '1' : form[key] !== '0'}
         onChange={e => setForm(f => ({ ...f, [key]: e.target.checked ? '1' : '0' }))}
         disabled={disabled}
-        className="w-4 h-4 mt-0.5 accent-plex-orange disabled:opacity-40"
+        className="w-4 h-4 mt-0.5 accent-hayaa-gold disabled:opacity-40"
       />
       <span className="text-sm text-gray-300">
         {label}
@@ -350,7 +350,7 @@ export default function SettingsPage() {
               onClick={() => setSection(sec.id)}
               aria-current={section === sec.id ? 'page' : undefined}
               className={`text-start whitespace-nowrap px-3 py-2 rounded-lg text-sm transition-colors ${
-                section === sec.id ? 'bg-plex-orange/20 text-plex-orange' : 'text-gray-300 hover:text-gray-100 hover:bg-white/5'
+                section === sec.id ? 'bg-hayaa-gold/20 text-hayaa-gold' : 'text-gray-300 hover:text-gray-100 hover:bg-white/5'
               }`}
             >
               {sec.label}
@@ -407,14 +407,14 @@ export default function SettingsPage() {
                 </div>
               </Card>
               <Card title={t('settings_sec_language')} desc={t('settings_language_hint')}>
-                <div role="group" aria-label={t('lang_toggle_label')} className="inline-flex p-0.5 gap-0.5 rounded-lg bg-black/25 border border-plex-border">
+                <div role="group" aria-label={t('lang_toggle_label')} className="inline-flex p-0.5 gap-0.5 rounded-lg bg-black/25 border border-hayaa-border">
                   {(['en', 'ar'] as const).map(code => (
                     <button
                       key={code}
                       type="button"
                       onClick={() => setLang(code)}
                       aria-pressed={lang === code}
-                      className={`py-1.5 px-4 rounded-md text-sm font-medium transition-colors ${lang === code ? 'bg-plex-orange text-black' : 'text-gray-400 hover:text-gray-100'}`}
+                      className={`py-1.5 px-4 rounded-md text-sm font-medium transition-colors ${lang === code ? 'bg-hayaa-gold text-black' : 'text-gray-400 hover:text-gray-100'}`}
                     >
                       {code === 'en' ? t('lang_english') : t('lang_arabic')}
                     </button>
@@ -425,7 +425,7 @@ export default function SettingsPage() {
           )}
 
           {section === 'users' && (
-            <section className="bg-plex-card border border-plex-border rounded-xl p-5">
+            <section className="bg-hayaa-card border border-hayaa-border rounded-xl p-5">
               <UsersPanel />
             </section>
           )}
@@ -463,7 +463,7 @@ export default function SettingsPage() {
                     <p className="text-sm font-medium text-gray-200 mb-2">{t('settings_scan_schedule')}</p>
                     {timeRange('scan_window_start', 'scan_window_end')}
                   </div>
-                  <div className="border-t border-plex-border pt-5 space-y-3">
+                  <div className="border-t border-hayaa-border pt-5 space-y-3">
                     {checkbox('hover_previews_enabled', t('settings_hover_enable'), t('settings_hover_previews_short'))}
                     <div className="ps-7 space-y-3">
                       {timeRange('hover_window_start', 'hover_window_end', form.hover_previews_enabled === '0')}
@@ -481,7 +481,7 @@ export default function SettingsPage() {
                       const included = !excludedIds.includes(lib.id)
                       return (
                         <label key={lib.id} className="flex items-center gap-3 cursor-pointer">
-                          <input type="checkbox" checked={included} onChange={() => toggleExcluded(lib.id)} className="w-4 h-4 accent-plex-orange" />
+                          <input type="checkbox" checked={included} onChange={() => toggleExcluded(lib.id)} className="w-4 h-4 accent-hayaa-gold" />
                           <span className={`text-sm ${included ? 'text-gray-200' : 'text-muted'}`}>{lib.title}</span>
                           <span className="text-xs text-muted">
                             {lib.type === 'movie' ? t('settings_lib_type_movie') : lib.type === 'show' ? t('settings_lib_type_show') : lib.type}
@@ -522,7 +522,7 @@ export default function SettingsPage() {
                               onClick={toggle}
                               aria-pressed={checked}
                               className={`px-3 py-1 rounded-full border text-sm transition-colors ${
-                                checked ? 'border-plex-orange/60 bg-plex-orange/15 text-gray-100' : 'border-plex-border text-gray-400 hover:text-gray-200'
+                                checked ? 'border-hayaa-gold/60 bg-hayaa-gold/15 text-gray-100' : 'border-hayaa-border text-gray-400 hover:text-gray-200'
                               }`}
                             >
                               {rating === '' ? t('settings_unrated_plex') : rating}
@@ -589,7 +589,7 @@ export default function SettingsPage() {
                     }
                     return (
                       <label key={label} className="flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 accent-plex-orange" />
+                        <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 accent-hayaa-gold" />
                         <span className={`text-sm ${checked ? 'text-gray-100' : 'text-muted'}`} title={label}>{prettyLabel(label, t)}</span>
                       </label>
                     )
@@ -706,7 +706,7 @@ export default function SettingsPage() {
       {/* Shown only while a buffered section has unsaved edits (#236); Users, Hayaa and
           Maintenance save or act on their own. */}
       {(dirty || saved) && BUFFERED.includes(section) && (
-        <div className="sticky bottom-0 py-3 bg-plex-darker/95 border-t border-plex-border backdrop-blur">
+        <div className="sticky bottom-0 py-3 bg-hayaa-darker/95 border-t border-hayaa-border backdrop-blur">
           <div className="flex flex-wrap items-center gap-3 max-w-4xl md:ms-[14.5rem]">
             {dirty ? (
               <>

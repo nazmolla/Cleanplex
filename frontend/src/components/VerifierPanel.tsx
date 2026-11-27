@@ -77,7 +77,7 @@ export default function VerifierPanel({ value, onChange }: { value: string; onCh
         value={value}
         onChange={e => onChange(e.target.value)}
         disabled={!trained}
-        className="w-full max-w-xs px-3 py-2 bg-plex-darker border border-plex-border rounded-lg text-sm text-gray-100 disabled:opacity-40"
+        className="w-full max-w-xs px-3 py-2 bg-hayaa-darker border border-hayaa-border rounded-lg text-sm text-gray-100 disabled:opacity-40"
       >
         {LEVELS.map(l => (
           <option key={l.value} value={l.value}>{t(l.labelKey)}</option>
@@ -124,7 +124,7 @@ export function VerifierTraining() {
       {groups.length > 0 && (
         <table className="mt-3 w-full max-w-xl text-sm">
           <thead>
-            <tr className="text-xs text-muted border-b border-plex-border">
+            <tr className="text-xs text-muted border-b border-hayaa-border">
               <th className="text-start font-medium py-1.5 pe-3">{t('ver_col_label')}</th>
               <th className="text-end font-medium py-1.5 pe-3">{t('ver_col_false')}</th>
               <th className="text-end font-medium py-1.5 pe-3">{t('ver_col_total')}</th>
@@ -133,7 +133,7 @@ export function VerifierTraining() {
           </thead>
           <tbody>
             {groups.map(([g, s]) => (
-              <tr key={g} className="border-b border-plex-border/50 text-gray-300">
+              <tr key={g} className="border-b border-hayaa-border/50 text-gray-300">
                 <td className="py-1.5 pe-3" dir="ltr">{g}</td>
                 <td className="py-1.5 pe-3 text-end tabular-nums">{s.false_positives}</td>
                 <td className="py-1.5 pe-3 text-end tabular-nums">{s.n}</td>

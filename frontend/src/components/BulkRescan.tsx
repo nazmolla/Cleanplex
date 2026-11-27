@@ -84,7 +84,7 @@ export default function BulkRescan({ libraries }: { libraries: Library[] }) {
         {SCOPES.map(s => (
           <label key={s.id} className="flex items-start gap-3 cursor-pointer">
             <input type="radio" name="rescan-scope" checked={scope === s.id} onChange={() => setScope(s.id)}
-              className="mt-1 accent-plex-orange" />
+              className="mt-1 accent-hayaa-gold" />
             <span>
               <span className="text-sm text-gray-300">{t(s.labelKey)}</span>
               <span className="block text-xs text-muted">{t(s.hintKey)}</span>
@@ -97,13 +97,13 @@ export default function BulkRescan({ libraries }: { libraries: Library[] }) {
           <label className="text-xs text-gray-400">
             {t('rescan_before')}
             <input type="date" value={before} onChange={e => setBefore(e.target.value)}
-              className="block mt-1 bg-plex-card border border-plex-border rounded px-2 py-1 text-sm text-gray-100" />
+              className="block mt-1 bg-hayaa-card border border-hayaa-border rounded px-2 py-1 text-sm text-gray-100" />
           </label>
         )}
         <label className="text-xs text-gray-400">
           {t('rescan_library')}
           <select value={libraryId} onChange={e => setLibraryId(e.target.value)} aria-label={t('rescan_library')}
-            className="block mt-1 bg-plex-card border border-plex-border rounded px-2 py-1 text-sm text-gray-100">
+            className="block mt-1 bg-hayaa-card border border-hayaa-border rounded px-2 py-1 text-sm text-gray-100">
             <option value="">{t('rescan_all_libraries')}</option>
             {libraries.map(l => <option key={l.id} value={l.id}>{l.title}</option>)}
           </select>

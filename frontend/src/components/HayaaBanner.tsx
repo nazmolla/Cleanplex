@@ -38,14 +38,14 @@ export default function HayaaBanner() {
 
   return (
     <div role="region" aria-label={t('hayaa_banner_title')}
-      className="mb-4 flex items-start gap-3 rounded-xl border border-plex-orange/40 bg-plex-orange/10 p-4">
-      <Users size={20} className="mt-0.5 flex-shrink-0 text-plex-orange" />
+      className="mb-4 flex items-start gap-3 rounded-xl border border-hayaa-gold/40 bg-hayaa-gold/10 p-4">
+      <Users size={20} className="mt-0.5 flex-shrink-0 text-hayaa-gold" />
       <div className="min-w-0 flex-1">
         <p className="font-semibold text-gray-100">{t('hayaa_banner_title')}</p>
         <p className="mt-1 text-sm text-gray-300">{t('hayaa_banner_body')}</p>
         <div className="mt-3 flex flex-wrap gap-2">
           <button type="button" onClick={() => navigate('/settings?section=hayaa')}
-            className="rounded-lg bg-plex-orange px-3 py-1.5 text-sm font-medium text-black hover:bg-plex-orange/90">
+            className="rounded-lg bg-hayaa-gold px-3 py-1.5 text-sm font-medium text-black hover:bg-hayaa-gold/90">
             {t('hayaa_banner_on')}
           </button>
           <button type="button" onClick={hide}

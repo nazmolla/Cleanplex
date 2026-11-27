@@ -84,13 +84,13 @@ export default function HayaaPanel() {
         {t('hayaa_desc')}
       </p>
 
-      <div className="border-t border-plex-border pt-4 space-y-3">
+      <div className="border-t border-hayaa-border pt-4 space-y-3">
         {st.linked && !pending ? (
           <>
             <p className="text-sm text-gray-100">{t('hayaa_signed_in_as')} <span className="font-medium">{st.device_label}</span>.</p>
             <p className="text-xs text-muted break-all">{t('hayaa_instance_key', { keyId: st.key_id })}</p>
             <button className="btn-danger" onClick={unlink} disabled={busy}>{t('hayaa_unlink')}</button>
-            <div className="border-t border-plex-border pt-4">
+            <div className="border-t border-hayaa-border pt-4">
               <HayaaSync />
             </div>
           </>

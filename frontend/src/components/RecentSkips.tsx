@@ -124,7 +124,7 @@ export default function RecentSkips() {
               value={from}
               max={to || undefined}
               onChange={setRange(setFrom)}
-              className="bg-plex-card border border-plex-border rounded-lg px-2 py-1 text-gray-200"
+              className="bg-hayaa-card border border-hayaa-border rounded-lg px-2 py-1 text-gray-200"
             />
           </label>
           <label className="flex items-center gap-1">
@@ -135,7 +135,7 @@ export default function RecentSkips() {
               value={to}
               min={from || undefined}
               onChange={setRange(setTo)}
-              className="bg-plex-card border border-plex-border rounded-lg px-2 py-1 text-gray-200"
+              className="bg-hayaa-card border border-hayaa-border rounded-lg px-2 py-1 text-gray-200"
             />
           </label>
           {(from || to) && (
@@ -156,12 +156,12 @@ export default function RecentSkips() {
       {error && <p className="text-sm text-red-400 mb-2">{error}</p>}
 
       {data.events.length === 0 ? (
-        <div className="bg-plex-card border border-plex-border rounded-xl px-4 py-5 text-muted text-sm">
+        <div className="bg-hayaa-card border border-hayaa-border rounded-xl px-4 py-5 text-muted text-sm">
           {from || to ? t('recent_skips_empty_range') : t('recent_skips_empty')}
         </div>
       ) : (
         // One grid for every row, so time, title, action and viewer line up down the list (#206).
-        <div className="bg-plex-card border border-plex-border rounded-xl divide-y divide-plex-border">
+        <div className="bg-hayaa-card border border-hayaa-border rounded-xl divide-y divide-hayaa-border">
           {data.events.map(ev => (
             <div
               key={ev.id}

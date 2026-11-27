@@ -63,7 +63,7 @@ export default function SegmentPlayer({ segmentId, autoPlay = false, className =
           <span>{message}</span>
           <button
             onClick={() => setAttempt(a => a + 1)}
-            className="px-3 py-1.5 text-xs bg-plex-card border border-plex-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 flex-shrink-0"
+            className="px-3 py-1.5 text-xs bg-hayaa-card border border-hayaa-border rounded-lg text-gray-300 hover:text-white hover:border-gray-500 flex-shrink-0"
           >
             {t('common_retry')}
           </button>

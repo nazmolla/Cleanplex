@@ -78,7 +78,7 @@ export default function ScanContextMenu({ target, onScan, onClose }: Props) {
       role="menu"
       aria-label={t('ctx_rescan_aria', { label: target.label })}
       style={{ left, top }}
-      className="fixed z-50 w-48 bg-plex-card border border-plex-border rounded-lg shadow-xl py-1 text-xs"
+      className="fixed z-50 w-48 bg-hayaa-card border border-hayaa-border rounded-lg shadow-xl py-1 text-xs"
     >
       <div className="px-3 py-1 text-muted truncate">
         {target.label}
@@ -91,7 +91,7 @@ export default function ScanContextMenu({ target, onScan, onClose }: Props) {
               {t(target.whole.kind === 'library' ? 'ctx_listed_titles' : 'ctx_listed_episodes', { count })}
             </div>
           )}
-          {item(true, <Zap size={12} className="text-plex-orange" />, t('ctx_rescan_now'))}
+          {item(true, <Zap size={12} className="text-hayaa-gold" />, t('ctx_rescan_now'))}
           {item(false, <Moon size={12} className="text-blue-400" />, t('ctx_rescan_tonight'))}
         </>
       )}
@@ -109,7 +109,7 @@ export default function ScanContextMenu({ target, onScan, onClose }: Props) {
           {/* A library is thousands of titles: only ever scheduled, never jumped to the front. */}
           {target.whole.kind !== 'library' && item(
             true,
-            <Zap size={12} className="text-plex-orange" />,
+            <Zap size={12} className="text-hayaa-gold" />,
             t(target.whole.kind === 'show' ? 'ctx_rescan_whole_show_now' : 'ctx_rescan_whole_season_now'),
             true,
           )}
